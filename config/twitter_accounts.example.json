@@ -6,5 +6,8 @@
             "email": "your_email@example.com",
             "cookies": null
         }
-    ]
+    ],
+    "for_you_limit": 200,
+    "following_limit": 200,
+    "time_range_hours": 48
 }
