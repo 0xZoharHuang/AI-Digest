@@ -66,6 +66,7 @@ class ResearchAgent:
         topic: str,
         urls: list[str],
         initial_summary: str,
+        tweet_url: str = "",
     ) -> ResearchResult:
         """
         Perform deep research on a tweet.
@@ -78,6 +79,7 @@ class ResearchAgent:
             topic: Content topic (LLM, Agent, etc.)
             urls: URLs in the tweet
             initial_summary: Initial summary from filtering
+            tweet_url: URL to the tweet itself (for fetching threads)
 
         Returns:
             ResearchResult with the research report
@@ -85,7 +87,7 @@ class ResearchAgent:
         console.print(f"[blue]Researching: {initial_summary[:50]}...[/blue]")
 
         # Get the appropriate prompt for this category
-        prompt = get_research_prompt(category, tweet_text, author, urls)
+        prompt = get_research_prompt(category, tweet_text, author, urls, tweet_url)
 
         try:
             # Use Claude Agent SDK's query function
@@ -174,6 +176,7 @@ class ResearchAgent:
         topic: str,
         urls: list[str],
         initial_summary: str,
+        tweet_url: str = "",
         max_retries: int = 2,
     ) -> ResearchResult:
         """Research with retry on failure."""
@@ -191,6 +194,7 @@ class ResearchAgent:
                 topic=topic,
                 urls=urls,
                 initial_summary=initial_summary,
+                tweet_url=tweet_url,
             )
 
             if result.success:

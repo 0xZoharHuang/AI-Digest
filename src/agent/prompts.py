@@ -44,6 +44,20 @@ RESEARCH_SYSTEM_PROMPT = """你是一个专业的 AI 技术研究助手。你的
 4. 如果链接无法访问，尝试用 WebSearch 搜索相关信息作为替代
 5. 对于仓库分析，优先看 README，只有需要深入了解时才 clone 代码
 
+## 线程处理（重要）
+
+Twitter/X 上的深度分享常以「线程」形式发布（作者连续回复自己）。
+
+**注意**：
+- 如果推文内容已包含完整线程（用 `---` 分隔的多条推文），直接分析即可
+- 如果推文看起来是线程的一部分但内容不完整，**不要**用 WebFetch 获取推文页面（Twitter 需要 JavaScript，WebFetch 无法获取内容）
+- 改用 **WebSearch** 搜索相关内容，如 `site:x.com {作者} {关键词}`
+
+线程特征：
+- 包含 🧵 符号
+- 包含 "thread"、"1/"、"1/n" 等标记
+- 提到"分享 N 个技巧/策略/要点"但正文不完整
+
 ## 输出格式
 
 - 使用 Markdown 格式
@@ -58,7 +72,8 @@ PAPER_RESEARCH_PROMPT = """请深度分析这篇 AI 论文。
 {tweet_text}
 
 作者：@{author}
-链接：{urls}
+推文链接：{tweet_url}
+内容链接：{urls}
 
 请按以下结构输出研究报告：
 
@@ -86,7 +101,8 @@ REPO_RESEARCH_PROMPT = """请深度分析这个开源项目。
 {tweet_text}
 
 作者：@{author}
-链接：{urls}
+推文链接：{tweet_url}
+内容链接：{urls}
 
 请按以下结构输出研究报告：
 
@@ -117,7 +133,8 @@ BLOG_RESEARCH_PROMPT = """请深度分析这篇技术文章/博客。
 {tweet_text}
 
 作者：@{author}
-链接：{urls}
+推文链接：{tweet_url}
+内容链接：{urls}
 
 请按以下结构输出研究报告：
 
@@ -143,7 +160,8 @@ TOOL_RESEARCH_PROMPT = """请深度分析这个 AI 工具/产品。
 {tweet_text}
 
 作者：@{author}
-链接：{urls}
+推文链接：{tweet_url}
+内容链接：{urls}
 
 请按以下结构输出研究报告：
 
@@ -171,7 +189,8 @@ SHARING_RESEARCH_PROMPT = """请分析这条 AI 相关分享。
 {tweet_text}
 
 作者：@{author}
-链接：{urls}
+推文链接：{tweet_url}
+内容链接：{urls}
 
 请按以下结构输出研究报告：
 
@@ -199,11 +218,18 @@ RESEARCH_PROMPTS = {
 }
 
 
-def get_research_prompt(category: str, tweet_text: str, author: str, urls: list[str]) -> str:
+def get_research_prompt(
+    category: str,
+    tweet_text: str,
+    author: str,
+    urls: list[str],
+    tweet_url: str = "",
+) -> str:
     """Get the appropriate research prompt for a category."""
     template = RESEARCH_PROMPTS.get(category.lower(), SHARING_RESEARCH_PROMPT)
     return template.format(
         tweet_text=tweet_text,
         author=author,
+        tweet_url=tweet_url or "无",
         urls=", ".join(urls) if urls else "无链接",
     )

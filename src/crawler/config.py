@@ -16,6 +16,22 @@ class TwitterAccount(BaseModel):
     cookies: Optional[str] = None
 
 
+class DelayConfig(BaseModel):
+    """Request delay configuration for risk control."""
+
+    min_seconds: float = 2.0  # Minimum delay between requests
+    max_seconds: float = 7.0  # Maximum delay between requests
+    page_delay_seconds: float = 15.0  # Extra delay when paginating
+
+
+class RetryConfig(BaseModel):
+    """Retry configuration with exponential backoff."""
+
+    max_retries: int = 5
+    backoff_base: float = 2.0  # Exponential backoff base
+    max_backoff_seconds: float = 300.0  # Max wait time (5 minutes)
+
+
 class CrawlerConfig(BaseModel):
     """Crawler configuration."""
 
@@ -23,6 +39,8 @@ class CrawlerConfig(BaseModel):
     for_you_limit: int = 200  # Number of tweets to fetch from For You
     following_limit: int = 200  # Number of tweets to fetch from Following
     time_range_hours: int = 48  # Only process tweets from last N hours
+    delay: DelayConfig = DelayConfig()  # Request delay settings
+    retry: RetryConfig = RetryConfig()  # Retry settings
 
 
 def load_config(config_path: str | Path = "config/twitter_accounts.json") -> CrawlerConfig:

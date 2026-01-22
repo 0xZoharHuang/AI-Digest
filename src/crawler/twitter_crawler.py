@@ -11,19 +11,10 @@ from rich.console import Console
 from twscrape import API, gather
 from twscrape.logger import set_log_level
 
+from .account_health import AccountHealthMonitor, ErrorType, classify_error
 from .config import CrawlerConfig, load_config
 
 console = Console()
-
-# Rate limiting configuration
-MIN_DELAY_SECONDS = 1.0
-MAX_DELAY_SECONDS = 3.0
-
-
-async def _rate_limit_delay():
-    """Add random delay to avoid rate limiting and reduce ban risk."""
-    delay = random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS)
-    await asyncio.sleep(delay)
 
 
 class Tweet(BaseModel):
@@ -43,9 +34,22 @@ class Tweet(BaseModel):
     is_quote: bool = False
     quoted_text: Optional[str] = None
     quoted_author: Optional[str] = None
+    thread_content: Optional[str] = None  # Full thread text if this is a thread
 
     class Config:
         json_encoders = {datetime: lambda v: v.isoformat()}
+
+    @property
+    def tweet_url(self) -> str:
+        """Get the URL to this tweet (for fetching full thread)."""
+        return f"https://x.com/{self.author}/status/{self.id}"
+
+    @property
+    def full_content(self) -> str:
+        """Get full content including thread if available."""
+        if self.thread_content:
+            return self.thread_content
+        return self.text
 
 
 class TwitterCrawler:
@@ -54,7 +58,86 @@ class TwitterCrawler:
     def __init__(self, config: Optional[CrawlerConfig] = None):
         self.config = config or load_config()
         self.api: Optional[API] = None
+        self.health_monitor = AccountHealthMonitor()
+        self._current_username: Optional[str] = None
         set_log_level("WARNING")  # Reduce twscrape verbosity
+
+    async def _rate_limit_delay(self, context: str = "request") -> None:
+        """
+        Enhanced random delay with jitter to mimic human behavior.
+
+        Args:
+            context: "request" for normal requests, "page" for pagination
+        """
+        if context == "page":
+            base_delay = self.config.delay.page_delay_seconds
+        else:
+            base_delay = random.uniform(
+                self.config.delay.min_seconds,
+                self.config.delay.max_seconds
+            )
+
+        # Add Gaussian jitter to avoid uniform patterns
+        jitter = random.gauss(0, base_delay * 0.2)
+        delay = max(1.0, base_delay + jitter)
+
+        await asyncio.sleep(delay)
+
+    async def _handle_error_with_retry(
+        self,
+        error: Exception,
+        retry_count: int,
+        operation: str
+    ) -> bool:
+        """
+        Handle error with exponential backoff.
+
+        Returns:
+            True if should retry, False otherwise
+        """
+        error_str = str(error).lower()
+        username = self._current_username or "unknown"
+
+        # Classify error and record in health monitor
+        error_type = classify_error(str(error))
+        if error_type:
+            self.health_monitor.record_error(username, error_type)
+
+        # Check if max retries exceeded
+        if retry_count >= self.config.retry.max_retries:
+            console.print(f"[red]Max retries ({self.config.retry.max_retries}) exceeded for {operation}[/red]")
+            return False
+
+        # Handle different error types
+        if "rate limit" in error_str or "429" in error_str:
+            wait_time = min(
+                self.config.retry.backoff_base ** retry_count + random.uniform(0, 1),
+                self.config.retry.max_backoff_seconds
+            )
+            console.print(f"[yellow]Rate limited, waiting {wait_time:.1f}s (retry {retry_count + 1})...[/yellow]")
+            await asyncio.sleep(wait_time)
+            return True
+
+        elif "suspended" in error_str or "locked" in error_str or "banned" in error_str:
+            console.print(f"[red]Account suspended or locked![/red]")
+            self.health_monitor.mark_suspended(username)
+            return False
+
+        elif "unusual activity" in error_str or "suspicious" in error_str:
+            console.print(f"[red]Suspicious activity detected, cooling down 1 hour...[/red]")
+            self.health_monitor.set_cooldown(username, hours=1.0)
+            await asyncio.sleep(3600)
+            return True
+
+        else:
+            # Generic error: exponential backoff
+            wait_time = min(
+                self.config.retry.backoff_base ** retry_count + random.uniform(0, 1),
+                self.config.retry.max_backoff_seconds
+            )
+            console.print(f"[yellow]Error: {error}, retrying in {wait_time:.1f}s...[/yellow]")
+            await asyncio.sleep(wait_time)
+            return retry_count < self.config.retry.max_retries
 
     async def init_accounts(self) -> None:
         """Initialize and login Twitter accounts."""
@@ -68,6 +151,8 @@ class TwitterCrawler:
                 email=account.email,
                 email_password=account.password,  # Assuming same password
             )
+            # Track current username for health monitoring (single account)
+            self._current_username = account.username
 
         # Login all accounts
         await self.api.pool.login_all()
@@ -141,25 +226,31 @@ class TwitterCrawler:
 
         console.print("[blue]Fetching For You feed...[/blue]")
         tweets = []
+        retry_count = 0
 
-        try:
-            # Add delay before API call to reduce ban risk
-            await _rate_limit_delay()
+        while retry_count <= self.config.retry.max_retries:
+            try:
+                # Add delay before API call to reduce ban risk
+                await self._rate_limit_delay()
 
-            # Use home timeline which approximates For You
-            raw_tweets = await gather(self.api.home_timeline(limit=self.config.for_you_limit))
-            for raw_tweet in raw_tweets:
-                tweet = self._parse_tweet(raw_tweet)
-                tweets.append(tweet)
-            console.print(f"[green]Fetched {len(tweets)} tweets from For You[/green]")
-        except Exception as e:
-            error_msg = str(e).lower()
-            if "suspended" in error_msg or "locked" in error_msg:
-                console.print(f"[red]Account may be suspended! Error: {e}[/red]")
-            elif "rate limit" in error_msg:
-                console.print(f"[yellow]Rate limited. Waiting before retry...[/yellow]")
-            else:
-                console.print(f"[red]Error fetching For You feed: {e}[/red]")
+                # Use home timeline which approximates For You
+                raw_tweets = await gather(self.api.home_timeline(limit=self.config.for_you_limit))
+                for raw_tweet in raw_tweets:
+                    tweet = self._parse_tweet(raw_tweet)
+                    tweets.append(tweet)
+
+                # Record success in health monitor
+                if self._current_username:
+                    self.health_monitor.record_success(self._current_username)
+
+                console.print(f"[green]Fetched {len(tweets)} tweets from For You[/green]")
+                break  # Success, exit retry loop
+
+            except Exception as e:
+                should_retry = await self._handle_error_with_retry(e, retry_count, "For You feed")
+                if not should_retry:
+                    break
+                retry_count += 1
 
         return self._filter_by_time(tweets)
 
@@ -170,27 +261,33 @@ class TwitterCrawler:
 
         console.print("[blue]Fetching Following feed...[/blue]")
         tweets = []
+        retry_count = 0
 
-        try:
-            # Add delay before API call to reduce ban risk
-            await _rate_limit_delay()
+        while retry_count <= self.config.retry.max_retries:
+            try:
+                # Add delay before API call to reduce ban risk
+                await self._rate_limit_delay()
 
-            # Use following timeline
-            raw_tweets = await gather(
-                self.api.following_timeline(limit=self.config.following_limit)
-            )
-            for raw_tweet in raw_tweets:
-                tweet = self._parse_tweet(raw_tweet)
-                tweets.append(tweet)
-            console.print(f"[green]Fetched {len(tweets)} tweets from Following[/green]")
-        except Exception as e:
-            error_msg = str(e).lower()
-            if "suspended" in error_msg or "locked" in error_msg:
-                console.print(f"[red]Account may be suspended! Error: {e}[/red]")
-            elif "rate limit" in error_msg:
-                console.print(f"[yellow]Rate limited. Waiting before retry...[/yellow]")
-            else:
-                console.print(f"[red]Error fetching Following feed: {e}[/red]")
+                # Use following timeline
+                raw_tweets = await gather(
+                    self.api.following_timeline(limit=self.config.following_limit)
+                )
+                for raw_tweet in raw_tweets:
+                    tweet = self._parse_tweet(raw_tweet)
+                    tweets.append(tweet)
+
+                # Record success in health monitor
+                if self._current_username:
+                    self.health_monitor.record_success(self._current_username)
+
+                console.print(f"[green]Fetched {len(tweets)} tweets from Following[/green]")
+                break  # Success, exit retry loop
+
+            except Exception as e:
+                should_retry = await self._handle_error_with_retry(e, retry_count, "Following feed")
+                if not should_retry:
+                    break
+                retry_count += 1
 
         return self._filter_by_time(tweets)
 
@@ -200,23 +297,35 @@ class TwitterCrawler:
             await self.init_accounts()
 
         tweets = []
-        try:
-            # Add delay before API call
-            await _rate_limit_delay()
+        retry_count = 0
 
-            # Get user ID first
-            user = await self.api.user_by_login(username)
-            if not user:
-                console.print(f"[yellow]User not found: {username}[/yellow]")
-                return tweets
+        while retry_count <= self.config.retry.max_retries:
+            try:
+                # Add delay before API call
+                await self._rate_limit_delay()
 
-            await _rate_limit_delay()
-            raw_tweets = await gather(self.api.user_tweets(user.id, limit=limit))
-            for raw_tweet in raw_tweets:
-                tweet = self._parse_tweet(raw_tweet)
-                tweets.append(tweet)
-        except Exception as e:
-            console.print(f"[red]Error fetching tweets for @{username}: {e}[/red]")
+                # Get user ID first
+                user = await self.api.user_by_login(username)
+                if not user:
+                    console.print(f"[yellow]User not found: {username}[/yellow]")
+                    return tweets
+
+                await self._rate_limit_delay()
+                raw_tweets = await gather(self.api.user_tweets(user.id, limit=limit))
+                for raw_tweet in raw_tweets:
+                    tweet = self._parse_tweet(raw_tweet)
+                    tweets.append(tweet)
+
+                # Record success
+                if self._current_username:
+                    self.health_monitor.record_success(self._current_username)
+                break
+
+            except Exception as e:
+                should_retry = await self._handle_error_with_retry(e, retry_count, f"user @{username}")
+                if not should_retry:
+                    break
+                retry_count += 1
 
         return self._filter_by_time(tweets)
 
@@ -246,16 +355,96 @@ class TwitterCrawler:
             await self.init_accounts()
 
         tweets = []
-        try:
-            # Add delay before API call
-            await _rate_limit_delay()
+        retry_count = 0
 
-            raw_tweets = await gather(self.api.search(query, limit=limit))
-            for raw_tweet in raw_tweets:
-                tweet = self._parse_tweet(raw_tweet)
-                tweets.append(tweet)
-            console.print(f"[green]Found {len(tweets)} tweets for query: {query}[/green]")
-        except Exception as e:
-            console.print(f"[red]Error searching tweets: {e}[/red]")
+        while retry_count <= self.config.retry.max_retries:
+            try:
+                # Add delay before API call
+                await self._rate_limit_delay()
+
+                raw_tweets = await gather(self.api.search(query, limit=limit))
+                for raw_tweet in raw_tweets:
+                    tweet = self._parse_tweet(raw_tweet)
+                    tweets.append(tweet)
+
+                # Record success
+                if self._current_username:
+                    self.health_monitor.record_success(self._current_username)
+
+                console.print(f"[green]Found {len(tweets)} tweets for query: {query}[/green]")
+                break
+
+            except Exception as e:
+                should_retry = await self._handle_error_with_retry(e, retry_count, f"search '{query}'")
+                if not should_retry:
+                    break
+                retry_count += 1
 
         return self._filter_by_time(tweets)
+
+    def get_health_status(self) -> dict | None:
+        """Get current account health status."""
+        if self._current_username:
+            return self.health_monitor.get_status_summary(self._current_username)
+        return None
+
+    async def enrich_with_thread(self, tweet: Tweet) -> Tweet:
+        """
+        Enrich a tweet with full thread content if it looks like a thread.
+
+        This method should be called after filtering to avoid unnecessary API calls.
+        Only call for tweets that will be researched.
+
+        Args:
+            tweet: The tweet to potentially enrich
+
+        Returns:
+            The same tweet, possibly with thread_content populated
+        """
+        from .thread_fetcher import is_likely_thread, fetch_thread
+
+        # Check if it looks like a thread
+        if not is_likely_thread(tweet.text):
+            return tweet
+
+        if not self.api:
+            await self.init_accounts()
+
+        console.print(f"[blue]Detected thread pattern, fetching full thread for {tweet.id}...[/blue]")
+
+        try:
+            await self._rate_limit_delay()
+
+            thread = await fetch_thread(
+                api=self.api,
+                tweet_id=int(tweet.id),
+                author_username=tweet.author,
+            )
+
+            if thread and thread.is_thread:
+                console.print(f"[green]Fetched thread with {thread.tweet_count} tweets[/green]")
+                # Create a new Tweet with thread_content
+                return Tweet(
+                    id=tweet.id,
+                    text=tweet.text,
+                    author=tweet.author,
+                    author_id=tweet.author_id,
+                    created_at=tweet.created_at,
+                    urls=tweet.urls,
+                    media_urls=tweet.media_urls,
+                    retweet_count=tweet.retweet_count,
+                    like_count=tweet.like_count,
+                    reply_count=tweet.reply_count,
+                    is_retweet=tweet.is_retweet,
+                    is_quote=tweet.is_quote,
+                    quoted_text=tweet.quoted_text,
+                    quoted_author=tweet.quoted_author,
+                    thread_content=thread.full_text,
+                )
+            else:
+                console.print(f"[dim]Not a thread or couldn't fetch[/dim]")
+
+        except Exception as e:
+            console.print(f"[yellow]Failed to fetch thread: {e}[/yellow]")
+
+        return tweet

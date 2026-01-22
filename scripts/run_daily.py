@@ -152,15 +152,20 @@ async def main(
 
         console.print(f"\n[cyan][{i+1}/{len(valuable_tweets)}] Researching: {filtered.initial_summary[:60]}...[/cyan]")
 
+        # Enrich with thread content if this looks like a thread
+        tweet = await crawler.enrich_with_thread(tweet)
+
         # Perform research with retry
+        # Use full_content which includes thread content if available
         result = await research_agent.research_with_retry(
             tweet_id=tweet.id,
-            tweet_text=tweet.text,
+            tweet_text=tweet.full_content,  # Includes thread if fetched
             author=tweet.author,
             category=filtered.category.value,
             topic=filtered.topic.value,
             urls=tweet.urls,
             initial_summary=filtered.initial_summary,
+            tweet_url=tweet.tweet_url,
             max_retries=2,
         )
 

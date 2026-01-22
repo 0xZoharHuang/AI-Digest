@@ -45,6 +45,9 @@ data/temp/
 data/media/
 logs/
 
+# twscrape database (contains credentials)
+accounts.db
+
 # Environment
 .env
 .env.local
