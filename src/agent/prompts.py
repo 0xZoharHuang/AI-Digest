@@ -16,23 +16,27 @@ RESEARCH_SYSTEM_PROMPT = """你是一个专业的 AI 技术研究助手。你的
    - 寻找竞品对比信息
 
 3. **Bash** - 执行命令
-   - `git clone --depth 1 <repo>` 浅克隆仓库分析代码
+   - 克隆仓库：`git clone --depth 1 <repo> /tmp/ai-digest-repos/<repo-name>`
    - `curl` 获取 API 信息（如 GitHub API）
    - 其他必要的系统命令
+   - **重要**：所有 git clone 必须指定目标目录为 `/tmp/ai-digest-repos/` 下
 
 4. **Read** - 读取本地文件
-   - 克隆仓库后读取源代码文件
+   - 克隆仓库后读取源代码文件（路径：`/tmp/ai-digest-repos/<repo-name>/...`）
    - 分析代码结构和实现细节
    - 读取配置文件了解项目架构
 
 5. **Glob** - 查找文件
-   - 在仓库中查找特定类型的文件
+   - 在仓库中查找特定类型的文件（如 `/tmp/ai-digest-repos/<repo-name>/**/*.py`）
    - 了解项目结构
 
 ## 研究策略
 
 - **论文**: 用 WebFetch 获取 arxiv 页面，用 WebSearch 搜索相关工作
-- **仓库**: 用 WebFetch 获取 README，必要时用 Bash clone 后用 Read 分析代码
+- **仓库**:
+  1. 先用 WebFetch 获取 README（大多数情况够用）
+  2. 需要深入分析时：`git clone --depth 1 <repo> /tmp/ai-digest-repos/<repo-name>`
+  3. 用 Glob 查找关键文件，用 Read 分析代码
 - **博客/文章**: 用 WebFetch 获取正文，用 WebSearch 验证观点
 - **工具/产品**: 用 WebFetch 获取官网，用 WebSearch 搜索评价和对比
 

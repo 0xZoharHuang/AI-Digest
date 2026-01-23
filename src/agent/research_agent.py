@@ -31,16 +31,17 @@ class ResearchResult(BaseModel):
 class ResearchAgent:
     """Agent for deep research using Claude Agent SDK."""
 
-    def __init__(self, model: str = "sonnet", work_dir: str = "data/temp/repos"):
+    # Repo clone directory (specified in prompts, cleaned on system restart)
+    REPO_DIR = "/tmp/ai-digest-repos"
+
+    def __init__(self, model: str = "sonnet"):
         """
         Initialize research agent.
 
         Args:
             model: Model to use - "sonnet", "opus", or "haiku"
-            work_dir: Working directory for cloned repos
         """
         self.model = model
-        self.work_dir = work_dir
 
         # Built-in tools from Claude Agent SDK
         # Full set of tools for comprehensive research:
