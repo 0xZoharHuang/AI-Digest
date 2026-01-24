@@ -21,14 +21,17 @@ sys.path.insert(0, str(project_root))
 from rich.console import Console
 from rich.table import Table
 
-from src.crawler import TwitterCrawler, Tweet
+from src.crawler import PlaywrightCrawler, PlaywrightTweet
 from src.filter import TweetFilter, FilteredTweet
 from src.agent import ResearchAgent, ResearchResult
-from src.integrator import ReportGenerator
+from src.integrator import ReportGenerator, OverviewStats, FilteredItem
 from src.output import NotionSync, MarkdownExporter
 from src.storage import HistoryDB, ProgressTracker
 
 console = Console()
+
+# Alias for compatibility
+Tweet = PlaywrightTweet
 
 
 async def main(
@@ -43,7 +46,7 @@ async def main(
     # Initialize components
     db = HistoryDB()
     progress = ProgressTracker()
-    crawler = TwitterCrawler()
+    crawler = PlaywrightCrawler()
     tweet_filter = TweetFilter()
     research_agent = ResearchAgent(model="sonnet")
     report_generator = ReportGenerator()
@@ -55,8 +58,10 @@ async def main(
 
     # Check for resume
     valuable_tweets: list[FilteredTweet] = []
+    all_filtered_tweets: list[FilteredTweet] = []  # Track all filtered (for summary)
     completed_ids: set[str] = set()
     results: list[ResearchResult] = []
+    crawled_total: int = 0
 
     if resume:
         incomplete_runs = progress.list_incomplete_runs()
@@ -121,6 +126,8 @@ async def main(
         progress.save_progress(run_id, {"current_phase": "filter"})
 
         filtered_tweets = await tweet_filter.filter_tweets(new_tweets)
+        all_filtered_tweets = filtered_tweets  # Keep all for summary
+        crawled_total = len(all_tweets)
         valuable_tweets = tweet_filter.get_valuable_tweets(filtered_tweets)
 
         console.print(f"Found {len(valuable_tweets)} valuable tweets for research")
@@ -200,7 +207,39 @@ async def main(
     console.print("\n[blue]Step 6/7: Generating report...[/blue]")
     progress.save_progress(run_id, {"current_phase": "integrate"})
 
-    report = report_generator.generate_report(results)
+    # Calculate overview stats
+    researched_ids = {r.tweet_id for r in results}
+    valuable_not_researched = [
+        ft for ft in valuable_tweets
+        if ft.tweet.id not in researched_ids
+    ]
+
+    # Create FilteredItem objects for valuable tweets not researched
+    filtered_items = [
+        FilteredItem(
+            author=ft.tweet.author,
+            summary=ft.initial_summary,
+            topic=ft.topic.value,
+            category=ft.category.value,
+            tweet_url=ft.tweet.tweet_url,
+        )
+        for ft in valuable_not_researched
+    ]
+
+    # Build overview stats
+    overview = OverviewStats(
+        crawled_total=crawled_total,
+        valuable_count=len(valuable_tweets),
+        researched_count=len(results),
+        related_not_researched=len(valuable_not_researched),
+        filtered_out=crawled_total - len(valuable_tweets) if crawled_total > 0 else 0,
+    )
+
+    report = report_generator.generate_report(
+        results,
+        overview=overview,
+        filtered_items=filtered_items if filtered_items else None,
+    )
 
     # Step 7: Output
     console.print("\n[blue]Step 7/7: Exporting report...[/blue]")

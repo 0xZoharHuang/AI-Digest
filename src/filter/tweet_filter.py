@@ -10,7 +10,11 @@ from rich.console import Console
 
 from claude_agent_sdk import query, ClaudeAgentOptions, AssistantMessage, ResultMessage
 
-from src.crawler import Tweet
+from src.crawler import Tweet, PlaywrightTweet
+from typing import Union
+
+# Support both tweet types
+TweetType = Union[Tweet, PlaywrightTweet]
 
 console = Console()
 
@@ -50,12 +54,15 @@ class ResearchPriority(str, Enum):
 class FilteredTweet(BaseModel):
     """Tweet with filtering metadata."""
 
-    tweet: Tweet
+    tweet: TweetType  # Supports both Tweet and PlaywrightTweet
     is_valuable: bool
     category: ContentCategory
     topic: ContentTopic
     initial_summary: str
     research_priority: ResearchPriority
+
+    class Config:
+        arbitrary_types_allowed = True
 
 
 FILTER_PROMPT = """你是一个 AI 领域内容筛选专家。请分析以下推文，判断其是否值得深入研究。
@@ -91,7 +98,7 @@ class TweetFilter:
         self.model = model
         self.batch_size = 15  # Process 15 tweets at a time
 
-    def _prepare_tweets_for_prompt(self, tweets: list[Tweet]) -> str:
+    def _prepare_tweets_for_prompt(self, tweets: list[TweetType]) -> str:
         """Prepare tweets as JSON for the prompt."""
         tweet_data = []
         for tweet in tweets:
@@ -111,7 +118,7 @@ class TweetFilter:
         return json.dumps(tweet_data, ensure_ascii=False, indent=2)
 
     def _parse_filter_response(
-        self, response: str, tweets: list[Tweet]
+        self, response: str, tweets: list[TweetType]
     ) -> list[FilteredTweet]:
         """Parse LLM response into FilteredTweet objects."""
         # Clean response - remove markdown code blocks if present
@@ -178,7 +185,7 @@ class TweetFilter:
 
         return filtered_tweets
 
-    async def filter_batch(self, tweets: list[Tweet]) -> list[FilteredTweet]:
+    async def filter_batch(self, tweets: list[TweetType]) -> list[FilteredTweet]:
         """Filter a batch of tweets using Claude Agent SDK."""
         if not tweets:
             return []
@@ -223,7 +230,7 @@ class TweetFilter:
                 for tweet in tweets
             ]
 
-    async def filter_tweets(self, tweets: list[Tweet]) -> list[FilteredTweet]:
+    async def filter_tweets(self, tweets: list[TweetType]) -> list[FilteredTweet]:
         """Filter all tweets in batches."""
         console.print(f"[blue]Filtering {len(tweets)} tweets...[/blue]")
 

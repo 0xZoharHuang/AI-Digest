@@ -5,18 +5,17 @@
 ## 核心流程
 
 ```
-Twitter爬取 → LLM筛选(Haiku) → Agent研究(Sonnet) → Notion/Markdown输出
+Playwright爬取 → LLM筛选(Haiku) → Agent研究(Sonnet) → Notion/Markdown输出
 ```
 
 ## 功能特性
 
-- **数据采集**: twscrape 爬取 For You + Following Feed（默认 400 条/次）
+- **数据采集**: Playwright 爬取 For You + Following Feed（Cookie 登录态）
 - **智能筛选**: Claude Haiku 判断内容是否与 AI/ML 相关（~$0.04/批次）
 - **深度研究**: Claude Sonnet Agent 抓取链接、联网搜索、生成深度分析（~$0.48/条）
-- **线程支持**: 自动检测并获取完整 Twitter 线程内容
+- **完整汇总**: 深度研究报告 + 相关但未深研内容列表 + 统计概览
 - **报告输出**: 按主题聚类，同步到 Notion + 本地 Markdown
 - **断点续传**: 支持从中断处恢复
-- **风险控制**: 随机延迟、账号健康监控、指数退避
 
 ## 快速开始
 
@@ -25,10 +24,10 @@ Twitter爬取 → LLM筛选(Haiku) → Agent研究(Sonnet) → Notion/Markdown�
 git clone https://github.com/0xZoharHuang/AI-Digest.git
 cd AI-Digest
 pip install -e .
+playwright install chromium
 
-# 2. 配置 Twitter 账号
-cp config/twitter_accounts.example.json config/twitter_accounts.json
-# 编辑填入你的 Twitter 小号凭证
+# 2. 登录 Twitter（首次需要手动登录保存 Cookie）
+python scripts/setup_twitter_login.py
 
 # 3. 测试运行（限制 3 条，跳过 Notion）
 python scripts/run_daily.py --limit 3 --skip-notion
@@ -50,40 +49,32 @@ uv pip install -e .
 
 ## 配置
 
-### 1. Twitter 账号配置
+### 1. Twitter 登录（Playwright Cookie）
+
+系统使用 Playwright 浏览器自动化，需要先手动登录一次保存 Cookie：
 
 ```bash
-cp config/twitter_accounts.example.json config/twitter_accounts.json
+python scripts/setup_twitter_login.py
 ```
 
-编辑 `config/twitter_accounts.json`：
+这会打开浏览器让你登录 Twitter，登录成功后 Cookie 保存在 `config/twitter_cookies.json`（已加入 .gitignore）。
+
+**爬取配置** 在 `config/twitter_accounts.json`：
 
 ```json
 {
-    "accounts": [
-        {
-            "username": "your_username",
-            "password": "your_password",
-            "email": "your_email@example.com"
-        }
-    ],
-    "for_you_limit": 200,
-    "following_limit": 200,
-    "time_range_hours": 48,
+    "for_you_limit": 50,
+    "following_limit": 50,
     "delay": {
-        "min_seconds": 2.0,
-        "max_seconds": 7.0,
-        "page_delay_seconds": 15.0
+        "min_seconds": 1.0,
+        "max_seconds": 3.0
     }
 }
 ```
 
 **配置说明**：
 - `for_you_limit` / `following_limit`: 每个 Feed 爬取的推文数量
-- `time_range_hours`: 只处理最近 N 小时内的推文
-- `delay`: 请求延迟配置（降低封号风险）
-  - `min_seconds` / `max_seconds`: 请求间隔范围
-  - `page_delay_seconds`: 翻页额外延迟
+- `delay`: 滚动间隔（秒）
 
 **重要**: 建议使用专用小号，避免主力账号被封风险。
 
@@ -160,62 +151,32 @@ python scripts/run_daily.py --resume
 ```
 ai-digest/
 ├── src/
-│   ├── crawler/      # Twitter 数据采集 (twscrape)
+│   ├── crawler/      # Twitter 数据采集 (Playwright)
 │   ├── filter/       # LLM 筛选 (Claude Haiku)
 │   ├── agent/        # 深度研究 (Claude Sonnet)
 │   ├── integrator/   # 报告聚合
 │   ├── output/       # Notion + Markdown 输出
 │   └── storage/      # SQLite 存储 + 进度追踪
 ├── scripts/
-│   └── run_daily.py  # 主运行脚本
+│   ├── run_daily.py          # 主运行脚本
+│   └── setup_twitter_login.py # Twitter 登录设置
 ├── config/           # 配置文件
 └── data/             # 数据目录
 ```
 
 ## 技术栈
 
-- **爬虫**: twscrape（Twitter 非官方 API）
-- **LLM**: Claude Agent SDK（Haiku + Sonnet）
+- **爬虫**: Playwright（浏览器自动化）
+- **LLM**: Claude Agent SDK（Haiku 筛选 + Sonnet 研究）
 - **存储**: SQLite
 - **输出**: Notion API + Markdown
 
-## 线程处理
-
-系统自动检测并获取完整的 Twitter 线程（作者连续回复自己的推文）：
-
-**检测模式**：
-- 包含 🧵 符号
-- 包含 "thread"、"1/N" 等标记
-- 提到 "分享 N 个技巧/策略" 等
-
-**工作原理**：
-1. Crawler 层检测线程模式
-2. 使用 `conversation_id` 获取同一对话中作者的所有推文
-3. 合并为完整内容传给 Agent 进行研究
-
-## 风险控制
-
-系统内置多层风险控制机制：
-
-| 机制 | 说明 |
-|------|------|
-| **随机延迟** | 2-7 秒 + 高斯抖动，模拟人类行为 |
-| **账号健康监控** | 追踪错误率，计算风险分数 (0-100) |
-| **指数退避** | 遇到限流时逐步增加等待时间 |
-| **错误分类** | 自动识别验证码、限流、封号等信号 |
-
-**风险等级**：
-- 0-30: 安全
-- 31-60: 低风险
-- 61-80: 中风险（建议冷却）
-- 81-100: 高风险（停止使用）
-
 ## 注意事项
 
-1. **封号风险**: twscrape 使用非官方 API，有封号风险。建议使用专用小号。
-2. **成本控制**: 可通过 `--limit` 参数控制研究数量。
+1. **封号风险**: Playwright 模拟浏览器行为，有一定封号风险。建议使用专用小号。
+2. **成本控制**: 可通过 `--limit` 参数控制深度研究数量。
 3. **断点续传**: 每条研究完成后自动保存进度，中断后可用 `--resume` 恢复。
-4. **VPN 建议**: 建议使用稳定的 VPN 或代理，避免 IP 被封。
+4. **Cookie 过期**: 如果爬取失败，重新运行 `setup_twitter_login.py` 刷新 Cookie。
 
 ## License
 

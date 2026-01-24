@@ -1,17 +1,16 @@
-"""Data collection module using twscrape."""
+"""Data collection module using Playwright."""
 
 from .account_health import AccountHealthMonitor, ErrorType, RiskLevel
-from .thread_fetcher import fetch_thread, is_likely_thread, maybe_fetch_thread, ThreadContent
-from .twitter_crawler import TwitterCrawler, Tweet
+from .playwright_crawler import PlaywrightCrawler, PlaywrightTweet
+
+# Alias for compatibility
+Tweet = PlaywrightTweet
 
 __all__ = [
-    "TwitterCrawler",
+    "PlaywrightCrawler",
+    "PlaywrightTweet",
     "Tweet",
     "AccountHealthMonitor",
     "ErrorType",
     "RiskLevel",
-    "fetch_thread",
-    "is_likely_thread",
-    "maybe_fetch_thread",
-    "ThreadContent",
 ]

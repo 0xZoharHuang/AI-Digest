@@ -11,12 +11,40 @@ from src.agent import ResearchResult
 console = Console()
 
 
+class FilteredItem(BaseModel):
+    """Summary of a filtered but not researched tweet."""
+
+    author: str
+    summary: str
+    topic: str
+    category: str
+    tweet_url: str
+
+
 class TopicSection(BaseModel):
     """A section of the report grouped by topic."""
 
     topic: str
     topic_emoji: str
     items: list[ResearchResult]
+
+
+class FilteredSection(BaseModel):
+    """Section for filtered but not researched items."""
+
+    topic: str
+    topic_emoji: str
+    items: list[FilteredItem]
+
+
+class OverviewStats(BaseModel):
+    """Statistics overview for the report."""
+
+    crawled_total: int = 0
+    valuable_count: int = 0
+    researched_count: int = 0
+    related_not_researched: int = 0
+    filtered_out: int = 0
 
 
 class DailyReport(BaseModel):
@@ -28,6 +56,9 @@ class DailyReport(BaseModel):
     total_items: int
     successful_items: int
     failed_items: int
+    # New fields for filtering summary
+    overview: Optional[OverviewStats] = None
+    filtered_sections: list[FilteredSection] = []
 
 
 # Topic to emoji mapping
@@ -53,6 +84,8 @@ class ReportGenerator:
         self,
         results: list[ResearchResult],
         date: Optional[str] = None,
+        overview: Optional[OverviewStats] = None,
+        filtered_items: Optional[list[FilteredItem]] = None,
     ) -> DailyReport:
         """
         Generate a daily report from research results.
@@ -60,6 +93,8 @@ class ReportGenerator:
         Args:
             results: List of research results
             date: Report date (defaults to today)
+            overview: Statistics overview
+            filtered_items: Items that were filtered but not researched
 
         Returns:
             DailyReport with organized sections
@@ -92,6 +127,26 @@ class ReportGenerator:
                     )
                 )
 
+        # Group filtered items by topic
+        filtered_sections = []
+        if filtered_items:
+            filtered_groups: dict[str, list[FilteredItem]] = {}
+            for item in filtered_items:
+                topic = item.topic if item.topic in self.topic_order else "其他"
+                if topic not in filtered_groups:
+                    filtered_groups[topic] = []
+                filtered_groups[topic].append(item)
+
+            for topic in self.topic_order:
+                if topic in filtered_groups:
+                    filtered_sections.append(
+                        FilteredSection(
+                            topic=topic,
+                            topic_emoji=TOPIC_EMOJIS.get(topic, "📝"),
+                            items=filtered_groups[topic],
+                        )
+                    )
+
         # Count stats
         successful = sum(1 for r in results if r.success)
         failed = len(results) - successful
@@ -103,6 +158,8 @@ class ReportGenerator:
             total_items=len(results),
             successful_items=successful,
             failed_items=failed,
+            overview=overview,
+            filtered_sections=filtered_sections,
         )
 
         console.print(
@@ -127,18 +184,35 @@ class ReportGenerator:
         # Header
         lines.append(f"# 📅 {report.title}")
         lines.append("")
-        lines.append(
-            f"> 共 {report.total_items} 条内容 | "
-            f"✅ {report.successful_items} 成功 | "
-            f"❌ {report.failed_items} 失败"
-        )
-        lines.append("")
+
+        # Overview stats table (if available)
+        if report.overview:
+            lines.append("## 📊 今日概览")
+            lines.append("")
+            lines.append("| 类别 | 数量 |")
+            lines.append("|------|------|")
+            lines.append(f"| 爬取总数 | {report.overview.crawled_total} |")
+            lines.append(f"| 有价值内容 | {report.overview.valuable_count} |")
+            lines.append(f"| 深度研究 | {report.overview.researched_count} |")
+            if report.overview.related_not_researched > 0:
+                lines.append(f"| 相关未深研 | {report.overview.related_not_researched} |")
+            lines.append(f"| 无关/过滤 | {report.overview.filtered_out} |")
+            lines.append("")
+        else:
+            lines.append(
+                f"> 共 {report.total_items} 条内容 | "
+                f"✅ {report.successful_items} 成功 | "
+                f"❌ {report.failed_items} 失败"
+            )
+            lines.append("")
 
         # Table of contents
         lines.append("## 目录")
         lines.append("")
         for section in report.sections:
             lines.append(f"- [{section.topic_emoji} {section.topic}](#{section.topic.lower().replace(' ', '-')}) ({len(section.items)})")
+        if report.filtered_sections:
+            lines.append(f"- [📝 相关但未深研](#相关但未深研) ({sum(len(s.items) for s in report.filtered_sections)})")
         lines.append("")
 
         # Sections
@@ -166,6 +240,20 @@ class ReportGenerator:
                     lines.append(f"⚠️ 研究失败: {item.error}")
                 lines.append("")
                 lines.append("---")
+                lines.append("")
+
+        # Filtered but not researched sections
+        if report.filtered_sections:
+            lines.append("## 📝 相关但未深研")
+            lines.append("")
+            lines.append("> 以下内容与 AI 相关但未进行深度研究，供快速浏览")
+            lines.append("")
+
+            for section in report.filtered_sections:
+                lines.append(f"### {section.topic_emoji} {section.topic} ({len(section.items)} 条)")
+                lines.append("")
+                for item in section.items:
+                    lines.append(f"- **@{item.author}**: {item.summary} [{item.category}]({item.tweet_url})")
                 lines.append("")
 
         return "\n".join(lines)
