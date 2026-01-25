@@ -10,9 +10,15 @@ Usage:
 
 import argparse
 import asyncio
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
+
+# Unset ANTHROPIC_API_KEY to use local Claude CLI (claude_agent_sdk)
+# In production, set ANTHROPIC_API_KEY to use API directly
+if "ANTHROPIC_API_KEY" in os.environ:
+    del os.environ["ANTHROPIC_API_KEY"]
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -23,7 +29,7 @@ from rich.table import Table
 
 from src.crawler import PlaywrightCrawler, PlaywrightTweet
 from src.filter import TweetFilter, FilteredTweet
-from src.agent import ResearchAgent, ResearchResult
+from src.agent import ResearchAgent, ResearchResult, SummaryAgent
 from src.integrator import ReportGenerator, OverviewStats, FilteredItem
 from src.output import NotionSync, MarkdownExporter
 from src.storage import HistoryDB, ProgressTracker
@@ -49,8 +55,13 @@ async def main(
     crawler = PlaywrightCrawler()
     tweet_filter = TweetFilter()
     research_agent = ResearchAgent(model="sonnet")
+    summary_agent = SummaryAgent(model="haiku")  # Use haiku for cost efficiency
     report_generator = ReportGenerator()
     markdown_exporter = MarkdownExporter()
+
+    # Concurrency control for research (2 concurrent)
+    RESEARCH_CONCURRENCY = 2
+    research_semaphore = asyncio.Semaphore(RESEARCH_CONCURRENCY)
 
     # Initialize database
     console.print("[blue]Step 1/7: Initializing database...[/blue]")
@@ -141,61 +152,97 @@ async def main(
         console.print(f"[yellow]Limiting to {limit} items (from {len(valuable_tweets)})[/yellow]")
         valuable_tweets = valuable_tweets[:limit]
 
-    # Step 5: Deep research (serial processing with progress tracking)
-    console.print(f"\n[blue]Step 5/7: Deep research ({len(valuable_tweets)} items)...[/blue]")
+    # Step 5: Deep research (concurrent processing with TLDR generation)
+    console.print(f"\n[blue]Step 5/7: Deep research ({len(valuable_tweets)} items, {RESEARCH_CONCURRENCY} concurrent)...[/blue]")
     progress.save_progress(run_id, {
         "current_phase": "research",
         "total_tweets": len(valuable_tweets),
         "processed_tweets": len(results),
     })
 
-    for i, filtered in enumerate(valuable_tweets):
-        tweet = filtered.tweet
+    # Filter out already completed items
+    pending_items = [
+        (i, filtered) for i, filtered in enumerate(valuable_tweets)
+        if filtered.tweet.id not in completed_ids
+    ]
 
-        # Skip if already completed
-        if tweet.id in completed_ids:
-            console.print(f"[dim]Skipping already processed: {tweet.id}[/dim]")
-            continue
+    if completed_ids:
+        console.print(f"[dim]Skipping {len(completed_ids)} already processed items[/dim]")
 
-        console.print(f"\n[cyan][{i+1}/{len(valuable_tweets)}] Researching: {filtered.initial_summary[:60]}...[/cyan]")
+    # Track completion progress
+    completed_count = len(results)
+    total_count = len(valuable_tweets)
+    results_lock = asyncio.Lock()
 
-        # Enrich with thread content if this looks like a thread
-        tweet = await crawler.enrich_with_thread(tweet)
+    async def research_item(index: int, filtered: FilteredTweet) -> ResearchResult | None:
+        """Research a single item with semaphore control."""
+        nonlocal completed_count
 
-        # Perform research with retry
-        # Use full_content which includes thread content if available
-        result = await research_agent.research_with_retry(
-            tweet_id=tweet.id,
-            tweet_text=tweet.full_content,  # Includes thread if fetched
-            author=tweet.author,
-            category=filtered.category.value,
-            topic=filtered.topic.value,
-            urls=tweet.urls,
-            initial_summary=filtered.initial_summary,
-            tweet_url=tweet.tweet_url,
-            max_retries=2,
-        )
+        async with research_semaphore:
+            tweet = filtered.tweet
+            console.print(f"\n[cyan][{index+1}/{total_count}] Researching: {filtered.initial_summary[:60]}...[/cyan]")
 
-        results.append(result)
+            # Enrich with thread content if this looks like a thread
+            enriched_tweet = await crawler.enrich_with_thread(tweet)
 
-        # Save progress immediately after each item
-        progress.save_result(run_id, tweet.id, result.model_dump())
-        progress.save_progress(run_id, {
-            "current_phase": "research",
-            "total_tweets": len(valuable_tweets),
-            "processed_tweets": len(results),
-            "current_tweet_id": tweet.id,
-        })
+            # Perform research with retry
+            result = await research_agent.research_with_retry(
+                tweet_id=enriched_tweet.id,
+                tweet_text=enriched_tweet.full_content,
+                author=enriched_tweet.author,
+                category=filtered.category.value,
+                topic=filtered.topic.value,
+                urls=enriched_tweet.urls,
+                initial_summary=filtered.initial_summary,
+                tweet_url=enriched_tweet.tweet_url,
+                max_retries=2,
+            )
 
-        # Mark as processed in database
-        await db.mark_processed(
-            tweet_id=tweet.id,
-            url=tweet.urls[0] if tweet.urls else None,
-            author=tweet.author,
-            category=filtered.category.value,
-            topic=filtered.topic.value,
-            title=result.title,
-        )
+            # Generate TLDR summary if research succeeded
+            if result.success and result.research_report:
+                console.print(f"[dim]Generating TLDR for: {result.title[:40]}...[/dim]")
+                tldr = await summary_agent.generate_tldr(
+                    title=result.title,
+                    research_report=result.research_report,
+                )
+                result.tldr = tldr
+
+            # Thread-safe update
+            async with results_lock:
+                completed_count += 1
+                console.print(f"[green]Completed {completed_count}/{total_count}: {result.title[:50]}[/green]")
+
+            # Save progress immediately after each item
+            progress.save_result(run_id, enriched_tweet.id, result.model_dump())
+            progress.save_progress(run_id, {
+                "current_phase": "research",
+                "total_tweets": total_count,
+                "processed_tweets": completed_count,
+                "current_tweet_id": enriched_tweet.id,
+            })
+
+            # Mark as processed in database
+            await db.mark_processed(
+                tweet_id=enriched_tweet.id,
+                url=enriched_tweet.urls[0] if enriched_tweet.urls else None,
+                author=enriched_tweet.author,
+                category=filtered.category.value,
+                topic=filtered.topic.value,
+                title=result.title,
+            )
+
+            return result
+
+    # Run concurrent research
+    tasks = [research_item(i, filtered) for i, filtered in pending_items]
+    concurrent_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Collect results (filter out exceptions)
+    for res in concurrent_results:
+        if isinstance(res, Exception):
+            console.print(f"[red]Research task failed: {res}[/red]")
+        elif res is not None:
+            results.append(res)
 
     console.print(f"\n[green]Research completed: {len(results)} items[/green]")
 
@@ -248,12 +295,13 @@ async def main(
     # Export to Markdown
     md_path = markdown_exporter.export(report)
 
-    # Sync to Notion
+    # Sync to Notion (hierarchical: summary page + child pages)
     notion_url = None
     if not skip_notion:
         try:
             notion_sync = NotionSync()
-            notion_url = await notion_sync.sync_report(report)
+            console.print("[blue]Creating hierarchical Notion report (summary + child pages)...[/blue]")
+            notion_url = await notion_sync.sync_report_hierarchical(report)
         except Exception as e:
             console.print(f"[yellow]Notion sync failed: {e}[/yellow]")
             console.print("[yellow]Report saved to local markdown only[/yellow]")

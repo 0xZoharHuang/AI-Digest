@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ai-digest</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/zoharhuang/.pyenv/versions/3.13.3/bin/python3</string>
+        <string>/Users/zoharhuang/Desktop/DEEP LEARNING/data-series/ai-digest/scripts/run_scheduler.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/zoharhuang/Desktop/DEEP LEARNING/data-series/ai-digest</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/zoharhuang/Desktop/DEEP LEARNING/data-series/ai-digest/logs/scheduler.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/zoharhuang/Desktop/DEEP LEARNING/data-series/ai-digest/logs/scheduler.error.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/zoharhuang/.pyenv/shims:/usr/local/bin:/usr/bin:/bin</string>
+        <key>PYENV_ROOT</key>
+        <string>/Users/zoharhuang/.pyenv</string>
+    </dict>
+</dict>
+</plist>

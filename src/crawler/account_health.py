@@ -1,8 +1,11 @@
 """Account health monitoring for Twitter crawling risk control."""
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
+from pathlib import Path
+from typing import Optional
 
 
 class RiskLevel(Enum):
@@ -190,6 +193,63 @@ class AccountHealthMonitor:
             "is_suspended": stats.is_suspended,
             "should_cooldown": self.should_cooldown(username),
         }
+
+    def save_state(self, filepath: str = "data/account_health.json") -> None:
+        """Save health state to file for persistence across restarts."""
+        state = {}
+        for username, stats in self.accounts.items():
+            error_counts_serialized = {
+                e.value: c for e, c in stats.error_counts.items()
+            }
+            state[username] = {
+                "total_requests": stats.total_requests,
+                "successful_requests": stats.successful_requests,
+                "failed_requests": stats.failed_requests,
+                "consecutive_errors": stats.consecutive_errors,
+                "error_counts": error_counts_serialized,
+                "last_request_time": stats.last_request_time.isoformat() if stats.last_request_time else None,
+                "last_error_time": stats.last_error_time.isoformat() if stats.last_error_time else None,
+                "is_suspended": stats.is_suspended,
+                "cooldown_until": stats.cooldown_until.isoformat() if stats.cooldown_until else None,
+            }
+
+        Path(filepath).parent.mkdir(parents=True, exist_ok=True)
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, ensure_ascii=False)
+
+    def load_state(self, filepath: str = "data/account_health.json") -> None:
+        """Load health state from file."""
+        path = Path(filepath)
+        if not path.exists():
+            return
+
+        with open(path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+
+        for username, data in state.items():
+            stats = self._get_or_create_stats(username)
+            stats.total_requests = data.get("total_requests", 0)
+            stats.successful_requests = data.get("successful_requests", 0)
+            stats.failed_requests = data.get("failed_requests", 0)
+            stats.consecutive_errors = data.get("consecutive_errors", 0)
+            stats.is_suspended = data.get("is_suspended", False)
+
+            # Restore error counts
+            error_counts_raw = data.get("error_counts", {})
+            for error_value, count in error_counts_raw.items():
+                try:
+                    error_type = ErrorType(error_value)
+                    stats.error_counts[error_type] = count
+                except ValueError:
+                    pass
+
+            # Restore timestamps
+            if data.get("last_request_time"):
+                stats.last_request_time = datetime.fromisoformat(data["last_request_time"])
+            if data.get("last_error_time"):
+                stats.last_error_time = datetime.fromisoformat(data["last_error_time"])
+            if data.get("cooldown_until"):
+                stats.cooldown_until = datetime.fromisoformat(data["cooldown_until"])
 
 
 def classify_error(error_message: str) -> ErrorType | None:

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import random
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +12,12 @@ from playwright.async_api import async_playwright, Browser, Page
 from pydantic import BaseModel
 from rich.console import Console
 
+from .account_health import (
+    AccountHealthMonitor,
+    ErrorType,
+    RiskLevel,
+    classify_error,
+)
 from .config import CrawlerConfig, load_config
 
 console = Console()
@@ -53,11 +60,17 @@ class PlaywrightCrawler:
     """Twitter crawler using Playwright for For You feed."""
 
     COOKIES_FILE = "config/twitter_cookies.json"
+    HEALTH_FILE = "data/account_health.json"
 
     def __init__(self, config: Optional[CrawlerConfig] = None):
         self.config = config or load_config()
         self.browser: Optional[Browser] = None
         self.page: Optional[Page] = None
+
+        # Account health monitoring
+        self.health_monitor = AccountHealthMonitor(decay_hours=24)
+        self.health_monitor.load_state(self.HEALTH_FILE)
+        self.current_username: str = ""  # Current account username
 
     async def _init_browser(self, headless: bool = True) -> None:
         """Initialize Playwright browser."""
@@ -131,10 +144,84 @@ class PlaywrightCrawler:
         """Check if we're logged in."""
         try:
             await self.page.goto("https://x.com/home", timeout=30000)
+
+            # Check for challenge/captcha page first
+            if await self._detect_challenge():
+                console.print("[yellow]Detected challenge page[/yellow]")
+                self.health_monitor.record_error(self.current_username, ErrorType.CAPTCHA)
+                self.health_monitor.save_state(self.HEALTH_FILE)
+                return False
+
             await self.page.wait_for_selector('[data-testid="tweet"]', timeout=15000)
+            self.health_monitor.record_success(self.current_username)
             return True
-        except Exception:
+        except Exception as e:
+            error_type = classify_error(str(e))
+            if error_type:
+                self.health_monitor.record_error(self.current_username, error_type)
+            else:
+                self.health_monitor.record_error(self.current_username, ErrorType.CONSECUTIVE_ERROR)
+            self.health_monitor.save_state(self.HEALTH_FILE)
             return False
+
+    async def _detect_challenge(self) -> bool:
+        """Detect if we're on a challenge/captcha page."""
+        challenge_indicators = [
+            'input[name="challenge_response"]',
+            '[data-testid="ocfEnterTextTextInput"]',
+            'iframe[title*="captcha"]',
+            'iframe[title*="recaptcha"]',
+        ]
+        for selector in challenge_indicators:
+            try:
+                element = await self.page.query_selector(selector)
+                if element:
+                    return True
+            except Exception:
+                pass
+
+        # Check page content for challenge keywords
+        try:
+            content = await self.page.content()
+            challenge_keywords = [
+                "verify your identity",
+                "unusual login activity",
+                "confirm your identity",
+                "suspicious activity",
+            ]
+            content_lower = content.lower()
+            for keyword in challenge_keywords:
+                if keyword in content_lower:
+                    return True
+        except Exception:
+            pass
+
+        return False
+
+    async def _adaptive_delay(self) -> None:
+        """Apply adaptive delay based on account risk level."""
+        risk_level = self.health_monitor.get_risk_level(self.current_username)
+        multiplier = self.config.adaptive_delay.risk_multipliers.get(
+            risk_level.value, 1.0
+        )
+
+        base_delay = random.uniform(
+            self.config.adaptive_delay.base_min_seconds,
+            self.config.adaptive_delay.base_max_seconds
+        )
+
+        # Apply risk multiplier
+        delay = base_delay * multiplier
+
+        # Add jitter (±30%)
+        jitter = delay * self.config.adaptive_delay.jitter_percent
+        final_delay = delay + random.uniform(-jitter, jitter)
+
+        # Ensure minimum delay
+        final_delay = max(1.0, final_delay)
+
+        console.print(f"[dim]Delay {final_delay:.1f}s (risk: {risk_level.value})[/dim]")
+        await asyncio.sleep(final_delay)
 
     def _extract_urls(self, text: str) -> list[str]:
         """Extract URLs from text."""
@@ -241,6 +328,23 @@ class PlaywrightCrawler:
             console.print("[red]No cookies found. Please run login_manual() first.[/red]")
             return []
 
+        # Extract username from cookies for health monitoring
+        if not self.current_username:
+            self.current_username = await self._get_username_from_page()
+
+        # Check risk level before proceeding
+        if self.health_monitor.should_cooldown(self.current_username):
+            risk_level = self.health_monitor.get_risk_level(self.current_username)
+            risk_score = self.health_monitor.get_risk_score(self.current_username)
+            console.print(f"[yellow]Account risk level: {risk_level.value} (score: {risk_score})[/yellow]")
+            console.print("[yellow]Account in cooldown period, skipping crawl[/yellow]")
+
+            # Set cooldown based on risk
+            cooldown_hours = {"medium": 2, "high": 6}.get(risk_level.value, 1)
+            self.health_monitor.set_cooldown(self.current_username, cooldown_hours)
+            self.health_monitor.save_state(self.HEALTH_FILE)
+            return []
+
         # Check if logged in
         console.print("[blue]Checking login status...[/blue]")
         if not await self._check_login():
@@ -248,6 +352,8 @@ class PlaywrightCrawler:
             return []
 
         console.print("[blue]Fetching For You feed...[/blue]")
+        status = self.health_monitor.get_status_summary(self.current_username)
+        console.print(f"[dim]Account health: risk={status['risk_level']}, score={status['risk_score']}[/dim]")
 
         all_tweets = []
         seen_ids = set()
@@ -256,7 +362,16 @@ class PlaywrightCrawler:
 
         while len(all_tweets) < limit and scroll_count < max_scrolls:
             # Extract tweets from current view
-            tweets_data = await self._extract_tweets_from_page()
+            try:
+                tweets_data = await self._extract_tweets_from_page()
+                if tweets_data:
+                    self.health_monitor.record_success(self.current_username)
+            except Exception as e:
+                error_type = classify_error(str(e))
+                if error_type:
+                    self.health_monitor.record_error(self.current_username, error_type)
+                console.print(f"[yellow]Error extracting tweets: {e}[/yellow]")
+                tweets_data = []
 
             for data in tweets_data:
                 if data['id'] not in seen_ids:
@@ -287,13 +402,37 @@ class PlaywrightCrawler:
             if len(all_tweets) >= limit:
                 break
 
-            # Scroll down
+            # Scroll down with adaptive delay
             await self.page.evaluate("window.scrollBy(0, 1000)")
-            await asyncio.sleep(self.config.delay.min_seconds)
+            await self._adaptive_delay()
             scroll_count += 1
+
+        # Save health state after crawling
+        self.health_monitor.save_state(self.HEALTH_FILE)
 
         console.print(f"[green]Fetched {len(all_tweets)} tweets from For You[/green]")
         return all_tweets[:limit]
+
+    async def _get_username_from_page(self) -> str:
+        """Extract current username from page or cookies."""
+        try:
+            # Try to get from profile link
+            username = await self.page.evaluate("""
+                () => {
+                    const profileLink = document.querySelector('a[data-testid="AppTabBar_Profile_Link"]');
+                    if (profileLink) {
+                        return profileLink.href.split('/').pop();
+                    }
+                    return '';
+                }
+            """)
+            if username:
+                return username
+        except Exception:
+            pass
+
+        # Fallback: use a default identifier
+        return "default_account"
 
     async def get_following_feed(self, limit: int = 50) -> list[PlaywrightTweet]:
         """Get tweets from Following feed."""
@@ -302,6 +441,11 @@ class PlaywrightCrawler:
 
         if not await self._load_cookies():
             console.print("[red]No cookies found.[/red]")
+            return []
+
+        # Check risk level before proceeding
+        if self.health_monitor.should_cooldown(self.current_username):
+            console.print("[yellow]Account in cooldown period, skipping Following feed[/yellow]")
             return []
 
         # Check if logged in (same as get_for_you_feed)
@@ -314,7 +458,7 @@ class PlaywrightCrawler:
 
         # Navigate to home first
         await self.page.goto("https://x.com/home", timeout=30000)
-        await asyncio.sleep(3)
+        await self._adaptive_delay()
 
         # Use JavaScript to find and click Following tab (CSS :has-text() not supported by wait_for_selector)
         clicked = await self.page.evaluate("""
@@ -331,7 +475,7 @@ class PlaywrightCrawler:
         """)
 
         if clicked:
-            await asyncio.sleep(3)
+            await self._adaptive_delay()
             console.print("[green]Switched to Following tab[/green]")
         else:
             console.print("[yellow]Could not find Following tab, staying on For You[/yellow]")
@@ -339,8 +483,13 @@ class PlaywrightCrawler:
         # Wait for tweets to load
         try:
             await self.page.wait_for_selector('[data-testid="tweet"]', timeout=10000)
-        except Exception:
+            self.health_monitor.record_success(self.current_username)
+        except Exception as e:
+            error_type = classify_error(str(e))
+            if error_type:
+                self.health_monitor.record_error(self.current_username, error_type)
             console.print("[yellow]No tweets found in Following feed[/yellow]")
+            self.health_monitor.save_state(self.HEALTH_FILE)
             return []
 
         all_tweets = []
@@ -349,7 +498,15 @@ class PlaywrightCrawler:
         max_scrolls = limit // 5 + 5
 
         while len(all_tweets) < limit and scroll_count < max_scrolls:
-            tweets_data = await self._extract_tweets_from_page()
+            try:
+                tweets_data = await self._extract_tweets_from_page()
+                if tweets_data:
+                    self.health_monitor.record_success(self.current_username)
+            except Exception as e:
+                error_type = classify_error(str(e))
+                if error_type:
+                    self.health_monitor.record_error(self.current_username, error_type)
+                tweets_data = []
 
             for data in tweets_data:
                 if data['id'] not in seen_ids:
@@ -380,8 +537,11 @@ class PlaywrightCrawler:
                 break
 
             await self.page.evaluate("window.scrollBy(0, 1000)")
-            await asyncio.sleep(self.config.delay.min_seconds)
+            await self._adaptive_delay()
             scroll_count += 1
+
+        # Save health state
+        self.health_monitor.save_state(self.HEALTH_FILE)
 
         console.print(f"[green]Fetched {len(all_tweets)} tweets from Following[/green]")
         return all_tweets[:limit]

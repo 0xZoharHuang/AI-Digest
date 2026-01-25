@@ -24,6 +24,24 @@ class DelayConfig(BaseModel):
     page_delay_seconds: float = 15.0  # Extra delay when paginating
 
 
+class AdaptiveDelayConfig(BaseModel):
+    """Adaptive delay configuration based on risk level."""
+
+    base_min_seconds: float = 2.0
+    base_max_seconds: float = 5.0
+
+    # Risk level multipliers
+    risk_multipliers: dict[str, float] = {
+        "safe": 1.0,      # 2-5s
+        "low": 1.5,       # 3-7.5s
+        "medium": 2.5,    # 5-12.5s
+        "high": 5.0,      # 10-25s
+    }
+
+    # Random jitter percentage (±30%)
+    jitter_percent: float = 0.3
+
+
 class RetryConfig(BaseModel):
     """Retry configuration with exponential backoff."""
 
@@ -40,6 +58,7 @@ class CrawlerConfig(BaseModel):
     following_limit: int = 200  # Number of tweets to fetch from Following
     time_range_hours: int = 48  # Only process tweets from last N hours
     delay: DelayConfig = DelayConfig()  # Request delay settings
+    adaptive_delay: AdaptiveDelayConfig = AdaptiveDelayConfig()  # Adaptive delay
     retry: RetryConfig = RetryConfig()  # Retry settings
 
 

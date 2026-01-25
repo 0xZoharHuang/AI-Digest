@@ -24,6 +24,7 @@ class ResearchResult(BaseModel):
     source_url: Optional[str] = None
     one_liner: str  # 一句话总结
     research_report: str  # 完整研究报告 (Markdown)
+    tldr: Optional[str] = None  # 精炼摘要 (2-3句话，用于摘要页展示)
     success: bool = True
     error: Optional[str] = None
 

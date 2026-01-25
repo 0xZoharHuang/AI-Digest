@@ -57,3 +57,4 @@ accounts.db
 .coverage
 htmlcov/
 data/reports/
+.mcp.json
