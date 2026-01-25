@@ -358,7 +358,9 @@ class PlaywrightCrawler:
         all_tweets = []
         seen_ids = set()
         scroll_count = 0
-        max_scrolls = limit // 5 + 5  # Estimate ~5 tweets per scroll
+        max_scrolls = (limit // 2) + 10  # More conservative: ~2 new tweets per scroll after dedup
+        consecutive_zero_additions = 0
+        MAX_CONSECUTIVE_ZERO = 3  # Stop after 3 scrolls with no new tweets
 
         while len(all_tweets) < limit and scroll_count < max_scrolls:
             # Extract tweets from current view
@@ -373,9 +375,11 @@ class PlaywrightCrawler:
                 console.print(f"[yellow]Error extracting tweets: {e}[/yellow]")
                 tweets_data = []
 
+            new_count = 0
             for data in tweets_data:
                 if data['id'] not in seen_ids:
                     seen_ids.add(data['id'])
+                    new_count += 1
 
                     # Parse datetime
                     try:
@@ -397,7 +401,16 @@ class PlaywrightCrawler:
                     )
                     all_tweets.append(tweet)
 
-            console.print(f"[dim]Collected {len(all_tweets)} tweets...[/dim]")
+            console.print(f"[dim]Collected {len(all_tweets)} tweets (new: {new_count})...[/dim]")
+
+            # Check for feed exhaustion
+            if new_count == 0:
+                consecutive_zero_additions += 1
+                if consecutive_zero_additions >= MAX_CONSECUTIVE_ZERO:
+                    console.print(f"[yellow]Feed exhausted after {scroll_count} scrolls[/yellow]")
+                    break
+            else:
+                consecutive_zero_additions = 0
 
             if len(all_tweets) >= limit:
                 break
@@ -495,7 +508,9 @@ class PlaywrightCrawler:
         all_tweets = []
         seen_ids = set()
         scroll_count = 0
-        max_scrolls = limit // 5 + 5
+        max_scrolls = (limit // 2) + 10  # More conservative: ~2 new tweets per scroll after dedup
+        consecutive_zero_additions = 0
+        MAX_CONSECUTIVE_ZERO = 3  # Stop after 3 scrolls with no new tweets
 
         while len(all_tweets) < limit and scroll_count < max_scrolls:
             try:
@@ -508,9 +523,11 @@ class PlaywrightCrawler:
                     self.health_monitor.record_error(self.current_username, error_type)
                 tweets_data = []
 
+            new_count = 0
             for data in tweets_data:
                 if data['id'] not in seen_ids:
                     seen_ids.add(data['id'])
+                    new_count += 1
 
                     try:
                         created_at = datetime.fromisoformat(data['datetime'].replace('Z', '+00:00'))
@@ -531,7 +548,16 @@ class PlaywrightCrawler:
                     )
                     all_tweets.append(tweet)
 
-            console.print(f"[dim]Collected {len(all_tweets)} tweets...[/dim]")
+            console.print(f"[dim]Collected {len(all_tweets)} tweets (new: {new_count})...[/dim]")
+
+            # Check for feed exhaustion
+            if new_count == 0:
+                consecutive_zero_additions += 1
+                if consecutive_zero_additions >= MAX_CONSECUTIVE_ZERO:
+                    console.print(f"[yellow]Feed exhausted after {scroll_count} scrolls[/yellow]")
+                    break
+            else:
+                consecutive_zero_additions = 0
 
             if len(all_tweets) >= limit:
                 break

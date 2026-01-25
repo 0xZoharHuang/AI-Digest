@@ -31,7 +31,7 @@ from src.crawler import PlaywrightCrawler, PlaywrightTweet
 from src.filter import TweetFilter, FilteredTweet
 from src.agent import ResearchAgent, ResearchResult, SummaryAgent
 from src.integrator import ReportGenerator, OverviewStats, FilteredItem
-from src.output import NotionSync, MarkdownExporter
+from src.output import NotionSync, MarkdownExporter, IncrementalNotionSyncer
 from src.storage import HistoryDB, ProgressTracker
 
 console = Console()
@@ -152,6 +152,18 @@ async def main(
         console.print(f"[yellow]Limiting to {limit} items (from {len(valuable_tweets)})[/yellow]")
         valuable_tweets = valuable_tweets[:limit]
 
+    # Initialize incremental Notion sync (before research starts)
+    incremental_syncer = None
+    report_date = datetime.now().strftime("%Y-%m-%d")
+    if not skip_notion:
+        try:
+            incremental_syncer = IncrementalNotionSyncer()
+            await incremental_syncer.init_summary_page(report_date)
+        except Exception as e:
+            console.print(f"[yellow]Failed to init incremental sync: {e}[/yellow]")
+            console.print("[yellow]Will fall back to batch sync at the end[/yellow]")
+            incremental_syncer = None
+
     # Step 5: Deep research (concurrent processing with TLDR generation)
     console.print(f"\n[blue]Step 5/7: Deep research ({len(valuable_tweets)} items, {RESEARCH_CONCURRENCY} concurrent)...[/blue]")
     progress.save_progress(run_id, {
@@ -206,6 +218,13 @@ async def main(
                     research_report=result.research_report,
                 )
                 result.tldr = tldr
+
+                # Incremental Notion sync: push immediately after research + TLDR
+                if incremental_syncer and incremental_syncer.is_initialized:
+                    await incremental_syncer.push_item(
+                        item=result,
+                        topic=filtered.topic.value,
+                    )
 
             # Thread-safe update
             async with results_lock:
@@ -295,16 +314,33 @@ async def main(
     # Export to Markdown
     md_path = markdown_exporter.export(report)
 
-    # Sync to Notion (hierarchical: summary page + child pages)
+    # Sync to Notion
     notion_url = None
     if not skip_notion:
-        try:
-            notion_sync = NotionSync()
-            console.print("[blue]Creating hierarchical Notion report (summary + child pages)...[/blue]")
-            notion_url = await notion_sync.sync_report_hierarchical(report)
-        except Exception as e:
-            console.print(f"[yellow]Notion sync failed: {e}[/yellow]")
-            console.print("[yellow]Report saved to local markdown only[/yellow]")
+        # If incremental sync was used, finalize it
+        if incremental_syncer and incremental_syncer.is_initialized:
+            try:
+                await incremental_syncer.finalize(
+                    total_items=report.total_items,
+                    successful_items=report.successful_items,
+                    failed_items=report.failed_items,
+                )
+                notion_url = incremental_syncer.summary_url
+                console.print(f"[green]Incremental sync finalized: {incremental_syncer.synced_count} items[/green]")
+            except Exception as e:
+                console.print(f"[yellow]Failed to finalize incremental sync: {e}[/yellow]")
+                # Fall back to batch sync
+                incremental_syncer = None
+
+        # Fall back to batch sync if incremental sync wasn't used or failed
+        if not incremental_syncer or not incremental_syncer.is_initialized:
+            try:
+                notion_sync = NotionSync()
+                console.print("[blue]Creating hierarchical Notion report (batch sync)...[/blue]")
+                notion_url = await notion_sync.sync_report_hierarchical(report)
+            except Exception as e:
+                console.print(f"[yellow]Notion sync failed: {e}[/yellow]")
+                console.print("[yellow]Report saved to local markdown only[/yellow]")
     else:
         console.print("[yellow]Skipping Notion sync as requested[/yellow]")
 
