@@ -7,6 +7,11 @@ from .tweet_filter import (
     ContentTopic,
     ResearchPriority,
 )
+from .tweet_grouper import (
+    TweetGroup,
+    group_tweets_by_topic,
+    get_group_stats,
+)
 
 __all__ = [
     "TweetFilter",
@@ -14,4 +19,7 @@ __all__ = [
     "ContentCategory",
     "ContentTopic",
     "ResearchPriority",
+    "TweetGroup",
+    "group_tweets_by_topic",
+    "get_group_stats",
 ]

@@ -166,6 +166,27 @@ SHARING_RESEARCH_PROMPT = """请分析这条 AI 相关分享。
 
 输出格式灵活，根据内容特点自由组织结构。使用 Markdown，中文输出。"""
 
+# Group research prompt (for multiple tweets)
+GROUP_RESEARCH_PROMPT = """请综合分析以下 {tweet_count} 条相关推文，它们都属于同一主题领域：{topic}
+
+{combined_tweets}
+
+相关链接：{urls}
+
+## 研究原则
+
+1. **整合分析**：这些推文可能讨论相关或互补的内容，找出共同主题和关键信息
+2. **综合提炼**：不要分开分析每条推文，而是综合所有信息产出一份统一的研究报告
+3. **聚焦核心**：提取最有价值的技术/产品/观点
+4. **用人话表达**：让读者不看原文也能理解核心内容
+
+## 输出要求
+
+- 输出一份综合研究报告（不是分开的多份）
+- 开头给出一个吸引人的标题（概括所有内容的主题）
+- 使用 Markdown 格式，中文输出
+- 如果推文涉及不同但相关的子话题，可以分节讨论"""
+
 # Mapping from category to prompt
 RESEARCH_PROMPTS = {
     "paper": PAPER_RESEARCH_PROMPT,
@@ -192,4 +213,19 @@ def get_research_prompt(
         author=author,
         tweet_url=tweet_url or "无",
         urls=", ".join(urls) if urls else "无链接",
+    )
+
+
+def get_group_research_prompt(
+    topic: str,
+    combined_tweets: str,
+    urls: list[str],
+    tweet_count: int,
+) -> str:
+    """Get research prompt for a group of tweets."""
+    return GROUP_RESEARCH_PROMPT.format(
+        topic=topic,
+        combined_tweets=combined_tweets,
+        urls=", ".join(urls) if urls else "无链接",
+        tweet_count=tweet_count,
     )

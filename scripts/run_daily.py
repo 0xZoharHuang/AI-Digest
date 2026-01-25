@@ -28,7 +28,7 @@ from rich.console import Console
 from rich.table import Table
 
 from src.crawler import PlaywrightCrawler, PlaywrightTweet
-from src.filter import TweetFilter, FilteredTweet
+from src.filter import TweetFilter, FilteredTweet, TweetGroup, group_tweets_by_topic, get_group_stats
 from src.agent import ResearchAgent, ResearchResult, SummaryAgent
 from src.integrator import ReportGenerator, OverviewStats, FilteredItem
 from src.output import NotionSync, MarkdownExporter, IncrementalNotionSyncer
@@ -149,8 +149,14 @@ async def main(
 
     # Apply limit if specified
     if limit and len(valuable_tweets) > limit:
-        console.print(f"[yellow]Limiting to {limit} items (from {len(valuable_tweets)})[/yellow]")
+        console.print(f"[yellow]Limiting to {limit} tweets (from {len(valuable_tweets)})[/yellow]")
         valuable_tweets = valuable_tweets[:limit]
+
+    # Group tweets by topic (2 tweets per group for batch research)
+    tweet_groups = group_tweets_by_topic(valuable_tweets, max_per_group=2)
+    group_stats = get_group_stats(tweet_groups)
+    console.print(f"[blue]Grouped into {group_stats['total_groups']} groups ({group_stats['total_tweets']} tweets)[/blue]")
+    console.print(f"[dim]By topic: {group_stats['by_topic']}[/dim]")
 
     # Initialize incremental Notion sync (before research starts)
     incremental_syncer = None
@@ -164,49 +170,60 @@ async def main(
             console.print("[yellow]Will fall back to batch sync at the end[/yellow]")
             incremental_syncer = None
 
-    # Step 5: Deep research (concurrent processing with TLDR generation)
-    console.print(f"\n[blue]Step 5/7: Deep research ({len(valuable_tweets)} items, {RESEARCH_CONCURRENCY} concurrent)...[/blue]")
+    # Step 5: Deep research (concurrent group processing)
+    # 2 concurrent agents × 2 tweets/group = 4 tweets processed in parallel
+    total_tweets_in_groups = sum(len(g.tweets) for g in tweet_groups)
+    console.print(f"\n[blue]Step 5/7: Deep research ({len(tweet_groups)} groups, {total_tweets_in_groups} tweets, {RESEARCH_CONCURRENCY} concurrent agents)...[/blue]")
     progress.save_progress(run_id, {
         "current_phase": "research",
-        "total_tweets": len(valuable_tweets),
-        "processed_tweets": len(results),
+        "total_groups": len(tweet_groups),
+        "total_tweets": total_tweets_in_groups,
+        "processed_groups": len(results),
     })
 
-    # Filter out already completed items
-    pending_items = [
-        (i, filtered) for i, filtered in enumerate(valuable_tweets)
-        if filtered.tweet.id not in completed_ids
-    ]
+    # Filter out already completed groups (by checking if all tweet IDs are completed)
+    pending_groups = []
+    for i, group in enumerate(tweet_groups):
+        all_completed = all(tid in completed_ids for tid in group.tweet_ids)
+        if not all_completed:
+            pending_groups.append((i, group))
 
     if completed_ids:
-        console.print(f"[dim]Skipping {len(completed_ids)} already processed items[/dim]")
+        console.print(f"[dim]Skipping {len(tweet_groups) - len(pending_groups)} already processed groups[/dim]")
 
     # Track completion progress
     completed_count = len(results)
-    total_count = len(valuable_tweets)
+    total_count = len(tweet_groups)
     results_lock = asyncio.Lock()
 
-    async def research_item(index: int, filtered: FilteredTweet) -> ResearchResult | None:
-        """Research a single item with semaphore control."""
+    async def research_group_item(index: int, group: TweetGroup) -> ResearchResult | None:
+        """Research a group of tweets with semaphore control."""
         nonlocal completed_count
 
         async with research_semaphore:
-            tweet = filtered.tweet
-            console.print(f"\n[cyan][{index+1}/{total_count}] Researching: {filtered.initial_summary[:60]}...[/cyan]")
+            tweet_count = len(group.tweets)
+            console.print(f"\n[cyan][{index+1}/{total_count}] Researching group ({tweet_count} tweets): {group.combined_summary[:60]}...[/cyan]")
 
-            # Enrich with thread content if this looks like a thread
-            enriched_tweet = await crawler.enrich_with_thread(tweet)
+            # Enrich tweets with thread content
+            enriched_texts = []
+            all_urls = []
+            for ft in group.tweets:
+                enriched = await crawler.enrich_with_thread(ft.tweet)
+                enriched_texts.append(f"[推文] @{enriched.author}:\n{enriched.full_content}")
+                all_urls.extend(enriched.urls)
 
-            # Perform research with retry
-            result = await research_agent.research_with_retry(
-                tweet_id=enriched_tweet.id,
-                tweet_text=enriched_tweet.full_content,
-                author=enriched_tweet.author,
-                category=filtered.category.value,
-                topic=filtered.topic.value,
-                urls=enriched_tweet.urls,
-                initial_summary=filtered.initial_summary,
-                tweet_url=enriched_tweet.tweet_url,
+            combined_text = "\n\n---\n\n".join(enriched_texts)
+            unique_urls = list(dict.fromkeys(all_urls))  # Preserve order, remove dups
+
+            # Perform group research with retry
+            result = await research_agent.research_group_with_retry(
+                group_id=group.group_id,
+                topic=group.topic.value,
+                combined_tweets=combined_text,
+                urls=unique_urls,
+                combined_summary=group.combined_summary,
+                tweet_ids=group.tweet_ids,
+                primary_author=group.primary_tweet.tweet.author,
                 max_retries=2,
             )
 
@@ -223,37 +240,40 @@ async def main(
                 if incremental_syncer and incremental_syncer.is_initialized:
                     await incremental_syncer.push_item(
                         item=result,
-                        topic=filtered.topic.value,
+                        topic=group.topic.value,
                     )
 
             # Thread-safe update
             async with results_lock:
                 completed_count += 1
-                console.print(f"[green]Completed {completed_count}/{total_count}: {result.title[:50]}[/green]")
+                console.print(f"[green]Completed {completed_count}/{total_count}: {result.title[:50]} ({tweet_count} tweets)[/green]")
 
-            # Save progress immediately after each item
-            progress.save_result(run_id, enriched_tweet.id, result.model_dump())
+            # Save progress for each tweet in the group
+            for tid in group.tweet_ids:
+                progress.save_result(run_id, tid, result.model_dump())
+
             progress.save_progress(run_id, {
                 "current_phase": "research",
-                "total_tweets": total_count,
-                "processed_tweets": completed_count,
-                "current_tweet_id": enriched_tweet.id,
+                "total_groups": total_count,
+                "processed_groups": completed_count,
+                "current_group_id": group.group_id,
             })
 
-            # Mark as processed in database
-            await db.mark_processed(
-                tweet_id=enriched_tweet.id,
-                url=enriched_tweet.urls[0] if enriched_tweet.urls else None,
-                author=enriched_tweet.author,
-                category=filtered.category.value,
-                topic=filtered.topic.value,
-                title=result.title,
-            )
+            # Mark all tweets in group as processed
+            for ft in group.tweets:
+                await db.mark_processed(
+                    tweet_id=ft.tweet.id,
+                    url=ft.tweet.urls[0] if ft.tweet.urls else None,
+                    author=ft.tweet.author,
+                    category=ft.category.value,
+                    topic=ft.topic.value,
+                    title=result.title,
+                )
 
             return result
 
-    # Run concurrent research
-    tasks = [research_item(i, filtered) for i, filtered in pending_items]
+    # Run concurrent group research
+    tasks = [research_group_item(i, group) for i, group in pending_groups]
     concurrent_results = await asyncio.gather(*tasks, return_exceptions=True)
 
     # Collect results (filter out exceptions)
@@ -274,7 +294,12 @@ async def main(
     progress.save_progress(run_id, {"current_phase": "integrate"})
 
     # Calculate overview stats
-    researched_ids = {r.tweet_id for r in results}
+    # For groups, tweet_id may be comma-separated (multiple IDs)
+    researched_ids = set()
+    for r in results:
+        for tid in r.tweet_id.split(","):
+            researched_ids.add(tid.strip())
+
     valuable_not_researched = [
         ft for ft in valuable_tweets
         if ft.tweet.id not in researched_ids

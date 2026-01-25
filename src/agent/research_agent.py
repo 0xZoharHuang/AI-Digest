@@ -8,7 +8,7 @@ from rich.console import Console
 
 from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage, AssistantMessage
 
-from .prompts import get_research_prompt, RESEARCH_SYSTEM_PROMPT
+from .prompts import get_research_prompt, get_group_research_prompt, RESEARCH_SYSTEM_PROMPT
 
 console = Console()
 
@@ -168,6 +168,137 @@ class ResearchAgent:
 
         # Fallback to initial_summary
         return fallback[:50]
+
+    async def research_group(
+        self,
+        group_id: str,
+        topic: str,
+        combined_tweets: str,
+        urls: list[str],
+        combined_summary: str,
+        tweet_ids: list[str],
+        primary_author: str,
+    ) -> ResearchResult:
+        """
+        Research a group of tweets together.
+
+        Args:
+            group_id: Unique group identifier
+            topic: Content topic (LLM, Agent, etc.)
+            combined_tweets: Combined text from all tweets
+            urls: All URLs from all tweets
+            combined_summary: Combined initial summaries
+            tweet_ids: List of tweet IDs in this group
+            primary_author: Author of the first tweet
+
+        Returns:
+            ResearchResult with the combined research report
+        """
+        console.print(f"[blue]Researching group ({len(tweet_ids)} tweets): {combined_summary[:50]}...[/blue]")
+
+        prompt = get_group_research_prompt(
+            topic=topic,
+            combined_tweets=combined_tweets,
+            urls=urls,
+            tweet_count=len(tweet_ids),
+        )
+
+        try:
+            result_text = ""
+            async for message in query(
+                prompt=prompt,
+                options=ClaudeAgentOptions(
+                    system_prompt=RESEARCH_SYSTEM_PROMPT,
+                    allowed_tools=self.allowed_tools,
+                    permission_mode="bypassPermissions",
+                    model=self.model,
+                    max_turns=50,
+                )
+            ):
+                if isinstance(message, AssistantMessage):
+                    if hasattr(message, "content"):
+                        for block in message.content:
+                            if hasattr(block, "text"):
+                                result_text = block.text
+                elif isinstance(message, ResultMessage):
+                    if message.subtype == "success":
+                        console.print(f"[green]Group research completed. Cost: ${message.total_cost_usd:.4f}[/green]")
+                    else:
+                        console.print(f"[yellow]Group research ended: {message.subtype}[/yellow]")
+
+            title = self._extract_title(result_text, combined_summary)
+
+            return ResearchResult(
+                tweet_id=",".join(tweet_ids),  # Comma-separated for groups
+                category="group",
+                topic=topic,
+                title=title,
+                author=primary_author,
+                source_url=urls[0] if urls else None,
+                one_liner=combined_summary,
+                research_report=result_text,
+                success=True,
+            )
+
+        except Exception as e:
+            console.print(f"[red]Group research failed: {e}[/red]")
+            return ResearchResult(
+                tweet_id=",".join(tweet_ids),
+                category="group",
+                topic=topic,
+                title=combined_summary[:50],
+                author=primary_author,
+                source_url=urls[0] if urls else None,
+                one_liner=combined_summary,
+                research_report=f"组研究失败: {str(e)}",
+                success=False,
+                error=str(e),
+            )
+
+    async def research_group_with_retry(
+        self,
+        group_id: str,
+        topic: str,
+        combined_tweets: str,
+        urls: list[str],
+        combined_summary: str,
+        tweet_ids: list[str],
+        primary_author: str,
+        max_retries: int = 2,
+    ) -> ResearchResult:
+        """Research group with retry on failure."""
+        last_error = None
+        for attempt in range(max_retries + 1):
+            if attempt > 0:
+                console.print(f"[yellow]Retry {attempt}/{max_retries}...[/yellow]")
+                await asyncio.sleep(2 ** attempt)
+
+            result = await self.research_group(
+                group_id=group_id,
+                topic=topic,
+                combined_tweets=combined_tweets,
+                urls=urls,
+                combined_summary=combined_summary,
+                tweet_ids=tweet_ids,
+                primary_author=primary_author,
+            )
+
+            if result.success:
+                return result
+            last_error = result.error
+
+        return ResearchResult(
+            tweet_id=",".join(tweet_ids),
+            category="group",
+            topic=topic,
+            title=combined_summary[:50],
+            author=primary_author,
+            source_url=urls[0] if urls else None,
+            one_liner=combined_summary,
+            research_report=f"组研究失败（重试 {max_retries} 次后）: {last_error}",
+            success=False,
+            error=last_error,
+        )
 
     async def research_with_retry(
         self,

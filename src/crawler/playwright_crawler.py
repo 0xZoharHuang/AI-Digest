@@ -312,7 +312,7 @@ class PlaywrightCrawler:
 
     async def get_for_you_feed(self, limit: int = 50) -> list[PlaywrightTweet]:
         """
-        Get tweets from For You feed.
+        Get tweets from For You feed with refresh retry.
 
         Args:
             limit: Maximum number of tweets to fetch
@@ -357,68 +357,86 @@ class PlaywrightCrawler:
 
         all_tweets = []
         seen_ids = set()
-        scroll_count = 0
-        max_scrolls = (limit // 2) + 10  # More conservative: ~2 new tweets per scroll after dedup
-        consecutive_zero_additions = 0
-        MAX_CONSECUTIVE_ZERO = 3  # Stop after 3 scrolls with no new tweets
+        refresh_count = 0
+        MAX_REFRESHES = 3  # Maximum page refreshes to get more content
 
-        while len(all_tweets) < limit and scroll_count < max_scrolls:
-            # Extract tweets from current view
-            try:
-                tweets_data = await self._extract_tweets_from_page()
-                if tweets_data:
-                    self.health_monitor.record_success(self.current_username)
-            except Exception as e:
-                error_type = classify_error(str(e))
-                if error_type:
-                    self.health_monitor.record_error(self.current_username, error_type)
-                console.print(f"[yellow]Error extracting tweets: {e}[/yellow]")
-                tweets_data = []
+        while len(all_tweets) < limit and refresh_count <= MAX_REFRESHES:
+            scroll_count = 0
+            max_scrolls = (limit // 2) + 10
+            consecutive_zero_additions = 0
+            MAX_CONSECUTIVE_ZERO = 3
 
-            new_count = 0
-            for data in tweets_data:
-                if data['id'] not in seen_ids:
-                    seen_ids.add(data['id'])
-                    new_count += 1
+            while len(all_tweets) < limit and scroll_count < max_scrolls:
+                # Extract tweets from current view
+                try:
+                    tweets_data = await self._extract_tweets_from_page()
+                    if tweets_data:
+                        self.health_monitor.record_success(self.current_username)
+                except Exception as e:
+                    error_type = classify_error(str(e))
+                    if error_type:
+                        self.health_monitor.record_error(self.current_username, error_type)
+                    console.print(f"[yellow]Error extracting tweets: {e}[/yellow]")
+                    tweets_data = []
 
-                    # Parse datetime
-                    try:
-                        created_at = datetime.fromisoformat(data['datetime'].replace('Z', '+00:00'))
-                    except (ValueError, AttributeError):
-                        created_at = datetime.now(timezone.utc)
+                new_count = 0
+                for data in tweets_data:
+                    if data['id'] not in seen_ids:
+                        seen_ids.add(data['id'])
+                        new_count += 1
 
-                    tweet = PlaywrightTweet(
-                        id=data['id'],
-                        text=data['text'],
-                        author=data['author'],
-                        created_at=created_at,
-                        urls=self._extract_urls(data['text']),
-                        media_urls=data.get('mediaUrls', []),
-                        reply_count=self._parse_count(data.get('replyCount', '0')),
-                        retweet_count=self._parse_count(data.get('retweetCount', '0')),
-                        like_count=self._parse_count(data.get('likeCount', '0')),
-                        is_retweet=data.get('isRetweet', False),
-                    )
-                    all_tweets.append(tweet)
+                        # Parse datetime
+                        try:
+                            created_at = datetime.fromisoformat(data['datetime'].replace('Z', '+00:00'))
+                        except (ValueError, AttributeError):
+                            created_at = datetime.now(timezone.utc)
 
-            console.print(f"[dim]Collected {len(all_tweets)} tweets (new: {new_count})...[/dim]")
+                        tweet = PlaywrightTweet(
+                            id=data['id'],
+                            text=data['text'],
+                            author=data['author'],
+                            created_at=created_at,
+                            urls=self._extract_urls(data['text']),
+                            media_urls=data.get('mediaUrls', []),
+                            reply_count=self._parse_count(data.get('replyCount', '0')),
+                            retweet_count=self._parse_count(data.get('retweetCount', '0')),
+                            like_count=self._parse_count(data.get('likeCount', '0')),
+                            is_retweet=data.get('isRetweet', False),
+                        )
+                        all_tweets.append(tweet)
 
-            # Check for feed exhaustion
-            if new_count == 0:
-                consecutive_zero_additions += 1
-                if consecutive_zero_additions >= MAX_CONSECUTIVE_ZERO:
-                    console.print(f"[yellow]Feed exhausted after {scroll_count} scrolls[/yellow]")
+                console.print(f"[dim]Collected {len(all_tweets)} tweets (new: {new_count})...[/dim]")
+
+                # Check for feed exhaustion
+                if new_count == 0:
+                    consecutive_zero_additions += 1
+                    if consecutive_zero_additions >= MAX_CONSECUTIVE_ZERO:
+                        console.print(f"[yellow]Feed exhausted after {scroll_count} scrolls[/yellow]")
+                        break
+                else:
+                    consecutive_zero_additions = 0
+
+                if len(all_tweets) >= limit:
+                    break
+
+                # Scroll down with adaptive delay
+                await self.page.evaluate("window.scrollBy(0, 1000)")
+                await self._adaptive_delay()
+                scroll_count += 1
+
+            # Check if we need to refresh for more content
+            if len(all_tweets) < limit and refresh_count < MAX_REFRESHES:
+                refresh_count += 1
+                console.print(f"[blue]Refreshing page for more content (attempt {refresh_count}/{MAX_REFRESHES})...[/blue]")
+                await self.page.reload()
+                await asyncio.sleep(3)
+                try:
+                    await self.page.wait_for_selector('[data-testid="tweet"]', timeout=10000)
+                except Exception:
+                    console.print("[yellow]No tweets after refresh, stopping[/yellow]")
                     break
             else:
-                consecutive_zero_additions = 0
-
-            if len(all_tweets) >= limit:
                 break
-
-            # Scroll down with adaptive delay
-            await self.page.evaluate("window.scrollBy(0, 1000)")
-            await self._adaptive_delay()
-            scroll_count += 1
 
         # Save health state after crawling
         self.health_monitor.save_state(self.HEALTH_FILE)
