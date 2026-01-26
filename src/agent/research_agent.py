@@ -1,7 +1,8 @@
 """Deep research agent using Claude Agent SDK."""
 
 import asyncio
-from typing import Optional
+import json
+from typing import Optional, Any
 
 from pydantic import BaseModel
 from rich.console import Console
@@ -11,6 +12,49 @@ from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage, Assistant
 from .prompts import get_research_prompt, get_group_research_prompt, RESEARCH_SYSTEM_PROMPT
 
 console = Console()
+
+
+# Structured Output Schema for research results
+# This schema enforces key fields while keeping flexibility for different content types
+RESEARCH_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {
+            "type": "string",
+            "description": "高信息量标题，格式：主体 + 创新点/矛盾点/对比点。例：'Claude Code 悖论：代码交付加速，技术理解减速'",
+        },
+        "sources": {
+            "type": "array",
+            "description": "引用的信息来源（URL 或描述）",
+            "items": {"type": "string"},
+        },
+        "content_type": {
+            "type": "string",
+            "description": "内容类型：paper/repo/blog/tool/sharing",
+        },
+        "background": {
+            "type": "string",
+            "description": "背景信息：作者/团队、领域定位、历史背景（可选）",
+        },
+        "comparison": {
+            "type": "string",
+            "description": "竞品/替代方案对比：现有方案、优劣势分析（可选）",
+        },
+        "insights": {
+            "type": "string",
+            "description": "核心洞察：本质问题、创新点、实际价值（可选）",
+        },
+        "limitations": {
+            "type": "string",
+            "description": "局限性和适用边界（可选）",
+        },
+        "report": {
+            "type": "string",
+            "description": "完整研究报告（Markdown 格式）",
+        },
+    },
+    "required": ["title", "sources", "report"],
+}
 
 
 class ResearchResult(BaseModel):
@@ -25,6 +69,7 @@ class ResearchResult(BaseModel):
     one_liner: str  # 一句话总结
     research_report: str  # 完整研究报告 (Markdown)
     tldr: Optional[str] = None  # 精炼摘要 (2-3句话，用于摘要页展示)
+    sources: Optional[list[str]] = None  # 引用的信息来源
     success: bool = True
     error: Optional[str] = None
 
@@ -94,6 +139,8 @@ class ResearchAgent:
         try:
             # Use Claude Agent SDK's query function
             result_text = ""
+            structured_output: dict[str, Any] | None = None
+
             async for message in query(
                 prompt=prompt,
                 options=ClaudeAgentOptions(
@@ -102,6 +149,10 @@ class ResearchAgent:
                     permission_mode="bypassPermissions",
                     model=self.model,
                     max_turns=50,  # Allow enough turns for thorough research
+                    output_format={
+                        "type": "json_schema",
+                        "schema": RESEARCH_OUTPUT_SCHEMA,
+                    },
                 )
             ):
                 # Collect assistant messages for the final report
@@ -114,11 +165,16 @@ class ResearchAgent:
                     # Final result
                     if message.subtype == "success":
                         console.print(f"[green]Research completed. Cost: ${message.total_cost_usd:.4f}[/green]")
+                        # Get structured output from ResultMessage
+                        if hasattr(message, "structured_output") and message.structured_output:
+                            structured_output = message.structured_output
                     else:
                         console.print(f"[yellow]Research ended: {message.subtype}[/yellow]")
 
-            # Extract title from the report (first heading or first line)
-            title = self._extract_title(result_text, initial_summary)
+            # Extract data from structured output or fall back to text parsing
+            title, report, sources = self._parse_research_output(
+                structured_output, result_text, initial_summary
+            )
 
             return ResearchResult(
                 tweet_id=tweet_id,
@@ -128,7 +184,8 @@ class ResearchAgent:
                 author=author,
                 source_url=urls[0] if urls else None,
                 one_liner=initial_summary,
-                research_report=result_text,
+                research_report=report,
+                sources=sources,
                 success=True,
             )
 
@@ -147,27 +204,73 @@ class ResearchAgent:
                 error=str(e),
             )
 
+    # Low-quality title patterns to filter out
+    BAD_TITLE_PATTERNS = [
+        "核心内容", "核心观点", "背景调查", "总结", "概述", "分析", "研究",
+        "一、", "二、", "三、", "1.", "2.", "3.", "##",
+    ]
+
+    def _parse_research_output(
+        self,
+        structured_output: dict[str, Any] | None,
+        fallback_text: str,
+        fallback_summary: str,
+    ) -> tuple[str, str, list[str] | None]:
+        """
+        Parse research output from structured output or fallback to text.
+
+        Returns:
+            tuple of (title, report, sources)
+        """
+        if structured_output:
+            # Use structured output fields
+            title = structured_output.get("title", "")
+            report = structured_output.get("report", fallback_text)
+            sources = structured_output.get("sources", [])
+
+            # Validate title quality
+            if not title or not self._is_valid_title(title):
+                title = self._extract_title(report, fallback_summary)
+
+            console.print(f"[dim]Structured output: title='{title[:40]}...', sources={len(sources)}[/dim]")
+            return title, report, sources if sources else None
+
+        # Fallback to text parsing
+        title = self._extract_title(fallback_text, fallback_summary)
+        return title, fallback_text, None
+
     def _extract_title(self, report: str, fallback: str) -> str:
-        """Extract title from research report (Markdown heading only)."""
+        """Extract and validate title from research report (Markdown heading)."""
         lines = report.strip().split("\n")
 
-        # First pass: look for H1 heading (# Title)
-        for line in lines:
+        # First pass: look for H1 heading (# Title) in first 15 lines
+        for line in lines[:15]:
             line = line.strip()
             if line.startswith("# ") and not line.startswith("##"):
-                # Remove emoji if present at the start
                 title = line[2:].strip()
-                return title[:100]
+                if self._is_valid_title(title):
+                    return title[:120]
 
         # Second pass: look for H2 heading (## Title)
-        for line in lines:
+        for line in lines[:15]:
             line = line.strip()
             if line.startswith("## "):
                 title = line[3:].strip()
-                return title[:100]
+                if self._is_valid_title(title):
+                    return title[:120]
 
         # Fallback to initial_summary
-        return fallback[:50]
+        return fallback[:80]
+
+    def _is_valid_title(self, title: str) -> bool:
+        """Check if title has enough information value."""
+        if len(title) < 8:
+            return False
+        # Check against bad patterns
+        for bad in self.BAD_TITLE_PATTERNS:
+            if title.startswith(bad) or title == bad:
+                return False
+        return True
 
     async def research_group(
         self,
@@ -205,6 +308,8 @@ class ResearchAgent:
 
         try:
             result_text = ""
+            structured_output: dict[str, Any] | None = None
+
             async for message in query(
                 prompt=prompt,
                 options=ClaudeAgentOptions(
@@ -213,6 +318,10 @@ class ResearchAgent:
                     permission_mode="bypassPermissions",
                     model=self.model,
                     max_turns=50,
+                    output_format={
+                        "type": "json_schema",
+                        "schema": RESEARCH_OUTPUT_SCHEMA,
+                    },
                 )
             ):
                 if isinstance(message, AssistantMessage):
@@ -223,10 +332,16 @@ class ResearchAgent:
                 elif isinstance(message, ResultMessage):
                     if message.subtype == "success":
                         console.print(f"[green]Group research completed. Cost: ${message.total_cost_usd:.4f}[/green]")
+                        # Get structured output from ResultMessage
+                        if hasattr(message, "structured_output") and message.structured_output:
+                            structured_output = message.structured_output
                     else:
                         console.print(f"[yellow]Group research ended: {message.subtype}[/yellow]")
 
-            title = self._extract_title(result_text, combined_summary)
+            # Extract data from structured output or fall back to text parsing
+            title, report, sources = self._parse_research_output(
+                structured_output, result_text, combined_summary
+            )
 
             return ResearchResult(
                 tweet_id=",".join(tweet_ids),  # Comma-separated for groups
@@ -236,7 +351,8 @@ class ResearchAgent:
                 author=primary_author,
                 source_url=urls[0] if urls else None,
                 one_liner=combined_summary,
-                research_report=result_text,
+                research_report=report,
+                sources=sources,
                 success=True,
             )
 

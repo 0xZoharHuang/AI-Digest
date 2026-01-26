@@ -363,8 +363,86 @@ class ReportGenerator:
 
         return blocks
 
+    def _parse_inline_formatting(self, text: str) -> list[dict]:
+        """Parse inline Markdown formatting to Notion rich_text.
+
+        Supports: **bold**, *italic*, `code`, [link](url)
+        """
+        import re
+
+        rich_text = []
+        # Pattern matches: **bold**, *italic*, `code`, [text](url)
+        # Order matters: ** must come before * to avoid conflicts
+        pattern = r'(\*\*(.+?)\*\*|\*([^*]+?)\*|`([^`]+?)`|\[([^\]]+?)\]\(([^)]+?)\))'
+
+        last_end = 0
+        for match in re.finditer(pattern, text):
+            # Add text before the match
+            if match.start() > last_end:
+                plain_text = text[last_end:match.start()]
+                if plain_text:
+                    rich_text.append({
+                        "type": "text",
+                        "text": {"content": plain_text}
+                    })
+
+            full_match = match.group(0)
+            if full_match.startswith("**"):
+                # Bold: **text**
+                content = match.group(2)
+                if content:
+                    rich_text.append({
+                        "type": "text",
+                        "text": {"content": content},
+                        "annotations": {"bold": True}
+                    })
+            elif full_match.startswith("*"):
+                # Italic: *text*
+                content = match.group(3)
+                if content:
+                    rich_text.append({
+                        "type": "text",
+                        "text": {"content": content},
+                        "annotations": {"italic": True}
+                    })
+            elif full_match.startswith("`"):
+                # Inline code: `code`
+                content = match.group(4)
+                if content:
+                    rich_text.append({
+                        "type": "text",
+                        "text": {"content": content},
+                        "annotations": {"code": True}
+                    })
+            elif full_match.startswith("["):
+                # Link: [text](url)
+                link_text = match.group(5)
+                link_url = match.group(6)
+                if link_text and link_url:
+                    rich_text.append({
+                        "type": "text",
+                        "text": {"content": link_text, "link": {"url": link_url}}
+                    })
+
+            last_end = match.end()
+
+        # Add remaining text after last match
+        if last_end < len(text):
+            remaining = text[last_end:]
+            if remaining:
+                rich_text.append({
+                    "type": "text",
+                    "text": {"content": remaining}
+                })
+
+        # If no formatting found, return plain text
+        if not rich_text:
+            return [{"type": "text", "text": {"content": text}}]
+
+        return rich_text
+
     def _markdown_to_notion_blocks(self, markdown: str) -> list[dict]:
-        """Convert markdown text to Notion blocks (simplified)."""
+        """Convert markdown text to Notion blocks with inline formatting support."""
         blocks = []
         lines = markdown.split("\n")
         i = 0
@@ -378,55 +456,62 @@ class ReportGenerator:
 
             # Heading 2
             if line.startswith("## "):
+                content = line[3:][:100]
                 blocks.append({
                     "type": "heading_3",  # Use h3 since we're nested
                     "heading_3": {
-                        "rich_text": [{"type": "text", "text": {"content": line[3:][:100]}}]
+                        "rich_text": self._parse_inline_formatting(content)
                     }
                 })
             # Heading 3
             elif line.startswith("### "):
+                content = line[4:][:2000]
+                # For h3, make it bold paragraph with inline formatting
+                rich_text = self._parse_inline_formatting(content)
+                # Add bold annotation to all items
+                for item in rich_text:
+                    if "annotations" not in item:
+                        item["annotations"] = {}
+                    item["annotations"]["bold"] = True
                 blocks.append({
                     "type": "paragraph",
-                    "paragraph": {
-                        "rich_text": [{
-                            "type": "text",
-                            "text": {"content": line[4:][:2000]},
-                            "annotations": {"bold": True}
-                        }]
-                    }
+                    "paragraph": {"rich_text": rich_text}
                 })
             # Bullet point
             elif line.startswith("- "):
+                content = line[2:][:2000]
                 blocks.append({
                     "type": "bulleted_list_item",
                     "bulleted_list_item": {
-                        "rich_text": [{"type": "text", "text": {"content": line[2:][:2000]}}]
+                        "rich_text": self._parse_inline_formatting(content)
                     }
                 })
             # Numbered list
             elif line and line[0].isdigit() and ". " in line:
                 content = line.split(". ", 1)[1] if ". " in line else line
+                content = content[:2000]
                 blocks.append({
                     "type": "numbered_list_item",
                     "numbered_list_item": {
-                        "rich_text": [{"type": "text", "text": {"content": content[:2000]}}]
+                        "rich_text": self._parse_inline_formatting(content)
                     }
                 })
             # Quote
             elif line.startswith("> "):
+                content = line[2:][:2000]
                 blocks.append({
                     "type": "quote",
                     "quote": {
-                        "rich_text": [{"type": "text", "text": {"content": line[2:][:2000]}}]
+                        "rich_text": self._parse_inline_formatting(content)
                     }
                 })
             # Regular paragraph
             else:
+                content = line[:2000]
                 blocks.append({
                     "type": "paragraph",
                     "paragraph": {
-                        "rich_text": [{"type": "text", "text": {"content": line[:2000]}}]
+                        "rich_text": self._parse_inline_formatting(content)
                     }
                 })
 
