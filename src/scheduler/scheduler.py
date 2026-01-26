@@ -99,16 +99,64 @@ class DigestScheduler:
             console.print(f"[yellow]Health check failed: {e}[/yellow]")
 
     async def _cleanup_old_data(self) -> None:
-        """Clean up old data from database."""
+        """Clean up old data from database, repo cache, and temp files."""
         console.print(f"[blue]Weekly cleanup: {datetime.now()}[/blue]")
 
         try:
+            # 1. Database cleanup (existing)
             from src.storage.history_db import HistoryDB
 
             db = HistoryDB()
             await db.init_db()
             deleted = await db.clear_old_records(days=30)
-            console.print(f"[green]Cleaned up {deleted} old records[/green]")
+            console.print(f"[green]Cleaned up {deleted} old database records[/green]")
+
+            # 2. Repo cache cleanup (NEW)
+            from pathlib import Path
+            import shutil
+
+            repo_dir = Path("/tmp/ai-digest-repos")
+            if repo_dir.exists():
+                repo_count = 0
+                for repo in repo_dir.iterdir():
+                    if repo.is_dir():
+                        try:
+                            shutil.rmtree(repo)
+                            repo_count += 1
+                        except Exception as e:
+                            console.print(f"[yellow]Failed to remove {repo.name}: {e}[/yellow]")
+                console.print(f"[green]Cleaned up {repo_count} repositories from cache[/green]")
+
+            # 3. Old progress files cleanup (NEW)
+            from src.storage import ProgressTracker
+            import time
+
+            progress = ProgressTracker()
+            now = time.time()
+            cleaned_progress = 0
+            cleaned_results = 0
+
+            # Remove progress files older than 7 days
+            for f in progress.temp_dir.glob("progress_*.json"):
+                if (now - f.stat().st_mtime) > 7 * 24 * 3600:
+                    try:
+                        f.unlink()
+                        cleaned_progress += 1
+                    except Exception as e:
+                        console.print(f"[yellow]Failed to remove {f.name}: {e}[/yellow]")
+
+            # Remove results files older than 7 days
+            for f in progress.temp_dir.glob("results_*.json"):
+                if (now - f.stat().st_mtime) > 7 * 24 * 3600:
+                    try:
+                        f.unlink()
+                        cleaned_results += 1
+                    except Exception as e:
+                        console.print(f"[yellow]Failed to remove {f.name}: {e}[/yellow]")
+
+            if cleaned_progress > 0 or cleaned_results > 0:
+                console.print(f"[green]Cleaned up {cleaned_progress} progress files and {cleaned_results} result files[/green]")
+
         except Exception as e:
             console.print(f"[yellow]Cleanup failed: {e}[/yellow]")
 

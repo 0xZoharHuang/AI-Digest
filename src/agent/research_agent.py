@@ -176,7 +176,7 @@ class ResearchAgent:
                 structured_output, result_text, initial_summary
             )
 
-            return ResearchResult(
+            result = ResearchResult(
                 tweet_id=tweet_id,
                 category=category,
                 topic=topic,
@@ -189,8 +189,17 @@ class ResearchAgent:
                 success=True,
             )
 
+            # Clean up old repos after successful research
+            await self._cleanup_research_artifacts()
+
+            return result
+
         except Exception as e:
             console.print(f"[red]Research failed: {e}[/red]")
+
+            # Clean up even on failure
+            await self._cleanup_research_artifacts()
+
             return ResearchResult(
                 tweet_id=tweet_id,
                 category=category,
@@ -343,7 +352,7 @@ class ResearchAgent:
                 structured_output, result_text, combined_summary
             )
 
-            return ResearchResult(
+            result = ResearchResult(
                 tweet_id=",".join(tweet_ids),  # Comma-separated for groups
                 category="group",
                 topic=topic,
@@ -356,8 +365,17 @@ class ResearchAgent:
                 success=True,
             )
 
+            # Clean up old repos after successful research
+            await self._cleanup_research_artifacts()
+
+            return result
+
         except Exception as e:
             console.print(f"[red]Group research failed: {e}[/red]")
+
+            # Clean up even on failure
+            await self._cleanup_research_artifacts()
+
             return ResearchResult(
                 tweet_id=",".join(tweet_ids),
                 category="group",
@@ -463,3 +481,36 @@ class ResearchAgent:
             success=False,
             error=last_error,
         )
+
+    async def _cleanup_research_artifacts(self) -> None:
+        """Clean up old repositories using LRU strategy.
+
+        Keeps only the most recent 5 repositories to prevent disk space issues.
+        This method is called after each research or research_group completion.
+        """
+        import shutil
+        from pathlib import Path
+
+        repo_path = Path(self.REPO_DIR)
+        if not repo_path.exists():
+            return
+
+        try:
+            # Get all repos sorted by modification time (oldest first)
+            repos = sorted(
+                [p for p in repo_path.iterdir() if p.is_dir()],
+                key=lambda p: p.stat().st_mtime
+            )
+
+            # LRU: Keep only the most recent MAX_REPOS
+            MAX_REPOS = 5
+
+            if len(repos) > MAX_REPOS:
+                for repo in repos[:-MAX_REPOS]:
+                    try:
+                        shutil.rmtree(repo)
+                        console.print(f"[dim]Cleaned up old repo: {repo.name}[/dim]")
+                    except Exception as e:
+                        console.print(f"[yellow]Failed to clean {repo.name}: {e}[/yellow]")
+        except Exception as e:
+            console.print(f"[yellow]Cleanup failed: {e}[/yellow]")
