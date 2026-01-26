@@ -121,17 +121,15 @@ class PlaywrightCrawler:
             True if login successful
         """
         console.print("[yellow]Opening browser for manual login...[/yellow]")
-        console.print("[yellow]Please log in to Twitter, then press Enter here when done.[/yellow]")
+        console.print("[yellow]Please log in to Twitter within 3 minutes.[/yellow]")
 
         await self._init_browser(headless=False)
         await self.page.goto("https://x.com/login")
 
-        # Wait for user to login
-        input("\n>>> Press Enter after you've logged in to Twitter... ")
-
         # Check if logged in by looking for home timeline
         try:
-            await self.page.goto("https://x.com/home")
+            # Wait up to 3 minutes for user to complete login
+            await self.page.wait_for_url("**/home", timeout=180000)
             await self.page.wait_for_selector('[data-testid="tweet"]', timeout=10000)
             console.print("[green]Login successful![/green]")
             await self._save_cookies()
