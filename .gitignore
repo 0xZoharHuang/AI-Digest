@@ -43,6 +43,7 @@ config/*.json
 data/history.db
 data/temp/
 data/media/
+data/account_health.json
 logs/
 
 # twscrape database (contains credentials)
