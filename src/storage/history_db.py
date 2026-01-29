@@ -31,6 +31,7 @@ class HistoryDB:
     async def init_db(self) -> None:
         """Initialize database tables."""
         async with aiosqlite.connect(self.db_path) as db:
+            # Processed tweets table
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS processed_tweets (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,6 +54,28 @@ class HistoryDB:
             await db.execute("""
                 CREATE INDEX IF NOT EXISTS idx_processed_at ON processed_tweets(processed_at)
             """)
+
+            # Early-stage GitHub repos table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS early_repos (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    repo_id TEXT UNIQUE NOT NULL,
+                    full_name TEXT,
+                    url TEXT,
+                    stars INTEGER,
+                    innovation_score INTEGER,
+                    innovation_summary TEXT,
+                    discovered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    notion_page_id TEXT
+                )
+            """)
+            await db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_repo_id ON early_repos(repo_id)
+            """)
+            await db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_discovered_at ON early_repos(discovered_at)
+            """)
+
             await db.commit()
 
     async def is_processed(self, tweet_id: str) -> bool:
@@ -158,3 +181,82 @@ class HistoryDB:
             )
             await db.commit()
             return cursor.rowcount
+
+    # GitHub early repos tracking methods
+
+    async def is_repo_tracked(self, repo_id: str) -> bool:
+        """Check if a GitHub repo has been tracked."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT 1 FROM early_repos WHERE repo_id = ?", (repo_id,)
+            )
+            row = await cursor.fetchone()
+            return row is not None
+
+    async def mark_repo_tracked(
+        self,
+        repo_id: str,
+        full_name: str,
+        url: str,
+        stars: int,
+        innovation_score: int,
+        innovation_summary: str,
+        notion_page_id: Optional[str] = None,
+    ) -> None:
+        """Mark a GitHub repo as tracked."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT OR REPLACE INTO early_repos
+                (repo_id, full_name, url, stars, innovation_score, innovation_summary, notion_page_id, discovered_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    repo_id,
+                    full_name,
+                    url,
+                    stars,
+                    innovation_score,
+                    innovation_summary,
+                    notion_page_id,
+                    datetime.now().isoformat(),
+                ),
+            )
+            await db.commit()
+
+    async def update_repo_notion_page(self, repo_id: str, notion_page_id: str) -> None:
+        """Update the Notion page ID for a tracked repo."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE early_repos SET notion_page_id = ? WHERE repo_id = ?",
+                (notion_page_id, repo_id),
+            )
+            await db.commit()
+
+    async def get_recent_repos(self, days: int = 30) -> list[dict]:
+        """Get recently discovered repos."""
+        cutoff = datetime.now() - timedelta(days=days)
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT repo_id, full_name, url, stars, innovation_score, innovation_summary, discovered_at, notion_page_id
+                FROM early_repos
+                WHERE discovered_at > ?
+                ORDER BY discovered_at DESC
+                """,
+                (cutoff.isoformat(),),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def get_repo_count(self, days: int = 7) -> int:
+        """Get count of repos discovered in the last N days."""
+        cutoff = datetime.now() - timedelta(days=days)
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM early_repos WHERE discovered_at > ?",
+                (cutoff.isoformat(),),
+            )
+            row = await cursor.fetchone()
+            return row[0] if row else 0

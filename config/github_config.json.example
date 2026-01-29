@@ -1,0 +1,16 @@
+{
+  "github_token": "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "min_stars": 100,
+  "max_stars": 1000,
+  "target_count": 15,
+  "model": "sonnet",
+  "sync_to_notion": false,
+  "_comments": {
+    "github_token": "Get your GitHub Personal Access Token at: https://github.com/settings/tokens. Required permissions: repo (read), user (read)",
+    "min_stars": "Minimum star count for candidate repos",
+    "max_stars": "Maximum star count for candidate repos",
+    "target_count": "Target number of high-value projects to discover per run",
+    "model": "Claude model to use: sonnet (recommended), opus (expensive), or haiku (fast)",
+    "sync_to_notion": "Whether to automatically sync discoveries to Notion (requires github_database_id in notion_config.json)"
+  }
+}

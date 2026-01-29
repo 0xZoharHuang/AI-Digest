@@ -42,6 +42,16 @@ class DigestScheduler:
             replace_existing=True,
         )
 
+        # GitHub discovery every 3 days (Mon/Thu/Sun at 10:00 AM)
+        for day in ["mon", "thu", "sun"]:
+            self.scheduler.add_job(
+                self._run_github_discovery,
+                CronTrigger(day_of_week=day, hour=10, minute=0),
+                id=f"github_scan_{day}",
+                name=f"GitHub Discovery ({day.capitalize()})",
+                replace_existing=True,
+            )
+
         # Health check every 6 hours
         self.scheduler.add_job(
             self._check_account_health,
@@ -72,6 +82,22 @@ class DigestScheduler:
             console.print("[green]Daily digest completed successfully[/green]")
         except Exception as e:
             console.print(f"[red]Daily digest failed: {e}[/red]")
+            # Log error but don't crash the scheduler
+            import traceback
+            traceback.print_exc()
+
+    async def _run_github_discovery(self) -> None:
+        """Execute GitHub project discovery workflow."""
+        console.print(f"\n[cyan]{'='*60}[/cyan]")
+        console.print(f"[cyan]GitHub Discovery triggered: {datetime.now()}[/cyan]")
+        console.print(f"[cyan]{'='*60}[/cyan]\n")
+
+        try:
+            from scripts.run_github_discovery import main
+            await main()
+            console.print("[green]GitHub discovery completed successfully[/green]")
+        except Exception as e:
+            console.print(f"[red]GitHub discovery failed: {e}[/red]")
             # Log error but don't crash the scheduler
             import traceback
             traceback.print_exc()
@@ -111,7 +137,7 @@ class DigestScheduler:
             deleted = await db.clear_old_records(days=30)
             console.print(f"[green]Cleaned up {deleted} old database records[/green]")
 
-            # 2. Repo cache cleanup (NEW)
+            # 2. Repo cache cleanup
             from pathlib import Path
             import shutil
 
@@ -125,7 +151,8 @@ class DigestScheduler:
                             repo_count += 1
                         except Exception as e:
                             console.print(f"[yellow]Failed to remove {repo.name}: {e}[/yellow]")
-                console.print(f"[green]Cleaned up {repo_count} repositories from cache[/green]")
+                if repo_count > 0:
+                    console.print(f"[green]Cleaned up {repo_count} repositories from cache[/green]")
 
             # 3. Old progress files cleanup (NEW)
             from src.storage import ProgressTracker

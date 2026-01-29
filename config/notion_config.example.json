@@ -1,4 +1,5 @@
 {
     "token": "your_notion_integration_token",
-    "database_id": "your_database_id"
+    "database_id": "your_database_id",
+    "github_database_id": "your_github_discoveries_database_id"
 }
