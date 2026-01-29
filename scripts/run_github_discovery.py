@@ -7,9 +7,15 @@ This script uses an Agent to discover, evaluate, and deeply research
 
 import asyncio
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
+
+# Unset ANTHROPIC_API_KEY to use local Claude CLI (claude_agent_sdk)
+# In production, set ANTHROPIC_API_KEY to use API directly
+if "ANTHROPIC_API_KEY" in os.environ:
+    del os.environ["ANTHROPIC_API_KEY"]
 
 from rich.console import Console
 from rich.panel import Panel

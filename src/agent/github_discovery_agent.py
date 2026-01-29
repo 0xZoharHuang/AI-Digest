@@ -49,11 +49,11 @@ DISCOVERY_OUTPUT_SCHEMA = {
                     },
                     "code_quality": {
                         "type": "string",
-                        "description": "Code quality assessment (tests, docs, architecture)",
+                        "description": "Code quality assessment (tests, docs, architecture). Optional but recommended.",
                     },
                     "author_background": {
                         "type": "string",
-                        "description": "Author/team background and credibility",
+                        "description": "Author/team background and credibility. Optional but recommended.",
                     },
                     "research_report": {
                         "type": "string",
@@ -61,7 +61,7 @@ DISCOVERY_OUTPUT_SCHEMA = {
                     },
                     "recommendation": {
                         "type": "string",
-                        "description": "Why this project is valuable and worth tracking",
+                        "description": "Why this project is valuable and worth tracking. Optional but recommended.",
                     },
                 },
                 "required": [
@@ -231,10 +231,10 @@ class DiscoveryResult(BaseModel):
     stars: int
     innovation_score: int
     innovation_summary: str
-    code_quality: str
-    author_background: str
+    code_quality: str = ""
+    author_background: str = ""
     research_report: str
-    recommendation: str
+    recommendation: str = ""
 
 
 class DiscoverySummary(BaseModel):
