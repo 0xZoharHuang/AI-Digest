@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import tempfile
+from pathlib import Path
 from typing import Optional, Any
 
 from pydantic import BaseModel
@@ -78,7 +80,8 @@ class ResearchAgent:
     """Agent for deep research using Claude Agent SDK."""
 
     # Repo clone directory (specified in prompts, cleaned on system restart)
-    REPO_DIR = "/tmp/ai-digest-repos"
+    # Cross-platform: uses system temp directory
+    REPO_DIR = str(Path(tempfile.gettempdir()) / "ai-digest-repos")
 
     def __init__(self, model: str = "sonnet"):
         """

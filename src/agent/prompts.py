@@ -1,5 +1,11 @@
 """Research prompts for different content types."""
 
+import tempfile
+from pathlib import Path
+
+# Cross-platform temp directory for repo clones
+REPO_BASE_DIR = str(Path(tempfile.gettempdir()) / "ai-digest-repos")
+
 # Base system prompt for research agent
 RESEARCH_SYSTEM_PROMPT = """你是一个专业的 AI 技术研究助手。你的任务是对给定的内容进行深度研究和分析。
 
@@ -232,7 +238,7 @@ Twitter/X 上的深度分享常以「线程」形式发布（作者连续回复�
 线程特征：
 - 包含 🧵 符号
 - 包含 "thread"、"1/"、"1/n" 等标记
-- 提到"分享 N 个技巧/策略/要点"但正文不完整"""
+- 提到"分享 N 个技巧/策略/要点"但正文不完整""".replace("/tmp/ai-digest-repos", REPO_BASE_DIR)
 
 # Paper research prompt
 PAPER_RESEARCH_PROMPT = """请深度分析这篇 AI 论文。
