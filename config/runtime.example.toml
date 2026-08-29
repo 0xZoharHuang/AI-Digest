@@ -1,0 +1,28 @@
+timezone = "Asia/Shanghai"
+runtime_root = "~/Library/Application Support/ai-digest"
+shared_runtime_root = "/Users/Shared/ai-digest-runtime"
+daily_hour = 7
+late_start_cutoff = "07:20"
+window_hours = 24
+article_preview_chars = 4000
+x_text_retention_days = 30
+
+[codex]
+binary = "./node_modules/.bin/codex"
+router_model = "gpt-5.6-sol"
+router_reasoning = "high"
+research_model = "gpt-5.6-sol"
+research_reasoning = "xhigh"
+brief_model = "gpt-5.6-sol"
+brief_reasoning = "high"
+top_level_concurrency = 3
+subagent_threads = 4
+idle_timeout_seconds = 900
+
+[lark]
+binary = "./node_modules/.bin/lark-cli"
+space_id = ""
+receiver_open_id = ""
+wiki_name = "AI Intelligence Radar"
+wiki_base_url = "https://feishu.cn/wiki"
+identity = "user"

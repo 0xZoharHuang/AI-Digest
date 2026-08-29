@@ -1,6 +1,0 @@
-{
-    "token": "your_notion_integration_token",
-    "database_id": "your_database_id",
-    "github_database_id": "your_github_discoveries_database_id",
-    "openclaw_database_id": "your_openclaw_tracker_database_id"
-}
