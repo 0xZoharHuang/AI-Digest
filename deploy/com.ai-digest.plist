@@ -7,8 +7,10 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/zoharhuang/.pyenv/versions/3.13.3/bin/python3</string>
-        <string>/Users/zoharhuang/Desktop/DEEP LEARNING/data-series/ai-digest/scripts/run_scheduler.py</string>
+        <string>/Users/zoharhuang/.local/bin/uv</string>
+        <string>run</string>
+        <string>python</string>
+        <string>scripts/run_scheduler.py</string>
     </array>
 
     <key>WorkingDirectory</key>
@@ -29,9 +31,9 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/Users/zoharhuang/.pyenv/shims:/usr/local/bin:/usr/bin:/bin</string>
-        <key>PYENV_ROOT</key>
-        <string>/Users/zoharhuang/.pyenv</string>
+        <string>/Users/zoharhuang/.local/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/zoharhuang</string>
     </dict>
 </dict>
 </plist>

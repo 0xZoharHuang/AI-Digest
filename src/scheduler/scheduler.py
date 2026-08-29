@@ -42,13 +42,32 @@ class DigestScheduler:
             replace_existing=True,
         )
 
-        # GitHub discovery every 3 days (Mon/Thu/Sun at 10:00 AM)
+        # GitHub collection (Phase 1) every 3 days (Mon/Thu/Sun at 10:00 AM)
         for day in ["mon", "thu", "sun"]:
             self.scheduler.add_job(
-                self._run_github_discovery,
+                self._run_github_collect,
                 CronTrigger(day_of_week=day, hour=10, minute=0),
-                id=f"github_scan_{day}",
-                name=f"GitHub Discovery ({day.capitalize()})",
+                id=f"github_collect_{day}",
+                name=f"GitHub Collect ({day.capitalize()})",
+                replace_existing=True,
+            )
+
+        # GitHub discovery (Phase 2+3) daily at 10:30 AM
+        self.scheduler.add_job(
+            self._run_github_discovery,
+            CronTrigger(hour=10, minute=30),
+            id="github_discovery_daily",
+            name="GitHub Discovery (Daily)",
+            replace_existing=True,
+        )
+
+        # OpenClaw tracker every 2 days (Tue/Wed/Sat at 11:00 AM)
+        for day in ["tue", "wed", "sat"]:
+            self.scheduler.add_job(
+                self._run_openclaw_tracker,
+                CronTrigger(day_of_week=day, hour=11, minute=0),
+                id=f"openclaw_tracker_{day}",
+                name=f"OpenClaw Tracker ({day.capitalize()})",
                 replace_existing=True,
             )
 
@@ -86,8 +105,23 @@ class DigestScheduler:
             import traceback
             traceback.print_exc()
 
+    async def _run_github_collect(self) -> None:
+        """Execute GitHub collection (Phase 1) — collect candidates into pool."""
+        console.print(f"\n[cyan]{'='*60}[/cyan]")
+        console.print(f"[cyan]GitHub Collect triggered: {datetime.now()}[/cyan]")
+        console.print(f"[cyan]{'='*60}[/cyan]\n")
+
+        try:
+            from scripts.run_github_collect import main
+            await main()
+            console.print("[green]GitHub collection completed successfully[/green]")
+        except Exception as e:
+            console.print(f"[red]GitHub collection failed: {e}[/red]")
+            import traceback
+            traceback.print_exc()
+
     async def _run_github_discovery(self) -> None:
-        """Execute GitHub project discovery workflow."""
+        """Execute GitHub discovery (Phase 2+3) — screen and research from pool."""
         console.print(f"\n[cyan]{'='*60}[/cyan]")
         console.print(f"[cyan]GitHub Discovery triggered: {datetime.now()}[/cyan]")
         console.print(f"[cyan]{'='*60}[/cyan]\n")
@@ -98,7 +132,21 @@ class DigestScheduler:
             console.print("[green]GitHub discovery completed successfully[/green]")
         except Exception as e:
             console.print(f"[red]GitHub discovery failed: {e}[/red]")
-            # Log error but don't crash the scheduler
+            import traceback
+            traceback.print_exc()
+
+    async def _run_openclaw_tracker(self) -> None:
+        """Execute OpenClaw ecosystem tracking."""
+        console.print(f"\n[cyan]{'='*60}[/cyan]")
+        console.print(f"[cyan]OpenClaw Tracker triggered: {datetime.now()}[/cyan]")
+        console.print(f"[cyan]{'='*60}[/cyan]\n")
+
+        try:
+            from scripts.run_openclaw_tracker import main
+            await main()
+            console.print("[green]OpenClaw tracking completed successfully[/green]")
+        except Exception as e:
+            console.print(f"[red]OpenClaw tracking failed: {e}[/red]")
             import traceback
             traceback.print_exc()
 

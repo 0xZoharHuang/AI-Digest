@@ -2,6 +2,7 @@
 
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -281,22 +282,10 @@ class GitHubNotionSync:
                 parent={"database_id": self.database_id},
                 properties={
                     "Name": {
-                        "title": [
-                            {
-                                "text": {
-                                    "content": title
-                                }
-                            }
-                        ]
+                        "title": [{"text": {"content": title}}]
                     },
-                    "Stars": {
-                        "number": discovery.stars
-                    },
-                    "Score": {
-                        "number": discovery.innovation_score
-                    },
-                    "URL": {
-                        "url": discovery.url
+                    "Date": {
+                        "date": {"start": datetime.now().strftime("%Y-%m-%d")}
                     },
                 },
                 children=block_chunks[0] if block_chunks else []
