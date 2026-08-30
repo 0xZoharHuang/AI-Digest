@@ -6,7 +6,6 @@ runtime_dir=${AI_DIGEST_RUNTIME_ROOT:-$HOME/Library/Application Support/ai-diges
 queue_dir=${AI_DIGEST_SHARED_RUNTIME_ROOT:-$runtime_dir/queue}
 mode=${1:-}
 user_uid=$(id -u)
-uv_binary=$(command -v uv)
 launch_domain="gui/$user_uid"
 launch_agents="$HOME/Library/LaunchAgents"
 legacy_dir="$runtime_dir/legacy-launchagents"
@@ -70,16 +69,14 @@ tick_tmp=$(mktemp /tmp/com.ai-digest.tick.XXXXXX)
 recover_tmp=$(mktemp /tmp/com.ai-digest.recover.XXXXXX)
 runner_tmp=$(mktemp /tmp/com.ai-digest.agent-runner.XXXXXX)
 
-sed -e "s|__PROJECT__|$project_dir|g" \
-    -e "s|__PYTHON__|$project_dir/.venv/bin/python|g" \
-    -e "s|__UV__|$uv_binary|g" \
+sed -e "s|__PROJECT__|$shared_app|g" \
+    -e "s|__PYTHON__|$shared_app/.venv/bin/python|g" \
     -e "s|__RUNTIME__|$runtime_dir|g" \
     -e "s|__SHARED__|$queue_dir|g" \
     -e "s|__HOME__|$HOME|g" \
     "$project_dir/deploy/com.ai-digest.tick.plist.example" > "$tick_tmp"
-sed -e "s|__PROJECT__|$project_dir|g" \
-    -e "s|__PYTHON__|$project_dir/.venv/bin/python|g" \
-    -e "s|__UV__|$uv_binary|g" \
+sed -e "s|__PROJECT__|$shared_app|g" \
+    -e "s|__PYTHON__|$shared_app/.venv/bin/python|g" \
     -e "s|__RUNTIME__|$runtime_dir|g" \
     -e "s|__SHARED__|$queue_dir|g" \
     -e "s|__HOME__|$HOME|g" \
@@ -111,6 +108,12 @@ for queue_name in staging jobs completed publish_pending archived failed logs; d
 done
 install -d -m 700 "$app_staging"
 git -C "$project_dir" archive HEAD | tar -x -C "$app_staging"
+for config_name in runtime.toml sources.toml interests.md twitter_cookies.json; do
+  config_source="$project_dir/config/$config_name"
+  if [[ -f "$config_source" ]]; then
+    install -m 600 "$config_source" "$app_staging/config/$config_name"
+  fi
+done
 cd "$app_staging"
 uv sync --no-editable
 npm ci --ignore-scripts
