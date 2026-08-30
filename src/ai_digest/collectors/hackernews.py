@@ -102,11 +102,11 @@ class HackerNewsCollector(Collector):
             errors.append(f"{type(error).__name__}: {error}")
         finally:
             await client.close()
-        inserted = await self.state.put_items(items)
         for item in items:
             self.store.write_revision(item)
         for manifest in manifests:
             self.store.write_fetch_manifest(manifest)
+        inserted = await self.state.put_items(items)
         status = HealthStatus.SUCCESS
         if errors and items:
             status = HealthStatus.PARTIAL

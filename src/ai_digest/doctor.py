@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import grp
 import os
 import pwd
 import shutil
@@ -23,15 +24,33 @@ def run_doctor(runtime: RuntimeConfig, sources: SourcesConfig) -> dict[str, Any]
     codex = resolve_binary(runtime.codex.binary)
     lark = resolve_binary(runtime.lark.binary)
     add("codex_cli", Path(codex).exists(), codex)
-    add("lark_cli", Path(lark).exists(), lark, required=False)
+    add("lark_cli", Path(lark).exists(), lark)
     add("github_auth", _command_ok(["gh", "auth", "status"]), "gh keyring/login")
     x_enabled = bool(sources.x_list.get("enabled"))
-    x_tokens = XTokenStore().load()
+    x_required = bool(sources.x_list.get("required", False))
+    x_store = XTokenStore()
+    x_tokens = x_store.load()
     add(
         "x_api",
-        bool(x_tokens and sources.x_list.get("list_id")),
-        "token/list configured" if x_enabled else "disabled",
-        required=x_enabled,
+        bool(x_enabled and x_tokens and sources.x_list.get("list_id")),
+        "token/list configured" if x_enabled else "disabled (required)" if x_required else "disabled",
+        required=x_required,
+    )
+    add(
+        "x_refresh",
+        bool(x_enabled and x_tokens and x_tokens.refresh_token and x_store.client_id),
+        "refresh token and persisted client id configured"
+        if x_enabled
+        else "disabled",
+        required=x_required,
+    )
+    add(
+        "x_content_compliance",
+        bool(x_enabled and sources.x_list.get("compliance_verified", False)),
+        "verified deletion/update propagation"
+        if x_enabled and sources.x_list.get("compliance_verified", False)
+        else "not verified; downstream retention/deletion remains blocked",
+        required=x_required,
     )
     executable = _playwright_executable()
     add(
@@ -40,9 +59,26 @@ def run_doctor(runtime: RuntimeConfig, sources: SourcesConfig) -> dict[str, Any]
         str(executable) if executable else "unable to resolve browser path",
         required=bool(sources.x_for_you.get("enabled")),
     )
+    add(
+        "x_for_you_policy",
+        not bool(sources.x_for_you.get("enabled")),
+        "disabled; X policy prohibits browser automation"
+        if not sources.x_for_you.get("enabled")
+        else "enabled browser automation is not production-compliant",
+        required=True,
+    )
     try:
         runner = pwd.getpwnam("ai-digest-runner")
         add("runner_user", True, f"uid={runner.pw_uid}, home={runner.pw_dir}")
+        group_names = {
+            grp.getgrgid(group_id).gr_name
+            for group_id in os.getgrouplist(runner.pw_name, runner.pw_gid)
+        }
+        add(
+            "runner_staff_group",
+            "staff" in group_names,
+            ",".join(sorted(group_names)),
+        )
     except KeyError:
         add("runner_user", False, "ai-digest-runner does not exist")
     add(
@@ -54,7 +90,6 @@ def run_doctor(runtime: RuntimeConfig, sources: SourcesConfig) -> dict[str, Any]
         "lark_config",
         bool(runtime.lark.space_id and runtime.lark.receiver_open_id),
         "space and receiver configured" if runtime.lark.space_id else "not configured",
-        required=False,
     )
     if runtime.lark.space_id:
         add(
@@ -64,7 +99,7 @@ def run_doctor(runtime: RuntimeConfig, sources: SourcesConfig) -> dict[str, Any]
         )
         add(
             "lark_space",
-            _lark_space_access(lark, runtime.lark.space_id),
+            _lark_space_access(lark, runtime.lark.space_id, runtime.lark.identity),
             runtime.lark.space_id,
         )
     return {
@@ -107,10 +142,10 @@ def _playwright_executable() -> Path | None:
     return None
 
 
-def _lark_space_access(binary: str, space_id: str) -> bool:
+def _lark_space_access(binary: str, space_id: str, identity: str) -> bool:
     try:
         process = subprocess.run(
-            [binary, "wiki", "+space-list", "--page-all", "--as", "user"],
+            [binary, "wiki", "+space-list", "--page-all", "--as", identity],
             capture_output=True,
             text=True,
             timeout=30,

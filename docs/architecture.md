@@ -9,6 +9,7 @@ store/
   blobs/<sha256>
   fetches/<source>/<date>/<fetch-id>/manifest.json
   revisions/<source>/<item-id>/<revision>.json
+  revisions/github_snapshots/<repo-id>/<timestamp>-<snapshot-id>.json
 runs/<date>/attempt-0001/
   00_run_manifest.json
   01_phase1/{x_list,x_for_you,github,papers,articles,hackernews}.jsonl
@@ -20,6 +21,11 @@ state.db
 ```
 
 Files are canonical. SQLite stores cursors, delivery state and rebuildable indexes.
+
+GitHub candidate polls run at 01:00, 07:00, 13:00 and 19:00 local time. A delta is `null`
+until an observation exists at or before the full 6h/24h/7d horizon; the first observation is
+never presented as growth. Recently observed early-lane repositories are rotated through direct
+core-API checks so crossing 500 stars cannot disappear between search lanes.
 
 ## SourceItem
 
@@ -74,7 +80,17 @@ validates coverage and asks the same Router session to repair an incomplete outp
 
 ## Queue isolation
 
-The main LaunchAgent writes an immutable Phase 1 run into the shared `jobs/` queue. A LaunchDaemon
-running as `ai-digest-runner` moves the job to `completed/` after Phase 2–4. A later main-user tick
-imports the artifacts and publishes them. Completed jobs are retained for audit; production cleanup
-can archive them after the Lark publish manifest reaches success.
+The main LaunchAgent first seals an immutable Phase 1 run in SQLite, materializes it under the
+unwatched shared `staging/` directory, and atomically renames it into `jobs/`. Only after that queue
+directory is visible does one transaction mark the run queued and its items delivered. Sealed runs
+are replayed at the beginning of every tick. A LaunchDaemon
+running as `ai-digest-runner` moves the job to `completed/` after Phase 2–4. A distinct main-user
+recovery LaunchAgent watches only `completed/`, imports the artifacts and publishes them; its entry
+point is `tick --event recover`, so a queue wake cannot start another collection. Successful jobs
+move to `archived/`, Lark retryable jobs to `publish_pending/`, and failed worker jobs to `failed/`.
+
+Every Codex call uses a custom permission profile rather than the broad built-in sandbox flag. The
+profile denies reads of the runner's entire `CODEX_HOME`, `.ssh`, and login Keychains while granting
+only read-only or current-workspace access as the phase requires. Installation fails closed unless
+an exact sandbox probe can write its workspace but receives `Operation not permitted` when opening
+`auth.json`, including a zero-byte read.

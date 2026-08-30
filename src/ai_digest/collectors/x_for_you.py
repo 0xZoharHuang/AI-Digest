@@ -86,7 +86,6 @@ class XForYouCollector(Collector):
         )
         await self._enrich_links(extracted)
         items = [self._to_item(row, blob_ref, now) for row in extracted]
-        inserted = await self.state.put_items(items)
         for item in items:
             self.store.write_revision(item)
         status = HealthStatus.SUCCESS if items and not errors else HealthStatus.PARTIAL
@@ -103,6 +102,7 @@ class XForYouCollector(Collector):
             errors=errors,
         )
         self.store.write_fetch_manifest(manifest)
+        inserted = await self.state.put_items(items)
         return CollectorResult(
             source=self.source,
             items=items,

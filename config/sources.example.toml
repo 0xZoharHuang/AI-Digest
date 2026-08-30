@@ -1,5 +1,7 @@
 [x_list]
 enabled = false
+required = true
+compliance_verified = false
 list_id = ""
 seed_list_ids = ["1585430245762441216", "1353454915088052225", "226428000"]
 target_members = 1100
@@ -8,6 +10,7 @@ max_pages = 8
 
 [x_for_you]
 enabled = false
+required = false
 profile_dir = "~/Library/Application Support/ai-digest/browser-profile"
 limit = 150
 scroll_rounds = 30
@@ -16,10 +19,21 @@ hours = [7, 20]
 [github]
 enabled = true
 per_query = 20
+# GitHub Search permits 30 authenticated requests/minute. Keep two requests in reserve.
+search_request_budget = 28
 created_within_days = 365
+recent_created_within_days = 45
 pushed_within_days = 45
 early_stars = "1..499"
 emerging_stars = "500..5000"
+crossing_stars = [500, 5000]
+growth_6h_min_stars = 25
+growth_24h_min_stars = 75
+growth_7d_min_stars = 250
+growth_event_cooldown_hours = 24
+# Recheck a bounded, least-recently-checked slice of prior early-lane repos via core API.
+early_watch_days = 365
+early_watch_rechecks_per_poll = 20
 queries = [
   "topic:robotics",
   "topic:robot-learning",
@@ -98,10 +112,13 @@ allowed_domains = ["spectrum.ieee.org"]
 id = "physical-intelligence"
 role = "primary"
 kind = "sitemap"
-url = "https://www.physicalintelligence.company/sitemap.xml"
+url = "https://www.pi.website/sitemap.xml"
 max_entries = 20
 path_contains = "/blog/"
-allowed_domains = ["physicalintelligence.company", "www.physicalintelligence.company"]
+allowed_domains = [
+  "pi.website", "www.pi.website",
+  "physicalintelligence.company", "www.physicalintelligence.company"
+]
 
 [[articles]]
 id = "anthropic"
@@ -153,6 +170,7 @@ id = "a16z"
 role = "editorial"
 kind = "index"
 url = "https://a16z.com/news-content/"
-max_entries = 20
-path_contains = "/ai/,/american-dynamism/,/podcast/,/article/"
+max_entries = 50
+link_selector = "a[href][class*='--post-title-hover']"
+content_selector = ".js-article-content"
 allowed_domains = ["a16z.com", "www.a16z.com"]

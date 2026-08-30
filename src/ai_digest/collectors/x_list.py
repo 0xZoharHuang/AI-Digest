@@ -50,6 +50,7 @@ class XListCollector(Collector):
         pagination_token: str | None = None
         fetched = 0
         pages = 0
+        stopped_at_known = False
         metadata_remaining = int(self.config.get("external_metadata_limit", 30))
         try:
             while pages < int(self.config.get("max_pages", 8)):
@@ -86,8 +87,14 @@ class XListCollector(Collector):
                 users = {user["id"]: user for user in includes.get("users", [])}
                 referenced = {tweet["id"]: tweet for tweet in includes.get("tweets", [])}
                 fetched += len(data)
+                fresh = []
+                for tweet in data:
+                    if await self.state.has_item(f"x_list:{tweet['id']}"):
+                        stopped_at_known = True
+                        break
+                    fresh.append(tweet)
                 page_items = [
-                    self._to_item(tweet, users, referenced, blob_ref, now) for tweet in data
+                    self._to_item(tweet, users, referenced, blob_ref, now) for tweet in fresh
                 ]
                 metadata_remaining = await self._enrich_links(
                     client, page_items, metadata_remaining
@@ -108,18 +115,22 @@ class XListCollector(Collector):
                     )
                 )
                 pagination_token = (payload.get("meta") or {}).get("next_token")
-                if not pagination_token:
+                if stopped_at_known or not pagination_token:
                     break
+            if pagination_token and not stopped_at_known:
+                errors.append(
+                    f"pagination_exhausted: next_token remained after {pages} page(s)"
+                )
         except Exception as error:  # source failure is isolated by orchestrator
             errors.append(f"{type(error).__name__}: {error}")
         finally:
             await client.close()
 
-        inserted = await self.state.put_items(items)
         for item in items:
             self.store.write_revision(item)
         for manifest in manifests:
             self.store.write_fetch_manifest(manifest)
+        inserted = await self.state.put_items(items)
         status = HealthStatus.SUCCESS
         if errors and items:
             status = HealthStatus.PARTIAL

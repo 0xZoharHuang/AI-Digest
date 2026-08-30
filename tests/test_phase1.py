@@ -1,17 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from ai_digest.config import RuntimeConfig, SourcesConfig
-from ai_digest.models import CollectorResult, HealthStatus, SourceHealth, SourceItem
+from ai_digest.models import CollectorResult, HealthStatus, RunStatus, SourceHealth, SourceItem
 from ai_digest.phase1 import Phase1Runner
 
 
 @pytest.mark.asyncio
-async def test_phase1_seals_typed_files_and_marks_delivery(tmp_path, monkeypatch):
+async def test_phase1_seals_typed_files_without_marking_delivery(tmp_path, monkeypatch):
     runtime = RuntimeConfig(runtime_root=tmp_path, shared_runtime_root=tmp_path / "shared")
     runner = Phase1Runner(runtime, SourcesConfig())
     await runner.initialize()
@@ -49,6 +50,54 @@ async def test_phase1_seals_typed_files_and_marks_delivery(tmp_path, monkeypatch
     rows = [json.loads(line) for line in (phase / "hackernews.jsonl").read_text().splitlines()]
     assert rows[0]["item_id"] == "hn:top:1"
     assert json.loads((phase / "index.json").read_text())["total_items"] == 1
+    assert await runner.state.list_sealed_unqueued_runs() == [(manifest.run_id, run_dir)]
+
+
+@pytest.mark.asyncio
+async def test_phase1_window_closes_after_collection(tmp_path, monkeypatch):
+    runtime = RuntimeConfig(runtime_root=tmp_path, shared_runtime_root=tmp_path / "shared")
+    runner = Phase1Runner(runtime, SourcesConfig())
+    await runner.initialize()
+    run_started = datetime(2026, 8, 30, 0, 0, tzinfo=UTC)
+    observed: datetime | None = None
+
+    async def fake_collect():
+        nonlocal observed
+        observed = run_started + timedelta(milliseconds=1)
+        item = SourceItem(
+            item_id="hn:arrived-during-collection",
+            item_type="hn_story",
+            source="hackernews",
+            surface="top",
+            first_observed_at=observed,
+            handoff_at=observed,
+            payload={"title": "new during collection"},
+        )
+        await runner.state.put_items([item])
+        await asyncio.sleep(0.01)
+        return [
+            CollectorResult(
+                source="hackernews",
+                health=SourceHealth(
+                    source="hackernews",
+                    status=HealthStatus.SUCCESS,
+                    fetched_count=1,
+                    parsed_count=1,
+                    new_count=1,
+                ),
+            )
+        ]
+
+    monkeypatch.setattr(runner, "collect_only", fake_collect)
+    manifest, run_dir = await runner.run_daily(run_started)
+
+    rows = [
+        json.loads(line)
+        for line in (run_dir / "01_phase1" / "hackernews.jsonl").read_text().splitlines()
+    ]
+    assert [row["item_id"] for row in rows] == ["hn:arrived-during-collection"]
+    assert observed is not None
+    assert manifest.window_end > observed
 
 
 @pytest.mark.asyncio
@@ -99,6 +148,14 @@ async def test_phase1_x_content_pruning_and_explicit_delete(tmp_path):
     runner.store.write_revision(current)
     assert await runner.prune_expired_x_content() == 1
     assert await runner.delete_x_post_content("2") == 1
+
+
+def test_required_disabled_source_makes_phase_partial():
+    result = CollectorResult(
+        source="x_list",
+        health=SourceHealth(source="x_list", status=HealthStatus.DISABLED),
+    )
+    assert Phase1Runner._phase_status([result], [], {"x_list"}) == RunStatus.PARTIAL
 
 
 @pytest.mark.asyncio

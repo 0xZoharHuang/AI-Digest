@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -25,7 +26,10 @@ ROUTING_SCHEMA = {
                 "additionalProperties": False,
                 "required": ["bundle_id", "label", "item_ids"],
                 "properties": {
-                    "bundle_id": {"type": "string"},
+                    "bundle_id": {
+                        "type": "string",
+                        "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+                    },
                     "label": {"type": "string"},
                     "item_ids": {"type": "array", "items": {"type": "string"}},
                 },
@@ -137,6 +141,8 @@ class AgentPhases:
         for bundle in routing.bundles:
             if not bundle.item_ids:
                 errors.append(f"bundle {bundle.bundle_id} is empty")
+            if len(bundle.item_ids) != len(set(bundle.item_ids)):
+                errors.append(f"bundle {bundle.bundle_id} contains duplicate items")
             if not set(bundle.item_ids) <= expected:
                 errors.append(f"bundle {bundle.bundle_id} contains unknown items")
         for assignment in routing.assignments:
@@ -147,6 +153,16 @@ class AgentPhases:
                     errors.append(f"research item {assignment.id} references unknown bundle")
             elif assignment.t:
                 errors.append(f"non-research item {assignment.id} must have no bundle ids")
+        for bundle in routing.bundles:
+            assigned = {
+                assignment.id
+                for assignment in routing.assignments
+                if assignment.d == "r" and bundle.bundle_id in assignment.t
+            }
+            if set(bundle.item_ids) != assigned:
+                errors.append(
+                    f"bundle {bundle.bundle_id} membership does not match research assignments"
+                )
         return routing, errors
 
     async def research(self, run_dir: Path, routing: RoutingOutput | None = None) -> dict[str, str]:
@@ -156,19 +172,24 @@ class AgentPhases:
         research_root = run_dir / "03_research"
         research_root.mkdir(parents=True, exist_ok=True)
         today_index = _today_index(items)
-        history_index = _history_index(self.runtime.runtime_root / "runs", run_dir)
+        supplied_history = run_dir / "history_index.md"
+        history_index = (
+            supplied_history.read_text(encoding="utf-8")
+            if supplied_history.exists()
+            else _history_index(self.runtime.runtime_root / "runs", run_dir)
+        )
         semaphore = asyncio.Semaphore(self.runtime.codex.top_level_concurrency)
         failures: list[dict[str, Any]] = []
         successes: dict[str, str] = {}
 
         async def run_bundle(bundle: Bundle) -> None:
             async with semaphore:
-                workspace = research_root / bundle.bundle_id
+                workspace = _contained_child(research_root, bundle.bundle_id)
                 workspace.mkdir(parents=True, exist_ok=True)
                 selected = [items[item_id] for item_id in bundle.item_ids if item_id in items]
                 atomic_write_jsonl(
                     workspace / "bundle_items.jsonl",
-                    (item.model_dump(mode="json") for item in selected),
+                    _materialize_bundle_items(selected, run_dir, workspace),
                 )
                 atomic_write_text(workspace / "today_index.md", today_index)
                 atomic_write_text(workspace / "history_index.md", history_index)
@@ -205,7 +226,7 @@ class AgentPhases:
                     and report.exists()
                     and report.read_text(encoding="utf-8").strip()
                 ):
-                    successes[bundle.bundle_id] = str(report)
+                    successes[bundle.bundle_id] = str(report.relative_to(research_root))
                     atomic_write_json(workspace / "codex.json", _codex_summary(result))
                 else:
                     failures.append(
@@ -238,9 +259,14 @@ class AgentPhases:
         reports_root = brief_root / "reports"
         reports_root.mkdir(parents=True, exist_ok=True)
         for bundle_id, path in successes.items():
-            target = reports_root / bundle_id / "report.md"
+            target = _contained_child(reports_root, bundle_id) / "report.md"
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(path, target)
+            if str(path) != f"{bundle_id}/report.md":
+                raise ValueError(f"unsafe research report mapping: {bundle_id} -> {path}")
+            source = _contained_child(research_root, bundle_id) / "report.md"
+            if source.is_symlink() or not source.is_file():
+                raise ValueError(f"research report is not a regular file: {bundle_id}")
+            shutil.copy2(source, target)
         assignments = routing.assignments
         phase1_items = _load_phase1_items(run_dir / "01_phase1")
         watch = [
@@ -266,9 +292,7 @@ class AgentPhases:
             output_file=output,
         )
         output_text = output.read_text(encoding="utf-8") if output.exists() else ""
-        missing = [
-            bundle_id for bundle_id in successes if f"report://{bundle_id}" not in output_text
-        ]
+        missing = _missing_report_links(output_text, successes)
         if (not result.success or not output.exists() or missing) and result.thread_id:
             result = await self.runner.run(
                 workspace=brief_root,
@@ -285,11 +309,7 @@ class AgentPhases:
         if not result.success or not output.exists():
             atomic_write_text(output, _fallback_brief(run_dir, successes, watch))
         else:
-            missing = [
-                bundle_id
-                for bundle_id in successes
-                if f"report://{bundle_id}" not in output.read_text(encoding="utf-8")
-            ]
+            missing = _missing_report_links(output.read_text(encoding="utf-8"), successes)
             if missing:
                 atomic_write_text(output, _fallback_brief(run_dir, successes, watch))
         _append_status(output, run_dir, successes, watch)
@@ -350,6 +370,14 @@ def _brief_prompt(routing: RoutingOutput, successes: dict[str, str]) -> str:
 There were {len(routing.bundles)} planned bundles. Return only the brief body."""
 
 
+def _missing_report_links(content: str, successes: dict[str, str]) -> list[str]:
+    return [
+        bundle_id
+        for bundle_id in successes
+        if re.search(rf"report://{re.escape(bundle_id)}(?![a-z0-9_-])", content) is None
+    ]
+
+
 def _load_phase1_items(phase1: Path) -> dict[str, SourceItem]:
     items: dict[str, SourceItem] = {}
     for path in phase1.glob("*.jsonl"):
@@ -373,6 +401,46 @@ def _today_index(items: dict[str, SourceItem]) -> str:
         title = item.payload.get("title") or item.payload.get("text") or item.item_id
         lines.append(f"- `{item.item_id}` [{item.source}/{item.surface}] {str(title)[:240]}")
     return "\n".join(lines) + "\n"
+
+
+def _contained_child(root: Path, child: str) -> Path:
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", child):
+        raise ValueError(f"unsafe bundle id: {child!r}")
+    root_resolved = root.resolve()
+    target = (root / child).resolve()
+    if target.parent != root_resolved:
+        raise ValueError(f"bundle path escapes root: {child!r}")
+    return target
+
+
+def _materialize_bundle_items(
+    items: list[SourceItem], run_dir: Path, workspace: Path
+) -> list[dict[str, Any]]:
+    source_root = run_dir / "blobs"
+    destination = workspace / "source_files"
+    rows: list[dict[str, Any]] = []
+    for item in items:
+        row = item.model_dump(mode="json")
+        resolved: list[str] = []
+        refs: set[str] = set()
+        full_text_ref = item.payload.get("full_text_ref")
+        if full_text_ref:
+            refs.add(str(full_text_ref))
+        for ref in refs:
+            filename = ref.removeprefix("sha256:")
+            if not re.fullmatch(r"[0-9a-f]{64}\.[a-z0-9]+", filename):
+                continue
+            source = source_root / filename
+            if not source.exists() or source.is_symlink() or not source.is_file():
+                continue
+            destination.mkdir(parents=True, exist_ok=True)
+            target = destination / filename
+            if not target.exists():
+                shutil.copy2(source, target, follow_symlinks=False)
+            resolved.append(str(target.relative_to(workspace)))
+        row["resolved_files"] = sorted(resolved)
+        rows.append(row)
+    return rows
 
 
 def _history_index(runs_root: Path, current_run: Path) -> str:
@@ -417,10 +485,13 @@ def _fallback_brief(run_dir: Path, successes: dict[str, str], watch: list[Source
         "",
     ]
     for bundle_id, path in successes.items():
+        source = Path(path)
+        if not source.is_absolute():
+            source = _contained_child(run_dir / "03_research", bundle_id) / "report.md"
         title = next(
             (
                 line.removeprefix("# ").strip()
-                for line in Path(path).read_text(encoding="utf-8").splitlines()
+                for line in source.read_text(encoding="utf-8").splitlines()
                 if line.startswith("# ")
             ),
             bundle_id,
@@ -438,6 +509,9 @@ def _append_status(
     source_failures = [
         key for key, value in health.items() if value.get("status") in {"partial", "failed"}
     ]
+    disabled_sources = [
+        key for key, value in health.items() if value.get("status") == "disabled"
+    ]
     appendix = [
         "",
         "---",
@@ -448,6 +522,7 @@ def _append_status(
         f"- Failed reports: {len(failures)}",
         f"- Watch items: {len(watch)}",
         f"- Partial/failed sources: {', '.join(source_failures) if source_failures else 'none'}",
+        f"- Disabled sources: {', '.join(disabled_sources) if disabled_sources else 'none'}",
     ]
     if failures:
         appendix.extend(["", "### Unfinished research", ""])
@@ -455,6 +530,11 @@ def _append_status(
             f"- {row.get('label') or row.get('bundle_id')}: {row.get('error_class')}"
             for row in failures
         )
+    if source_failures:
+        appendix.extend(["", "### Source issues", ""])
+        for source in source_failures:
+            details = health[source].get("errors") or [health[source].get("status")]
+            appendix.extend(f"- {source}: {detail}" for detail in details[:10])
     atomic_write_text(
         path, path.read_text(encoding="utf-8").rstrip() + "\n" + "\n".join(appendix) + "\n"
     )

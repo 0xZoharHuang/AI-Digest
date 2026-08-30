@@ -46,13 +46,12 @@ class CodexRunner:
         resume_thread_id: str | None = None,
     ) -> CodexResult:
         workspace.mkdir(parents=True, exist_ok=True)
+        permission_name, permission_definition = _permission_profile(sandbox)
         args = [
             self.binary,
             "exec",
             "--ignore-user-config",
             "--skip-git-repo-check",
-            "--sandbox",
-            sandbox,
             "--json",
             "--disable",
             "shell_snapshot",
@@ -63,9 +62,15 @@ class CodexRunner:
             "-c",
             'shell_environment_policy.inherit="none"',
             "-c",
+            'cli_auth_credentials_store="file"',
+            "-c",
             "shell_environment_policy.include_only=[]",
             "-c",
             "shell_environment_policy.ignore_default_excludes=false",
+            "-c",
+            f'default_permissions="{permission_name}"',
+            "-c",
+            permission_definition,
             "--disable",
             "multi_agent_v2",
             "-C",
@@ -162,3 +167,19 @@ def classify_codex_error(text: str) -> str:
 def _safe_environment() -> dict[str, str]:
     allowed = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TMPDIR", "CODEX_HOME")
     return {key: os.environ[key] for key in allowed if key in os.environ}
+
+
+def _permission_profile(sandbox: str) -> tuple[str, str]:
+    parents = {"read-only": ":read-only", "workspace-write": ":workspace"}
+    if sandbox not in parents:
+        raise ValueError(f"unsupported protected Codex sandbox: {sandbox}")
+    name = "ai_digest_read" if sandbox == "read-only" else "ai_digest_workspace"
+    home = Path(os.environ.get("HOME", str(Path.home()))).expanduser().resolve()
+    codex_home = Path(os.environ.get("CODEX_HOME", str(home / ".codex"))).expanduser().resolve()
+    denied = [codex_home, home / ".ssh", home / "Library" / "Keychains"]
+    filesystem = ",".join(f"{json.dumps(str(path))}=\"deny\"" for path in denied)
+    definition = (
+        f'permissions.{name}={{extends="{parents[sandbox]}",'
+        f"filesystem={{{filesystem}}}}}"
+    )
+    return name, definition

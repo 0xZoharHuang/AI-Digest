@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
+import aiosqlite
 import pytest
 
 from ai_digest.models import FetchManifest, SourceItem
@@ -67,6 +69,135 @@ async def test_state_cursor_baseline_and_expiry(tmp_path):
     )
     await state.put_items([current])
     assert [row.item_id for row in await state.pop_x_post("123")] == ["x_list:123"]
+
+
+@pytest.mark.asyncio
+async def test_sealed_run_is_recoverable_and_delivery_waits_for_queue_visibility(tmp_path):
+    state = StateDB(tmp_path / "state.db")
+    await state.init()
+    now = datetime.now(UTC)
+    run_dir = tmp_path / "runs" / "2026-08-30" / "attempt-0001"
+    item = SourceItem(
+        item_id="hn:sealed",
+        item_type="hn_story",
+        source="hackernews",
+        surface="top",
+        handoff_at=now,
+        first_observed_at=now,
+    )
+    await state.put_items([item])
+    await state.record_run("run-sealed", "2026-08-30", 1, "running", run_dir)
+    await state.seal_run("run-sealed", "success", [item.item_id])
+
+    assert await state.list_sealed_unqueued_runs() == [("run-sealed", run_dir)]
+    assert await state.pending_items(now - timedelta(hours=1), now + timedelta(hours=1)) == []
+    async with aiosqlite.connect(state.path) as db:
+        cursor = await db.execute(
+            "SELECT delivered_run_id, sealed_run_id FROM source_items WHERE item_id = ?",
+            (item.item_id,),
+        )
+        assert await cursor.fetchone() == (None, "run-sealed")
+
+    assert await state.mark_run_queued("run-sealed") is True
+    assert await state.mark_run_queued("run-sealed") is False
+    assert await state.list_sealed_unqueued_runs() == []
+    async with aiosqlite.connect(state.path) as db:
+        cursor = await db.execute(
+            "SELECT delivered_run_id FROM source_items WHERE item_id = ?",
+            (item.item_id,),
+        )
+        assert await cursor.fetchone() == ("run-sealed",)
+
+
+@pytest.mark.asyncio
+async def test_local_completion_atomically_delivers_sealed_run(tmp_path):
+    state = StateDB(tmp_path / "state.db")
+    await state.init()
+    now = datetime.now(UTC)
+    item = SourceItem(
+        item_id="hn:local",
+        item_type="hn_story",
+        source="hackernews",
+        surface="top",
+        handoff_at=now,
+        first_observed_at=now,
+    )
+    await state.put_items([item])
+    await state.record_run("run-local", "2026-08-30", 1, "running", tmp_path / "run")
+    await state.seal_run("run-local", "success", [item.item_id])
+
+    assert await state.mark_run_locally_completed("run-local", "published") is True
+    assert await state.mark_run_locally_completed("run-local", "published") is False
+    assert await state.list_sealed_unqueued_runs() == []
+    async with aiosqlite.connect(state.path) as db:
+        cursor = await db.execute(
+            """
+            SELECT source_items.delivered_run_id, runs.handoff_state
+            FROM source_items CROSS JOIN runs
+            WHERE source_items.item_id = ? AND runs.run_id = ?
+            """,
+            (item.item_id, "run-local"),
+        )
+        assert await cursor.fetchone() == ("run-local", "published")
+
+
+@pytest.mark.asyncio
+async def test_daily_run_gate_allows_failed_and_skipped_retries(tmp_path):
+    state = StateDB(tmp_path / "state.db")
+    await state.init()
+    date = "2026-08-30"
+    await state.record_run("failed", date, 1, "failed", Path("/tmp/failed"))
+    await state.record_run("skipped", date, 2, "skipped_asleep", Path("/tmp/skipped"))
+    assert await state.has_daily_run_in_progress_or_done(date) is False
+
+    await state.record_run("active", date, 3, "running", Path("/tmp/active"))
+    assert await state.has_daily_run_in_progress_or_done(date) is True
+
+    stale_now = datetime.now(UTC) + timedelta(minutes=19)
+    assert await state.has_daily_run_in_progress_or_done(date, now=stale_now) is False
+
+
+@pytest.mark.asyncio
+async def test_state_init_migrates_existing_phase1_schema(tmp_path):
+    path = tmp_path / "state.db"
+    async with aiosqlite.connect(path) as db:
+        await db.executescript(
+            """
+            CREATE TABLE source_items (
+                item_id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                surface TEXT NOT NULL,
+                item_type TEXT NOT NULL,
+                handoff_at TEXT NOT NULL,
+                first_observed_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                delivered_run_id TEXT,
+                expires_at TEXT
+            );
+            CREATE TABLE runs (
+                run_id TEXT PRIMARY KEY,
+                date TEXT NOT NULL,
+                attempt INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                path TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            """
+        )
+        await db.commit()
+
+    state = StateDB(path)
+    await state.init()
+    async with aiosqlite.connect(path) as db:
+        source_columns = await (await db.execute("PRAGMA table_info(source_items)")).fetchall()
+        run_columns = await (await db.execute("PRAGMA table_info(runs)")).fetchall()
+        table = await db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'run_items'"
+        )
+        assert await table.fetchone() == (1,)
+    assert "sealed_run_id" in {row[1] for row in source_columns}
+    assert {"handoff_state", "queued_at"} <= {row[1] for row in run_columns}
 
 
 def test_attempt_directories_are_monotonic(tmp_path):

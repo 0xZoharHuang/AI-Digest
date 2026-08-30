@@ -105,19 +105,19 @@ class Phase1Runner:
 
     async def run_daily(self, now: datetime | None = None) -> tuple[RunManifest, Path]:
         await self.initialize()
-        local_now = (now or datetime.now(UTC)).astimezone(ZoneInfo(self.runtime.timezone))
+        wall_started = datetime.now(UTC)
+        local_now = (now or wall_started).astimezone(ZoneInfo(self.runtime.timezone))
         date = local_now.date().isoformat()
         attempt, run_dir = self.store.next_attempt_dir(date)
         run_id = f"{date}-a{attempt:04d}-{uuid.uuid4().hex[:8]}"
-        window_end = local_now.astimezone(UTC)
-        window_start = window_end - timedelta(hours=self.runtime.window_hours)
+        initial_end = local_now.astimezone(UTC)
         manifest = RunManifest(
             run_id=run_id,
             date=date,
             attempt=attempt,
             timezone=self.runtime.timezone,
-            window_start=window_start,
-            window_end=window_end,
+            window_start=initial_end - timedelta(hours=self.runtime.window_hours),
+            window_end=initial_end,
             status=RunStatus.RUNNING,
             phases={"phase1": RunStatus.RUNNING},
             versions={
@@ -129,6 +129,11 @@ class Phase1Runner:
         atomic_write_json(run_dir / "00_run_manifest.json", manifest.model_dump(mode="json"))
 
         results = await self.collect_only()
+        wall_elapsed = max(datetime.now(UTC) - wall_started, timedelta(0))
+        window_end = initial_end + wall_elapsed
+        window_start = window_end - timedelta(hours=self.runtime.window_hours)
+        manifest.window_start = window_start
+        manifest.window_end = window_end
         manifest.source_health = {result.source: result.health for result in results}
         pending = await self.state.pending_items(window_start, window_end)
         grouped: dict[str, list[SourceItem]] = defaultdict(list)
@@ -158,13 +163,29 @@ class Phase1Runner:
         }
         atomic_write_json(phase_dir / "index.json", index)
 
-        phase_status = self._phase_status(results, pending)
+        required_disabled = {
+            result.source
+            for result in results
+            if result.health.status == HealthStatus.DISABLED
+            and bool(getattr(self.sources, result.source, {}).get("required", False))
+        }
+        phase_status = self._phase_status(results, pending, required_disabled)
         manifest.phases["phase1"] = phase_status
         manifest.status = phase_status
         atomic_write_json(run_dir / "00_run_manifest.json", manifest.model_dump(mode="json"))
         atomic_write_text(phase_dir / "PHASE1_COMPLETE", f"{run_id}\n")
-        await self.state.mark_delivered((item.item_id for item in pending), run_id)
-        await self.state.record_run(run_id, date, attempt, phase_status.value, run_dir)
+        try:
+            await self.state.seal_run(
+                run_id,
+                phase_status.value,
+                (item.item_id for item in pending),
+            )
+        except Exception as error:
+            manifest.errors.append(f"Phase 1 sealing failed: {type(error).__name__}: {error}")
+            manifest.status = RunStatus.FAILED
+            atomic_write_json(run_dir / "00_run_manifest.json", manifest.model_dump(mode="json"))
+            await self.state.record_run(run_id, date, attempt, RunStatus.FAILED.value, run_dir)
+            raise
         return manifest, run_dir
 
     async def record_skipped_asleep(self, now: datetime | None = None) -> Path | None:
@@ -214,7 +235,11 @@ class Phase1Runner:
                 await self.state.set_baseline(result.source, health.fetched_count)
 
     @staticmethod
-    def _phase_status(results: list[CollectorResult], items: list[SourceItem]) -> RunStatus:
+    def _phase_status(
+        results: list[CollectorResult],
+        items: list[SourceItem],
+        required_disabled: set[str] | None = None,
+    ) -> RunStatus:
         enabled = [result for result in results if result.health.status != HealthStatus.DISABLED]
         failures = [
             result
@@ -223,6 +248,6 @@ class Phase1Runner:
         ]
         if not items and failures:
             return RunStatus.FAILED
-        if failures:
+        if failures or required_disabled:
             return RunStatus.PARTIAL
         return RunStatus.SUCCESS

@@ -95,6 +95,8 @@ class SafeHTTPClient:
         for attempt in range(self.max_attempts):
             try:
                 response = await self.client.request(method, url, headers=headers, params=params)
+                if response.status_code in {301, 302, 303, 307, 308}:
+                    return response
                 if response.status_code not in RETRYABLE:
                     response.raise_for_status()
                     return response

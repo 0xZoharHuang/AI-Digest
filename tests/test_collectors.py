@@ -8,8 +8,9 @@ from ai_digest.collectors.articles import ArticleCollector
 from ai_digest.collectors.arxiv import ArxivCollector
 from ai_digest.collectors.x_for_you import _post_id
 from ai_digest.collectors.x_list import XListCollector
-from ai_digest.models import TimeBasis
+from ai_digest.models import FetchManifest, SourceItem, TimeBasis
 from ai_digest.store import FileStore, StateDB
+from ai_digest.x_auth import XTokens
 
 
 @pytest.fixture
@@ -40,6 +41,57 @@ def test_x_list_item_uses_official_occurrence_time(store_state):
     assert item.payload["references"][0]["text"] == "quote"
 
 
+@pytest.mark.asyncio
+async def test_x_list_stops_at_first_known_post(store_state, monkeypatch):
+    store, state = store_state
+    await state.init()
+    now = datetime(2026, 8, 30, tzinfo=UTC)
+    known = SourceItem(
+        item_id="x_list:2",
+        item_type="x_post",
+        source="x_list",
+        surface="private_list",
+        handoff_at=now,
+        first_observed_at=now,
+    )
+    await state.put_items([known])
+    collector = XListCollector(
+        {"enabled": True, "list_id": "list", "max_pages": 8, "retention_days": 30},
+        store,
+        state,
+    )
+
+    class Response:
+        text = "{}"
+        headers = {"content-type": "application/json"}
+        status_code = 200
+        url = "https://api.x.com/2/lists/list/tweets"
+
+        def json(self):  # type: ignore[no-untyped-def]
+            return {
+                "data": [
+                    {"id": "3", "text": "new", "created_at": "2026-08-30T00:00:00Z"},
+                    {"id": "2", "text": "known", "created_at": "2026-08-29T23:00:00Z"},
+                    {"id": "1", "text": "older", "created_at": "2026-08-29T22:00:00Z"},
+                ],
+                "meta": {"next_token": "more"},
+            }
+
+    requests = 0
+
+    async def fake_request(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal requests
+        requests += 1
+        return Response()
+
+    monkeypatch.setattr("ai_digest.collectors.x_list.XTokenStore.load", lambda self: XTokens("t"))
+    monkeypatch.setattr("ai_digest.collectors.x_list.SafeHTTPClient.request", fake_request)
+    result = await collector.collect(now)
+    assert requests == 1
+    assert [item.item_id for item in result.items] == ["x_list:3"]
+    assert result.health.status.value == "success"
+
+
 def test_arxiv_version_is_source_native(store_state):
     store, state = store_state
     collector = ArxivCollector({}, store, state)
@@ -62,6 +114,28 @@ def test_arxiv_version_is_source_native(store_state):
     assert item.time_basis == TimeBasis.UPDATED
 
 
+def test_arxiv_withdrawal_without_version_is_a_distinct_tombstone(store_state):
+    store, state = store_state
+    collector = ArxivCollector({}, store, state)
+    item = collector._entry(
+        {
+            "link": "https://arxiv.org/abs/2608.12345",
+            "title": "Withdrawn paper",
+            "summary": "withdrawn",
+            "published": "2026-08-20T00:00:00Z",
+            "updated": "2026-08-30T00:00:00Z",
+            "arxiv_announce_type": "withdraw",
+        },
+        "sha256:" + "c" * 64 + ".xml",
+        datetime(2026, 8, 30, tzinfo=UTC),
+    )
+    assert item is not None
+    assert item.item_id == "arxiv:2608.12345:withdraw:20260830T000000"
+    assert item.change == "withdrawn"
+    assert item.content_status.value == "tombstone"
+    assert item.time_basis == TimeBasis.UPDATED
+
+
 def test_article_discovery_parsers_are_source_specific(store_state):
     store, state = store_state
     collector = ArticleCollector([], store, state)
@@ -75,6 +149,171 @@ def test_article_discovery_parsers_are_source_specific(store_state):
         },
     )
     assert [row["url"] for row in rows] == ["https://example.com/news/one"]
+
+
+def test_a16z_index_selector_keeps_current_post_cards_not_navigation(store_state):
+    store, state = store_state
+    collector = ArticleCollector([], store, state)
+    html = """
+    <a href="/ai/" class="menu-flyout__level-two-link">AI category</a>
+    <a href="https://a16z.com/the-machine-age-fund/"
+       class="transition-colors hover:text-[--post-title-hover,#336d5d]">Machine Age</a>
+    <a href="/can-agents-use-a-computer-yet-weve-got-the-data/"
+       class="transition-colors hover:text-[--post-title-hover,#336d5d]">Agents</a>
+    """
+    rows = collector._index_rows(
+        html,
+        {
+            "url": "https://a16z.com/news-content/",
+            "link_selector": "a[href][class*='--post-title-hover']",
+            "allowed_domains": ["a16z.com"],
+        },
+    )
+    assert [row["url"] for row in rows] == [
+        "https://a16z.com/the-machine-age-fund/",
+        "https://a16z.com/can-agents-use-a-computer-yet-weve-got-the-data/",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_article_content_selector_excludes_site_disclaimer(store_state):
+    store, state = store_state
+    await state.init()
+    collector = ArticleCollector([], store, state)
+    now = datetime(2026, 8, 30, tzinfo=UTC)
+
+    class Response:
+        text = """
+        <html><body>
+          <div class="js-article-content"><h1>Machine Age</h1><p>Actual thesis.</p></div>
+          <footer><p>Views expressed are not investment advice.</p></footer>
+        </body></html>
+        """
+        url = "https://a16z.com/the-machine-age-fund/"
+
+    class Client:
+        async def request(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            return Response()
+
+    item, _updates = await collector._article(
+        Client(),
+        {
+            "id": "a16z",
+            "role": "editorial",
+            "kind": "index",
+            "content_selector": ".js-article-content",
+            "allowed_domains": ["a16z.com"],
+        },
+        {
+            "url": "https://a16z.com/the-machine-age-fund/",
+            "title": "Machine Age",
+            "summary": "",
+        },
+        now,
+    )
+    assert item is not None
+    assert "Actual thesis" in item.payload["text_preview"]
+    assert "investment advice" not in item.payload["text_preview"]
+
+
+def test_sitemap_sorts_newest_before_applying_limit(store_state):
+    store, state = store_state
+    collector = ArticleCollector([], store, state)
+    xml = """<?xml version="1.0"?>
+    <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+      <url><loc>https://example.com/research/old</loc><lastmod>2026-08-25</lastmod></url>
+      <url><loc>https://example.com/research/new</loc><lastmod>2026-08-29</lastmod></url>
+      <url><loc>https://example.com/research/mid</loc><lastmod>2026-08-27</lastmod></url>
+    </urlset>"""
+    rows = collector._sitemap_rows(
+        xml,
+        {"path_contains": "/research/", "max_entries": 2},
+        datetime(2026, 8, 30, tzinfo=UTC),
+    )
+    assert [row["url"] for row in rows] == [
+        "https://example.com/research/new",
+        "https://example.com/research/mid",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_article_source_zero_discovery_is_not_silent(store_state, monkeypatch):
+    store, state = store_state
+    collector = ArticleCollector(
+        [{"id": "changed-site", "kind": "index", "url": "https://example.com/news"}],
+        store,
+        state,
+    )
+
+    class Response:
+        text = "<html><body>No matching links</body></html>"
+        content = text.encode()
+        headers = {"content-type": "text/html"}
+        status_code = 200
+        url = "https://example.com/news"
+
+    async def fake_request(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return Response()
+
+    monkeypatch.setattr("ai_digest.collectors.articles.SafeHTTPClient.request", fake_request)
+    result = await collector.collect(datetime(2026, 8, 30, tzinfo=UTC))
+    assert result.health.status.value == "failed"
+    assert "discovery returned zero rows" in result.health.errors[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_stage", ["put_items", "manifest"])
+async def test_article_cursors_advance_only_after_all_durable_writes(
+    store_state, monkeypatch, fail_stage
+):
+    store, state = store_state
+    await state.init()
+    now = datetime(2026, 8, 30, tzinfo=UTC)
+    collector = ArticleCollector(
+        [{"id": "test", "url": "https://example.com/feed"}],
+        store,
+        state,
+    )
+    item = SourceItem(
+        item_id="article:test:one:hash",
+        item_type="article",
+        source="article:test",
+        surface="editorial",
+        handoff_at=now,
+        first_observed_at=now,
+    )
+    manifest = FetchManifest(
+        fetch_id="fetch-1",
+        source="articles:test",
+        started_at=now,
+        completed_at=now,
+        request={"url": "https://example.com/feed"},
+    )
+
+    async def fake_discover(client, config, observed_at):
+        return [{"url": "https://example.com/one"}], manifest
+
+    async def fake_article(client, config, row, observed_at):
+        return item, {"article:test:cursor": "next"}
+
+    monkeypatch.setattr(collector, "_discover", fake_discover)
+    monkeypatch.setattr(collector, "_article", fake_article)
+    if fail_stage == "put_items":
+
+        async def fail_put(items):
+            raise RuntimeError("database write failed")
+
+        monkeypatch.setattr(state, "put_items", fail_put)
+    else:
+
+        def fail_manifest(value):
+            raise RuntimeError("manifest write failed")
+
+        monkeypatch.setattr(store, "write_fetch_manifest", fail_manifest)
+
+    with pytest.raises(RuntimeError):
+        await collector.collect(now)
+    assert await state.get_cursor("article:test:cursor") is None
 
 
 def test_post_id_parser():

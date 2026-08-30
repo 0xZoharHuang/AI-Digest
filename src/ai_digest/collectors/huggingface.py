@@ -67,7 +67,6 @@ class HuggingFaceCollector(Collector):
             errors.append(f"{type(error).__name__}: {error}")
         finally:
             await client.close()
-        inserted = await self.state.put_items(items)
         for item in items:
             self.store.write_revision(item)
         status = HealthStatus.SUCCESS if not errors else HealthStatus.FAILED
@@ -80,6 +79,7 @@ class HuggingFaceCollector(Collector):
             errors=errors,
         )
         self.store.write_fetch_manifest(manifest)
+        inserted = await self.state.put_items(items)
         return CollectorResult(
             source=self.source,
             items=items,

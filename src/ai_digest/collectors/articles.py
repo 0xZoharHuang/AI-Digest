@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import calendar
 import hashlib
 import time
@@ -31,30 +32,66 @@ class ArticleCollector(Collector):
         items: list[SourceItem] = []
         manifests = []
         errors: list[str] = []
+        cursor_updates: dict[str, str | None] = {}
+        extraction_failures: dict[str, int] = {}
         fetched = 0
+        successful_sources = 0
         try:
             for source_config in self.sources:
                 try:
                     rows, manifest = await self._discover(client, source_config, now)
                     fetched += len(rows)
                     manifests.append(manifest)
-                    for row in rows:
-                        item = await self._article(client, source_config, row, now)
+                    semaphore = asyncio.Semaphore(
+                        int(source_config.get("article_concurrency", 5))
+                    )
+
+                    async def load(  # type: ignore[no-untyped-def]
+                        row,
+                        semaphore=semaphore,
+                        source_config=source_config,
+                    ):
+                        async with semaphore:
+                            return await self._article(client, source_config, row, now)
+
+                    outcomes = await asyncio.gather(
+                        *(load(row) for row in rows), return_exceptions=True
+                    )
+                    for row, outcome in zip(rows, outcomes, strict=True):
+                        if isinstance(outcome, BaseException):
+                            errors.append(
+                                f"{source_config.get('id', 'article')}:{row.get('url')}: "
+                                f"{type(outcome).__name__}: {outcome}"
+                            )
+                            continue
+                        item, updates = outcome
+                        cursor_updates.update(updates)
                         if item:
                             items.append(item)
+                            if item.payload.get("extraction_error"):
+                                source_id = str(source_config.get("id", "article"))
+                                extraction_failures[source_id] = (
+                                    extraction_failures.get(source_id, 0) + 1
+                                )
+                    successful_sources += 1
                 except Exception as error:
                     errors.append(
                         f"{source_config.get('id', 'article')}: {type(error).__name__}: {error}"
                     )
         finally:
             await client.close()
-        inserted = await self.state.put_items(items)
+        errors.extend(
+            f"{source_id}: {count} article body extraction failure(s); metadata preserved"
+            for source_id, count in sorted(extraction_failures.items())
+        )
         for item in items:
             self.store.write_revision(item)
         for manifest in manifests:
             self.store.write_fetch_manifest(manifest)
+        inserted = await self.state.put_items(items)
+        await self.state.set_cursors(cursor_updates)
         status = HealthStatus.SUCCESS
-        if errors and items:
+        if errors and successful_sources:
             status = HealthStatus.PARTIAL
         elif errors:
             status = HealthStatus.FAILED
@@ -79,6 +116,12 @@ class ArticleCollector(Collector):
             rows = self._sitemap_rows(response.text, config, now)
         else:
             rows = self._index_rows(response.text, config)
+        if (
+            not rows
+            and config.get("kind") != "sitemap"
+            and not bool(config.get("allow_empty", False))
+        ):
+            raise RuntimeError("discovery returned zero rows")
         manifest.blob_refs = [blob]
         return rows, finish_manifest(
             manifest,
@@ -111,6 +154,7 @@ class ArticleCollector(Collector):
         root = ET.fromstring(text)
         needles = [value for value in str(config.get("path_contains", "")).split(",") if value]
         rows = []
+        matched = 0
         for element in root.iter():
             if not element.tag.endswith("url"):
                 continue
@@ -118,6 +162,7 @@ class ArticleCollector(Collector):
             lastmod = next((child.text for child in element if child.tag.endswith("lastmod")), None)
             if not location or (needles and not any(needle in location for needle in needles)):
                 continue
+            matched += 1
             updated = parse_datetime(lastmod)
             if updated and updated < now - timedelta(days=7):
                 continue
@@ -132,6 +177,12 @@ class ArticleCollector(Collector):
                     "updated_at": updated,
                 }
             )
+        if matched == 0 and not bool(config.get("allow_empty", False)):
+            raise RuntimeError("sitemap contained zero matching URLs")
+        rows.sort(
+            key=lambda row: row.get("updated_at") or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
         return rows[: int(config.get("max_entries", 100))]
 
     def _index_rows(self, text: str, config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -140,7 +191,8 @@ class ArticleCollector(Collector):
         allowed = {str(value).lower() for value in config.get("allowed_domains", [])}
         rows: list[dict[str, Any]] = []
         seen: set[str] = set()
-        for link in soup.select("a[href]"):
+        selector = str(config.get("link_selector", "a[href]"))
+        for link in soup.select(selector):
             url = urljoin(str(config["url"]), str(link.get("href", "")))
             host = (urlparse(url).hostname or "").lower()
             if allowed and host not in allowed:
@@ -168,14 +220,22 @@ class ArticleCollector(Collector):
         host = (urlparse(url).hostname or "").lower()
         allowed = {str(value).lower() for value in config.get("allowed_domains", [])}
         if allowed and host not in allowed:
-            return None
+            return None, {}
         entity = hashlib.sha256(url.encode()).hexdigest()[:24]
         discovery_key = f"article-discovery:{config['id']}:{entity}"
-        discovery_value = str(
-            row.get("updated_at") or row.get("occurred_at") or row.get("guid") or url
+        discovery_value = (
+            f"{url}:{now.date().isoformat()}"
+            if config.get("kind") == "index"
+            else str(row.get("updated_at") or row.get("occurred_at") or row.get("guid") or url)
         )
         if await self.state.get_cursor(discovery_key) == discovery_value:
-            return None
+            return None, {}
+        source_time = row.get("updated_at") or row.get("occurred_at")
+        if (
+            isinstance(source_time, datetime)
+            and source_time < now - timedelta(days=int(config.get("max_age_days", 7)))
+        ):
+            return None, {discovery_key: discovery_value}
         response = None
         clean_text = ""
         page_date: datetime | None = None
@@ -185,16 +245,30 @@ class ArticleCollector(Collector):
             response = await client.request("GET", url, data_limit=4_000_000)
             html_ref = self.store.write_blob(response.text, ".html")
             raw_refs.append(html_ref)
-            clean_text = (
-                trafilatura.extract(
-                    response.text,
-                    include_comments=False,
-                    include_tables=True,
-                    favor_precision=True,
-                    url=str(response.url),
+            content_selector = config.get("content_selector")
+            if content_selector:
+                soup = BeautifulSoup(response.text, "html.parser")
+                content = soup.select_one(str(content_selector))
+                if content is None:
+                    raise ValueError(f"content selector did not match: {content_selector}")
+                for unwanted in content.select("script,style,noscript"):
+                    unwanted.decompose()
+                clean_text = "\n".join(
+                    line.strip()
+                    for line in content.get_text("\n", strip=True).splitlines()
+                    if line.strip()
                 )
-                or ""
-            )
+            else:
+                clean_text = (
+                    trafilatura.extract(
+                        response.text,
+                        include_comments=False,
+                        include_tables=True,
+                        favor_precision=True,
+                        url=str(response.url),
+                    )
+                    or ""
+                )
             metadata = trafilatura.extract_metadata(response.text, default_url=str(response.url))
             if metadata and metadata.date:
                 page_date = parse_datetime(metadata.date)
@@ -205,9 +279,14 @@ class ArticleCollector(Collector):
         cursor_key = f"article:{config['id']}:{entity}"
         previous_hash = await self.state.get_cursor(cursor_key)
         if previous_hash == clean_hash:
-            await self.state.set_cursor(discovery_key, discovery_value)
-            return None
-        content_status = ContentStatus.FULL if clean_text else ContentStatus.EXTRACTION_FAILED
+            return None, {discovery_key: discovery_value}
+        content_status = (
+            ContentStatus.FULL
+            if clean_text
+            else ContentStatus.PREVIEW
+            if row.get("summary") or row.get("title")
+            else ContentStatus.EXTRACTION_FAILED
+        )
         if clean_text:
             raw_refs.append(self.store.write_blob(clean_text, ".txt"))
         occurred = row.get("occurred_at") or page_date or now
@@ -245,9 +324,9 @@ class ArticleCollector(Collector):
                 "extraction_error": extraction_error,
             },
         )
-        await self.state.set_cursor(cursor_key, clean_hash)
-        await self.state.set_cursor(discovery_key, discovery_value)
-        return item
+        if not clean_text:
+            return item, {}
+        return item, {cursor_key: clean_hash, discovery_key: discovery_value}
 
 
 def _feed_time(value: Any) -> datetime | None:

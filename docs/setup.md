@@ -18,9 +18,14 @@ For the X private List:
 4. Add prepaid credits and keep auto-recharge disabled during the pilot.
 5. Enable the collector only after `doctor` succeeds.
 
-For You requires a persistent Playwright profile with the dedicated research account already logged
-in. It remains best-effort and policy-risky; the official List source is the stable path.
-Run `uv run ai-digest x-login` for the one-time persistent browser login.
+`x_list.compliance_verified` is a fail-closed production gate, not a user acknowledgment checkbox.
+Leave it `false` until deletion/update propagation has an end-to-end test covering the local run,
+shared queue/archive, Codex context and published Lark copies.
+
+X currently exposes no official API for the personalized For You feed, and its developer guidance
+prohibits browser automation. Keep `x_for_you.enabled=false` in production. The Playwright adapter
+is retained only as disabled experimental code; it is not part of production acceptance. Use the
+official private List API as the compliant X source.
 
 ## 2. Configure Lark
 
@@ -41,6 +46,22 @@ manifest before every write, and sends one idempotent direct message.
 Create a standard macOS user named `ai-digest-runner`. Do not place personal projects, SSH keys,
 browser profiles or publisher/source credentials in that home. Log Codex in once as that user.
 
+For a headless runner, OpenAI's documented fallback permits copying the local `auth.json` cache to
+the trusted runner. This installer only does so when explicitly requested, never prints the token,
+and copies no other Codex config, memory, skill, SSH or browser data:
+
+```bash
+AI_DIGEST_COPY_CODEX_AUTH=1 ./scripts/install_macos.sh --apply
+```
+
+Without that flag, authenticate the runner first with
+`codex -c 'cli_auth_credentials_store="file"' login --device-auth`; installation
+fails closed if `codex login status` is not healthy under the runner identity.
+
+Authentication alone is not acceptance. The installer also runs the same custom Codex permission
+profile used by agents and refuses to install launchd jobs unless a workspace write succeeds while
+a zero-byte `auth.json` open is denied by the macOS sandbox.
+
 The installer is dry-run by default:
 
 ```bash
@@ -54,8 +75,23 @@ After inspecting the generated plist paths:
 ```
 
 Apply mode requires administrator access. It creates a credential-free, versioned application copy
-under `/Users/Shared/ai-digest-runtime`, disables the two legacy LaunchAgents, and installs one main
-tick LaunchAgent plus one queue-consuming runner LaunchDaemon.
+under `/Users/Shared/ai-digest-runtime`, unloads the two legacy LaunchAgents and moves their exact
+plist files into the recoverable `legacy-launchagents/` archive, then installs three
+separate launchd jobs:
+
+- `com.ai-digest.tick` is calendar-only and performs scheduled collection.
+- `com.ai-digest.recover` watches `completed/` and only runs `tick --event recover`; it never starts
+  a second collection.
+- `com.ai-digest.agent-runner` watches `jobs/` and runs Phase 2–4 as the isolated standard user.
+
+The installer creates `staging/`, `jobs/`, `completed/`, `publish_pending/`, `archived/`, `failed/`
+and `logs/` as setgid shared queues. The versioned runner app is read-only after dependency setup,
+while executable bits in its virtual environment and Node binaries are preserved.
+
+The calendar job polls GitHub at 01:00/07:00/13:00/19:00, the official X List at
+03:00/07:00/11:00/15:00/19:00/23:00 when enabled, and runs the complete daily collection at 07:00.
+The 07:10 and 07:19 entries are crash-recovery retries: an active/sealed/queued/completed run is a
+no-op, while a `running` record older than 18 minutes may be retried before the 07:20 cutoff.
 
 ## 4. Acceptance sequence
 

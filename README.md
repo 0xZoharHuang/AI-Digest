@@ -26,8 +26,10 @@ the one-time X, Lark, Codex runner and launchd setup.
 
 ## Sources
 
-- X private List via the official API; X For You via an explicitly enabled local Playwright profile.
-- GitHub Trending plus two bounded search lanes: recent active 1–499-star and 500–5000-star repos.
+- X private List via the official API. X For You is not a production source because there is no
+  official personalized-feed API and X prohibits browser automation.
+- GitHub Trending plus bounded recent/activity search lanes for 1–499-star and 500–5000-star
+  repos, immutable forward snapshots, 6h/24h/7d deltas, threshold crossings and growth events.
 - arXiv categories `cs.RO`, `cs.AI`, `cs.LG`, `cs.CV`, `cs.CL`, `stat.ML`.
 - Hugging Face Daily Papers.
 - First-party lab/company feeds and sites.
@@ -46,7 +48,6 @@ cp config/interests.example.md config/interests.md
 uv run ai-digest doctor
 uv run ai-digest x-auth
 uv run ai-digest x-list-bootstrap
-uv run ai-digest x-login
 ```
 
 Local config, credentials and runtime data are ignored by Git.
@@ -64,6 +65,7 @@ uv run ai-digest publish /path/to/run
 uv run ai-digest pipeline              # local development, no publish
 uv run ai-digest pipeline --publish
 uv run ai-digest tick --event daily
+uv run ai-digest tick --event recover
 uv run ai-digest agent-worker
 ```
 
@@ -89,9 +91,9 @@ through `/Users/Shared/ai-digest-runtime`. The main user retains X, GitHub, brow
 credentials. Arbitrary external metadata requests reject private, loopback, link-local and cloud
 metadata addresses.
 
-X For You browser automation is disabled in the public example because X's current developer rules
-prohibit non-API browser automation. Enabling it is an explicit local risk decision. X API content
-is indexed with a 30-day text-retention expiry and requires compliance deletion handling.
+X For You browser automation is disabled because X's current developer rules prohibit non-API
+browser automation. X List remains disabled until official API access and deletion/update
+compliance are both verified; a local expiry alone is not presented as full compliance.
 
 ## License
 

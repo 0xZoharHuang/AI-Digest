@@ -32,6 +32,8 @@ class ArxivCollector(Collector):
             blob = self.store.write_blob(response.text, ".xml")
             parsed = feedparser.parse(response.content)
             entries = list(parsed.entries)
+            if parsed.bozo:
+                errors.append(f"feed_parse: {parsed.bozo_exception}")
             fetched = len(entries)
             for entry in entries:
                 item = self._entry(entry, blob, now)
@@ -42,10 +44,15 @@ class ArxivCollector(Collector):
             errors.append(f"{type(error).__name__}: {error}")
         finally:
             await client.close()
-        inserted = await self.state.put_items(items)
         for item in items:
             self.store.write_revision(item)
-        status = HealthStatus.SUCCESS if not errors else HealthStatus.FAILED
+        status = (
+            HealthStatus.SUCCESS
+            if not errors
+            else HealthStatus.PARTIAL
+            if items
+            else HealthStatus.FAILED
+        )
         manifest = finish_manifest(
             manifest,
             response=response,
@@ -55,6 +62,7 @@ class ArxivCollector(Collector):
             errors=errors,
         )
         self.store.write_fetch_manifest(manifest)
+        inserted = await self.state.put_items(items)
         return CollectorResult(
             source=self.source,
             items=items,
@@ -70,24 +78,51 @@ class ArxivCollector(Collector):
         if not match:
             return None
         paper_id = match.group(1)
-        version = int(match.group(2) or 1)
+        explicit_version = match.group(2) or entry.get("arxiv_version")
+        version = int(explicit_version or 1)
         occurred = parse_datetime(entry.get("published") or entry.get("updated")) or now
         updated = parse_datetime(entry.get("updated"))
         authors = [author.get("name", "") for author in entry.get("authors", [])]
         categories = [tag.get("term", "") for tag in entry.get("tags", [])]
-        announce_type = entry.get("arxiv_announce_type") or entry.get("announce_type")
+        announce_type = str(
+            entry.get("arxiv_announce_type") or entry.get("announce_type") or "new"
+        ).lower()
+        if announce_type in {"replace", "withdraw"} and not explicit_version:
+            revision = (updated or occurred).strftime("%Y%m%dT%H%M%S")
+            item_id = f"arxiv:{paper_id}:{announce_type}:{revision}"
+        elif announce_type in {"cross", "cross-list"}:
+            revision = (updated or occurred).strftime("%Y%m%d")
+            item_id = f"arxiv:{paper_id}:cross:{revision}"
+        else:
+            item_id = f"arxiv:{paper_id}:v{version}"
         return SourceItem(
-            item_id=f"arxiv:{paper_id}:v{version}",
+            item_id=item_id,
             item_type="paper",
             source=self.source,
             surface="category_feed",
-            change="version" if version > 1 else "announced",
+            change=(
+                "withdrawn"
+                if announce_type == "withdraw"
+                else "version"
+                if announce_type == "replace" or version > 1
+                else "cross_listed"
+                if announce_type in {"cross", "cross-list"}
+                else "announced"
+            ),
             occurred_at=occurred,
             updated_at=updated,
             first_observed_at=now,
             handoff_at=updated or occurred,
-            time_basis=TimeBasis.UPDATED if updated and version > 1 else TimeBasis.OCCURRED,
-            content_status=ContentStatus.FULL,
+            time_basis=(
+                TimeBasis.UPDATED
+                if updated and (version > 1 or announce_type in {"replace", "withdraw"})
+                else TimeBasis.OCCURRED
+            ),
+            content_status=(
+                ContentStatus.TOMBSTONE
+                if announce_type == "withdraw"
+                else ContentStatus.FULL
+            ),
             raw_refs=[blob],
             payload={
                 "arxiv_id": paper_id,

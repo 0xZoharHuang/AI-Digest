@@ -5,7 +5,7 @@ from pathlib import Path
 
 from ai_digest.config import LarkConfig
 from ai_digest.models import PublishNode
-from ai_digest.publisher import LarkPublisher, _extract_envelope
+from ai_digest.publisher import LarkPublisher, _extract_envelope, _rewrite_report_links
 
 
 class FakeLark:
@@ -27,7 +27,14 @@ class FakeLark:
             )
         return self.nodes[key]
 
-    def write_markdown(self, node: PublishNode, content: str, workdir: Path) -> str:
+    def write_markdown(
+        self,
+        node: PublishNode,
+        content: str,
+        workdir: Path,
+        *,
+        required_substrings: list[str] | None = None,
+    ) -> str:
         self.writes.append((node.node_token, content))
         return "1"
 
@@ -39,9 +46,15 @@ def test_lark_publisher_builds_tree_rewrites_links_and_is_idempotent(tmp_path):
     run_dir = tmp_path / "runs" / "2026-08-30" / "attempt-0001"
     report = run_dir / "03_research" / "b1" / "report.md"
     report.parent.mkdir(parents=True)
+    (run_dir / "00_run_manifest.json").write_text(json.dumps({"run_id": "2026-08-30-a0001-test"}))
     report.write_text("# Report One\n\nBody")
-    (run_dir / "03_research" / "successes.json").write_text(json.dumps({"b1": str(report)}))
+    (run_dir / "03_research" / "successes.json").write_text(
+        json.dumps({"b1": "b1/report.md"})
+    )
     (run_dir / "03_research" / "failures.json").write_text("[]")
+    health = run_dir / "01_phase1" / "source_health.json"
+    health.parent.mkdir(parents=True)
+    health.write_text("{}")
     brief = run_dir / "04_brief" / "daily_brief.md"
     brief.parent.mkdir(parents=True)
     brief.write_text("# Brief\n\n[Full](report://b1)")
@@ -61,3 +74,12 @@ def test_lark_publisher_builds_tree_rewrites_links_and_is_idempotent(tmp_path):
 
 def test_lark_envelope_parser_ignores_progress_lines():
     assert _extract_envelope('Creating node...\n{"ok":true,"data":{"x":1}}\n')["ok"] is True
+
+
+def test_report_link_rewrite_handles_prefix_bundle_ids_exactly():
+    content = "[A](report://agent) [B](report://agent-tools)"
+    rewritten = _rewrite_report_links(
+        content,
+        {"agent": "https://lark.test/a", "agent-tools": "https://lark.test/b"},
+    )
+    assert rewritten == "[A](https://lark.test/a) [B](https://lark.test/b)"

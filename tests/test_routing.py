@@ -45,3 +45,24 @@ def test_routing_accepts_research_watch_and_noise(tmp_path):
     )
     _, errors = phases._read_and_validate_routing(output, index)
     assert errors == []
+
+
+def test_routing_rejects_bundle_assignment_mismatch(tmp_path):
+    runtime = RuntimeConfig(runtime_root=tmp_path, shared_runtime_root=tmp_path / "shared")
+    phases = AgentPhases(runtime)
+    index = tmp_path / "index.json"
+    index.write_text(json.dumps({"item_ids": ["a", "b"]}))
+    output = tmp_path / "output.json"
+    output.write_text(
+        json.dumps(
+            {
+                "bundles": [{"bundle_id": "b1", "label": "topic", "item_ids": ["b"]}],
+                "assignments": [
+                    {"id": "a", "d": "r", "t": ["b1"]},
+                    {"id": "b", "d": "w", "t": []},
+                ],
+            }
+        )
+    )
+    _, errors = phases._read_and_validate_routing(output, index)
+    assert any("membership does not match" in error for error in errors)

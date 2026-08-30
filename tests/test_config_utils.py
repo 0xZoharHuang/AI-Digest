@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from ai_digest.config import (
+    REPO_ROOT,
     load_interests,
     load_runtime_config,
     load_sources_config,
@@ -30,6 +31,11 @@ def test_config_loaders_accept_explicit_files(tmp_path):
     assert runtime.timezone == "UTC"
     assert runtime.runtime_root.is_absolute()
     assert sources.github["queries"] == ["topic:test"]
+
+
+def test_checked_in_example_source_config_parses():
+    sources = load_sources_config(REPO_ROOT / "config" / "sources.example.toml")
+    assert sources.github["early_watch_rechecks_per_poll"] == 20
 
 
 def test_atomic_writes_hash_dates_and_redaction(tmp_path):

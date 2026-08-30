@@ -97,7 +97,7 @@ class CollectorResult(BaseModel):
 
 
 class Bundle(BaseModel):
-    bundle_id: str
+    bundle_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")
     label: str
     item_ids: list[str]
 

@@ -9,11 +9,19 @@
     <string>__PYTHON__</string><string>__PROJECT__/scripts/launchd_tick.py</string>
   </array>
   <key>WorkingDirectory</key><string>__PROJECT__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
   <key>StartCalendarInterval</key>
   <array>
+    <dict><key>Hour</key><integer>1</integer><key>Minute</key><integer>0</integer></dict>
     <dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>0</integer></dict>
     <dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>10</integer></dict>
+    <dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>19</integer></dict>
     <dict><key>Hour</key><integer>11</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>13</integer><key>Minute</key><integer>0</integer></dict>
     <dict><key>Hour</key><integer>15</integer><key>Minute</key><integer>0</integer></dict>
     <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>0</integer></dict>
     <dict><key>Hour</key><integer>20</integer><key>Minute</key><integer>0</integer></dict>

@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+from datetime import UTC, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from rich.console import Console
 
@@ -13,6 +15,7 @@ from .doctor import format_doctor, run_doctor
 from .phase1 import Phase1Runner
 from .pipeline import (
     enqueue_agent_job,
+    enqueue_pending_agent_jobs,
     recover_and_publish,
     run_agent_worker,
     run_local_pipeline,
@@ -110,14 +113,16 @@ async def async_main(args: argparse.Namespace) -> int:
         recovered = recover_and_publish(runtime)
         if recovered:
             console.print(f"Recovered/published {len(recovered)} run(s)")
-        if should_skip_late(runtime):
+        replayed = await enqueue_pending_agent_jobs(runtime)
+        if replayed:
+            console.print(f"Queued/replayed {len(replayed)} sealed run(s)")
+        if args.event == "daily" and should_skip_late(runtime):
             skipped = await phase1.record_skipped_asleep()
-            if args.event == "daily":
-                console.print(
-                    f"skipped_asleep: daily start is later than configured cutoff"
-                    f"{f' ({skipped})' if skipped else ''}"
-                )
-                return 0
+            console.print(
+                f"skipped_asleep: daily start is later than configured cutoff"
+                f"{f' ({skipped})' if skipped else ''}"
+            )
+            return 0
         if args.event == "recover":
             return 0
         if args.event == "x-list":
@@ -132,12 +137,17 @@ async def async_main(args: argparse.Namespace) -> int:
             results = await phase1.collect_only({"github"})
             console.print_json(data=[row.health.model_dump(mode="json") for row in results])
             return 0
+        await phase1.initialize()
+        local_date = datetime.now(UTC).astimezone(ZoneInfo(runtime.timezone)).date().isoformat()
+        if await phase1.state.has_daily_run_in_progress_or_done(local_date):
+            console.print(f"no-op: daily run already active or complete for {local_date}")
+            return 0
         if args.local_agents:
             manifest, run_dir = await run_local_pipeline(runtime, sources, publish=True)
         else:
             manifest, run_dir = await phase1.run_daily()
             if manifest.status.value != "failed":
-                enqueue_agent_job(runtime, run_dir)
+                await enqueue_agent_job(runtime, run_dir)
         console.print(f"{manifest.status.value}: {run_dir}")
         return 0
     if args.command == "agent-worker":

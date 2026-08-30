@@ -5,14 +5,49 @@ import base64
 import os
 import subprocess
 import time
-from datetime import timedelta
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from bs4 import BeautifulSoup
 
-from ..models import CollectorResult, ContentStatus, HealthStatus, SourceItem, TimeBasis
-from ..utils import parse_datetime
+from ..models import (
+    CollectorResult,
+    ContentStatus,
+    FetchManifest,
+    HealthStatus,
+    SourceItem,
+    TimeBasis,
+)
+from ..utils import json_dumps, parse_datetime, sha256_text
 from .base import Collector, SafeHTTPClient, finish_manifest, health_from, new_fetch_manifest
+
+
+@dataclass(frozen=True)
+class SearchRequest:
+    query: str
+    lane: str
+    stars: str
+    sort: str
+    variant: str = "standard"
+
+
+@dataclass
+class RepoCandidate:
+    repo: dict[str, Any]
+    lanes: set[str] = field(default_factory=set)
+    raw_refs: list[str] = field(default_factory=list)
+    trending_text: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class PreparedRepo:
+    snapshot: dict[str, Any]
+    items: list[SourceItem]
+    event_markers: dict[str, tuple[str, datetime, int]]
+
+
+CandidateRow = tuple[dict[str, Any], str | None, list[str], str]
 
 
 class GitHubCollector(Collector):
@@ -20,12 +55,15 @@ class GitHubCollector(Collector):
 
     def __init__(self, config, store, state):  # type: ignore[no-untyped-def]
         super().__init__(config, store, state)
-        self._scheduled_item_ids: set[str] = set()
         self._hydrate_semaphore = asyncio.Semaphore(10)
+        self._repo_semaphore = asyncio.Semaphore(10)
+        self._repo_cache: dict[str, tuple[dict[str, Any], str]] = {}
 
     async def collect(self, now):  # type: ignore[no-untyped-def]
         if not self.enabled:
             return self.disabled()
+        now = now.astimezone(UTC)
+        self._repo_cache.clear()
         started = time.monotonic()
         token = await asyncio.to_thread(_github_token)
         headers = {
@@ -35,47 +73,85 @@ class GitHubCollector(Collector):
         if token:
             headers["Authorization"] = f"Bearer {token}"
         client = SafeHTTPClient(timeout=35)
-        items: list[SourceItem] = []
+        candidates: dict[str, RepoCandidate] = {}
         manifests = []
         errors: list[str] = []
         fetched = 0
         try:
             for since in ("daily", "weekly"):
-                result, manifest = await self._collect_trending(client, headers, since, now)
-                items.extend(result)
+                rows, manifest = await self._collect_trending(client, headers, since, now)
+                for repo, lane, raw_refs, trend_text in rows:
+                    self._merge_candidate(
+                        candidates,
+                        repo,
+                        lane,
+                        raw_refs,
+                        trend_text=trend_text,
+                    )
                 fetched += manifest.fetched_count
                 manifests.append(manifest)
-            cutoff_created = (
-                now - timedelta(days=int(self.config.get("created_within_days", 365)))
-            ).date()
-            cutoff_pushed = (
-                now - timedelta(days=int(self.config.get("pushed_within_days", 45)))
-            ).date()
-            for query in self.config.get("queries", []):
-                for lane, stars in (
-                    ("early", str(self.config.get("early_stars", "1..499"))),
-                    ("emerging", str(self.config.get("emerging_stars", "500..5000"))),
-                ):
-                    qualified = (
-                        f"{query} stars:{stars} created:>={cutoff_created} "
-                        f"pushed:>={cutoff_pushed} fork:false archived:false"
-                    )
-                    result, manifest = await self._search(client, headers, qualified, lane, now)
-                    items.extend(result)
-                    fetched += manifest.fetched_count
-                    manifests.append(manifest)
+                errors.extend(manifest.errors)
+
+            for request in self._search_plan(now):
+                rows, manifest = await self._search(client, headers, request, now)
+                for repo, lane, raw_refs, _ in rows:
+                    self._merge_candidate(candidates, repo, lane, raw_refs)
+                fetched += manifest.fetched_count
+                manifests.append(manifest)
+                errors.extend(manifest.errors)
+
+            watchlist = await self.state.github_early_watchlist(
+                now,
+                int(self.config.get("early_watch_days", 365)),
+                int(self.config.get("early_watch_rechecks_per_poll", 20)),
+            )
+            watchlist = [row for row in watchlist if row["repo_id"] not in candidates]
+            if watchlist:
+                rows, manifest = await self._collect_watched(client, headers, watchlist, now)
+                for repo, lane, raw_refs, _ in rows:
+                    self._merge_candidate(candidates, repo, lane, raw_refs)
+                fetched += manifest.fetched_count
+                manifests.append(manifest)
+                errors.extend(manifest.errors)
         except Exception as error:
             errors.append(f"{type(error).__name__}: {error}")
+
+        try:
+            prepared = list(
+                await asyncio.gather(
+                    *[
+                        self._prepare_repo(client, headers, candidate, now)
+                        for candidate in candidates.values()
+                    ]
+                )
+            )
         finally:
             await client.close()
 
-        inserted = await self.state.put_items(items)
-        for item in items:
-            self.store.write_revision(item)
+        items = [item for value in prepared for item in value.items]
+        snapshots = [value.snapshot for value in prepared]
+        event_markers = {
+            key: marker for value in prepared for key, marker in value.event_markers.items()
+        }
+
+        # These are all atomic file writes. StateDB advances the immutable snapshot
+        # index and event markers only after every required file is durable.
+        for value in prepared:
+            snapshot = value.snapshot
+            snapshot_ref = self.store.write_github_snapshot(snapshot)
+            snapshot["file_ref"] = snapshot_ref
+            snapshot_blob = self.store.write_blob(json_dumps(snapshot), ".github-snapshot.json")
+            for item in value.items:
+                item.raw_refs = list(dict.fromkeys([snapshot_blob, *item.raw_refs]))
+                item.payload["snapshot_ref"] = snapshot_ref
+                item.payload["snapshot"] = dict(snapshot)
+                self.store.write_revision(item)
         for manifest in manifests:
             self.store.write_fetch_manifest(manifest)
+
+        inserted = await self.state.commit_github_poll(items, snapshots, event_markers)
         status = HealthStatus.SUCCESS
-        if errors and items:
+        if errors and snapshots:
             status = HealthStatus.PARTIAL
         elif errors:
             status = HealthStatus.FAILED
@@ -84,17 +160,60 @@ class GitHubCollector(Collector):
             items=items,
             manifests=manifests,
             health=health_from(
-                self.source, started, status, fetched, len(items), len(inserted), errors
+                self.source,
+                started,
+                status,
+                fetched,
+                len(snapshots),
+                len(inserted),
+                errors,
             ),
+        )
+
+    def _search_plan(self, now: datetime) -> list[SearchRequest]:
+        queries = [str(value).strip() for value in self.config.get("queries", []) if str(value)]
+        if not queries:
+            return []
+        budget = max(0, min(int(self.config.get("search_request_budget", 28)), 30))
+        slot = int(now.astimezone(UTC).timestamp() // timedelta(hours=6).total_seconds())
+        start = slot % len(queries)
+        ordered = [queries[(start + offset) % len(queries)] for offset in range(len(queries))]
+
+        plan: list[SearchRequest] = []
+        emerging_stars = str(self.config.get("emerging_stars", "500..5000"))
+        early_stars = str(self.config.get("early_stars", "1..499"))
+        for offset, query in enumerate(ordered):
+            # Half of the 500..5000 lanes are activity-sorted on every poll; the
+            # halves swap every six hours. This avoids returning only incumbents.
+            sort = "stars" if (slot + offset) % 2 == 0 else "updated"
+            plan.append(SearchRequest(query, "emerging", emerging_stars, sort))
+        for query in ordered:
+            plan.append(SearchRequest(query, "early", early_stars, "updated"))
+        for query in ordered:
+            plan.append(
+                SearchRequest(query, "emerging", emerging_stars, "updated", variant="recent")
+            )
+        return plan[:budget]
+
+    def _qualified_query(self, request: SearchRequest, now: datetime) -> str:
+        created_days = int(self.config.get("created_within_days", 365))
+        if request.variant == "recent":
+            created_days = int(self.config.get("recent_created_within_days", 45))
+        pushed_days = int(self.config.get("pushed_within_days", 45))
+        cutoff_created = (now - timedelta(days=created_days)).date()
+        cutoff_pushed = (now - timedelta(days=pushed_days)).date()
+        return (
+            f"{request.query} stars:{request.stars} created:>={cutoff_created} "
+            f"pushed:>={cutoff_pushed} fork:false archived:false"
         )
 
     async def _collect_trending(self, client, headers, since, now):  # type: ignore[no-untyped-def]
         url = f"https://github.com/trending?since={since}"
-        manifest = new_fetch_manifest("github_trending", url)
+        manifest = new_fetch_manifest("github_trending", url, now)
         response = await client.request("GET", url, headers={"Accept": "text/html"})
         blob = self.store.write_blob(response.text, ".html")
         soup = BeautifulSoup(response.text, "html.parser")
-        rows = []
+        rows: list[tuple[str, str]] = []
         for article in soup.select("article.Box-row"):
             link = article.select_one("h2 a")
             if link is None:
@@ -104,38 +223,57 @@ class GitHubCollector(Collector):
                 continue
             text = " ".join(article.get_text(" ", strip=True).split())
             rows.append((name, text))
-        tasks = []
-        for name, trend_text in rows:
-            repo = await self._repo(client, headers, name)
-            if not repo:
+
+        results = await asyncio.gather(
+            *[self._repo(client, headers, name) for name, _ in rows],
+            return_exceptions=True,
+        )
+        candidates = []
+        row_errors: list[str] = []
+        for (name, trend_text), result in zip(rows, results, strict=True):
+            if isinstance(result, BaseException):
+                row_errors.append(f"{name}: {type(result).__name__}: {result}")
                 continue
-            item_id = f"github:{repo['id']}:trending_{since}"
-            if item_id in self._scheduled_item_ids or await self.state.has_item(item_id):
-                continue
-            self._scheduled_item_ids.add(item_id)
-            tasks.append(
-                self._repo_item(client, headers, repo, f"trending_{since}", now, [blob], trend_text)
-            )
-        items = list(await asyncio.gather(*tasks)) if tasks else []
+            repo, repo_ref = result
+            candidates.append((repo, f"trending_{since}", [blob, repo_ref], trend_text))
         manifest.blob_refs = [blob]
-        return items, finish_manifest(
+        status = HealthStatus.PARTIAL if row_errors and candidates else HealthStatus.SUCCESS
+        if row_errors and not candidates:
+            status = HealthStatus.FAILED
+        return candidates, finish_manifest(
             manifest,
             response=response,
             fetched_count=len(rows),
-            parsed_count=len(items),
+            parsed_count=len(candidates),
+            status=status,
+            errors=row_errors,
         )
 
-    async def _search(self, client, headers, query, lane, now):  # type: ignore[no-untyped-def]
+    async def _search(
+        self,
+        client: SafeHTTPClient,
+        headers: dict[str, str],
+        request: SearchRequest,
+        now: datetime,
+    ) -> tuple[list[CandidateRow], FetchManifest]:
         url = "https://api.github.com/search/repositories"
-        manifest = new_fetch_manifest(self.source, url)
-        manifest.request["query"] = query
+        manifest = new_fetch_manifest(self.source, url, now)
+        query = self._qualified_query(request, now)
+        manifest.request.update(
+            {
+                "query": query,
+                "lane": request.lane,
+                "sort": request.sort,
+                "variant": request.variant,
+            }
+        )
         response = await client.request(
             "GET",
             url,
             headers=headers,
             params={
                 "q": query,
-                "sort": "stars",
+                "sort": request.sort,
                 "order": "desc",
                 "per_page": int(self.config.get("per_query", 20)),
             },
@@ -143,42 +281,289 @@ class GitHubCollector(Collector):
         blob = self.store.write_blob(response.text, ".json")
         payload = response.json()
         repos = payload.get("items") or []
-        tasks = []
-        for repo in repos:
-            item_id = f"github:{repo['id']}:{lane}"
-            if item_id in self._scheduled_item_ids or await self.state.has_item(item_id):
-                continue
-            self._scheduled_item_ids.add(item_id)
-            tasks.append(self._repo_item(client, headers, repo, lane, now, [blob]))
-        items = list(await asyncio.gather(*tasks)) if tasks else []
+        candidates: list[CandidateRow] = [
+            (repo, request.lane, [blob], "")
+            for repo in repos
+            if isinstance(repo, dict) and repo.get("id") is not None and repo.get("full_name")
+        ]
         manifest.blob_refs = [blob]
-        return items, finish_manifest(
+        return candidates, finish_manifest(
             manifest,
             response=response,
             fetched_count=len(repos),
-            parsed_count=len(items),
+            parsed_count=len(candidates),
         )
 
-    async def _repo(self, client, headers, full_name):  # type: ignore[no-untyped-def]
-        response = await client.request(
-            "GET", f"https://api.github.com/repos/{full_name}", headers=headers
-        )
-        return response.json()
-
-    async def _repo_item(
+    async def _collect_watched(
         self,
-        client,
-        headers,
-        repo,
-        lane,
-        now,
-        raw_refs,
-        trending_text="",
-    ):  # type: ignore[no-untyped-def]
+        client: SafeHTTPClient,
+        headers: dict[str, str],
+        watchlist: list[dict[str, str]],
+        now: datetime,
+    ) -> tuple[list[CandidateRow], FetchManifest]:
+        url = "https://api.github.com/repos/{owner}/{repo}"
+        manifest = new_fetch_manifest("github_watch", url, now)
+        manifest.request.update(
+            {
+                "kind": "early_lane_recheck",
+                "repositories": [row["full_name"] for row in watchlist],
+            }
+        )
+        results = await asyncio.gather(
+            *[self._repo(client, headers, row["full_name"]) for row in watchlist],
+            return_exceptions=True,
+        )
+        candidates: list[CandidateRow] = []
+        errors: list[str] = []
+        for row, result in zip(watchlist, results, strict=True):
+            if isinstance(result, BaseException):
+                errors.append(
+                    f"{row['full_name']}: {type(result).__name__}: {result}"
+                )
+                continue
+            repo, raw_ref = result
+            candidates.append((repo, None, [raw_ref], ""))
+        manifest.blob_refs = [raw_refs[0] for _, _, raw_refs, _ in candidates]
+        status = HealthStatus.PARTIAL if errors and candidates else HealthStatus.SUCCESS
+        if errors and not candidates:
+            status = HealthStatus.FAILED
+        return candidates, finish_manifest(
+            manifest,
+            fetched_count=len(watchlist),
+            parsed_count=len(candidates),
+            status=status,
+            errors=errors,
+        )
+
+    async def _repo(
+        self, client: SafeHTTPClient, headers: dict[str, str], full_name: str
+    ) -> tuple[dict[str, Any], str]:
+        cached = self._repo_cache.get(full_name)
+        if cached is not None:
+            return cached
+        async with self._repo_semaphore:
+            cached = self._repo_cache.get(full_name)
+            if cached is not None:
+                return cached
+            response = await client.request(
+                "GET", f"https://api.github.com/repos/{full_name}", headers=headers
+            )
+            raw_ref = self.store.write_blob(response.text, ".json")
+            value = response.json(), raw_ref
+            self._repo_cache[full_name] = value
+            return value
+
+    def _merge_candidate(
+        self,
+        candidates: dict[str, RepoCandidate],
+        repo: dict[str, Any],
+        lane: str | None,
+        raw_refs: list[str],
+        *,
+        trend_text: str = "",
+    ) -> None:
+        repo_id = str(int(repo["id"]))
+        candidate = candidates.get(repo_id)
+        if candidate is None:
+            candidate = RepoCandidate(repo=dict(repo))
+            candidates[repo_id] = candidate
+        else:
+            candidate.repo.update({key: value for key, value in repo.items() if value is not None})
+        if lane is not None:
+            candidate.lanes.add(lane)
+        candidate.raw_refs = list(dict.fromkeys([*candidate.raw_refs, *raw_refs]))
+        if lane is not None and trend_text:
+            candidate.trending_text[lane] = trend_text
+
+    async def _prepare_repo(
+        self,
+        client: SafeHTTPClient,
+        headers: dict[str, str],
+        candidate: RepoCandidate,
+        now: datetime,
+    ) -> PreparedRepo:
+        repo = candidate.repo
+        repo_id = str(int(repo["id"]))
+        snapshot = self._snapshot(repo, candidate, now)
+        thresholds = self._crossing_thresholds()
+        lane_ids = {lane: f"github:{repo_id}:{lane}" for lane in sorted(candidate.lanes)}
+        crossing_ids = {
+            threshold: f"github:{repo_id}:crossed_{threshold}" for threshold in thresholds
+        }
+        growth_key = f"github:{repo_id}:growth"
+        context = await self.state.github_repo_context(
+            repo_id,
+            now,
+            [*lane_ids.values(), *crossing_ids.values()],
+            growth_key,
+        )
+
+        baselines = context["baselines"]
+        star_deltas: dict[str, int | None] = {}
+        delta_baselines: dict[str, str | None] = {}
+        for label in ("6h", "24h", "7d"):
+            baseline = baselines[label]
+            if baseline is None:
+                star_deltas[label] = None
+                delta_baselines[label] = None
+            else:
+                star_deltas[label] = int(snapshot["stars"]) - int(baseline["stars"])
+                delta_baselines[label] = str(baseline["observed_at"])
+        snapshot["star_deltas"] = star_deltas
+        snapshot["delta_baselines"] = delta_baselines
+        snapshot_id = sha256_text(json_dumps(snapshot))
+        snapshot["snapshot_id"] = snapshot_id
+
+        existing = set(context["existing_item_ids"])
+        event_specs: list[tuple[str, str, str, dict[str, Any]]] = []
+        for lane, item_id in lane_ids.items():
+            if item_id not in existing:
+                event_specs.append(
+                    (item_id, lane, "entered_lane", {"kind": "entered_lane", "lane": lane})
+                )
+
+        latest = context["latest"]
+        if latest is not None:
+            previous_stars = int(latest["stars"])
+            for threshold, item_id in crossing_ids.items():
+                if item_id not in existing and previous_stars < threshold <= int(snapshot["stars"]):
+                    event_specs.append(
+                        (
+                            item_id,
+                            "growth",
+                            "crossed_star_threshold",
+                            {
+                                "kind": "crossed_star_threshold",
+                                "threshold": threshold,
+                                "previous_stars": previous_stars,
+                            },
+                        )
+                    )
+
+        triggers = {
+            label: delta
+            for label, delta in star_deltas.items()
+            if delta is not None and delta >= self._growth_threshold(label)
+        }
+        growth_event_at = parse_datetime(context["growth_event_at"])
+        cooldown = timedelta(hours=int(self.config.get("growth_event_cooldown_hours", 24)))
+        cooldown_elapsed = growth_event_at is None or now - growth_event_at >= cooldown
+        new_stars = latest is not None and int(snapshot["stars"]) > int(latest["stars"])
+        event_markers: dict[str, tuple[str, datetime, int]] = {}
+        if triggers and new_stars and cooldown_elapsed:
+            item_id = f"github:{repo_id}:growth:{snapshot_id[:16]}"
+            event_specs.append(
+                (
+                    item_id,
+                    "growth",
+                    "star_growth",
+                    {"kind": "star_growth", "triggered_horizons": triggers},
+                )
+            )
+            event_markers[growth_key] = (
+                item_id,
+                now,
+                int(self.config.get("growth_event_cooldown_hours", 24)),
+            )
+
+        readme = ""
+        release: dict[str, Any] | None = None
+        extra_refs: list[str] = []
+        if event_specs:
+            readme, release, extra_refs = await self._hydrate_repo(
+                client, headers, str(repo["full_name"])
+            )
+        raw_refs = list(dict.fromkeys([*candidate.raw_refs, *extra_refs]))
+        base_payload = self._event_payload(
+            repo,
+            candidate,
+            snapshot,
+            readme=readme,
+            release=release,
+        )
+        created = parse_datetime(repo.get("created_at"))
+        items = [
+            SourceItem(
+                item_id=item_id,
+                item_type="github_repository",
+                source=self.source,
+                surface=surface,
+                change=change,
+                occurred_at=created if change == "entered_lane" else None,
+                first_observed_at=now,
+                handoff_at=now,
+                time_basis=TimeBasis.OBSERVED,
+                content_status=ContentStatus.PREVIEW,
+                raw_refs=list(raw_refs),
+                payload={**base_payload, "event": event},
+            )
+            for item_id, surface, change, event in event_specs
+        ]
+        return PreparedRepo(snapshot=snapshot, items=items, event_markers=event_markers)
+
+    def _snapshot(
+        self, repo: dict[str, Any], candidate: RepoCandidate, now: datetime
+    ) -> dict[str, Any]:
+        license_value = repo.get("license") or {}
+        owner = repo.get("owner") or {}
+        return {
+            "schema_version": 1,
+            "repo_id": str(int(repo["id"])),
+            "observed_at": now.astimezone(UTC).isoformat(),
+            "full_name": str(repo["full_name"]),
+            "url": repo.get("html_url"),
+            "description": repo.get("description") or "",
+            "stars": int(repo.get("stargazers_count") or 0),
+            "forks": int(repo.get("forks_count") or 0),
+            "open_issues": int(repo.get("open_issues_count") or 0),
+            "watchers": int(repo.get("subscribers_count") or repo.get("watchers_count") or 0),
+            "size_kb": int(repo.get("size") or 0),
+            "language": repo.get("language"),
+            "topics": repo.get("topics") or [],
+            "license": license_value.get("spdx_id") if isinstance(license_value, dict) else None,
+            "owner": owner.get("login") if isinstance(owner, dict) else None,
+            "created_at": repo.get("created_at"),
+            "updated_at": repo.get("updated_at"),
+            "pushed_at": repo.get("pushed_at"),
+            "default_branch": repo.get("default_branch"),
+            "archived": bool(repo.get("archived", False)),
+            "disabled": bool(repo.get("disabled", False)),
+            "fork": bool(repo.get("fork", False)),
+            "lanes": sorted(candidate.lanes),
+        }
+
+    def _event_payload(
+        self,
+        repo: dict[str, Any],
+        candidate: RepoCandidate,
+        snapshot: dict[str, Any],
+        *,
+        readme: str,
+        release: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        return {
+            "repo_id": repo["id"],
+            "full_name": repo["full_name"],
+            "url": repo.get("html_url"),
+            "description": repo.get("description") or "",
+            "language": repo.get("language"),
+            "topics": repo.get("topics") or [],
+            "lanes": sorted(candidate.lanes),
+            "trending_text": dict(candidate.trending_text),
+            "readme_preview": readme,
+            "latest_release": release,
+            "snapshot": dict(snapshot),
+            "star_deltas": dict(snapshot["star_deltas"]),
+            "delta_baselines": dict(snapshot["delta_baselines"]),
+        }
+
+    async def _hydrate_repo(
+        self, client: SafeHTTPClient, headers: dict[str, str], full_name: str
+    ) -> tuple[str, dict[str, Any] | None, list[str]]:
+        readme = ""
+        release: dict[str, Any] | None = None
+        raw_refs: list[str] = []
         async with self._hydrate_semaphore:
-            full_name = repo["full_name"]
-            readme = ""
-            release: dict[str, Any] | None = None
             try:
                 response = await client.request(
                     "GET", f"https://api.github.com/repos/{full_name}/readme", headers=headers
@@ -205,39 +590,20 @@ class GitHubCollector(Collector):
                 }
             except Exception:
                 pass
-        created = parse_datetime(repo.get("created_at"))
-        return SourceItem(
-            item_id=f"github:{repo['id']}:{lane}",
-            item_type="github_repository",
-            source=self.source,
-            surface=lane,
-            change="entered_lane",
-            occurred_at=created,
-            first_observed_at=now,
-            handoff_at=now,
-            time_basis=TimeBasis.OBSERVED,
-            content_status=ContentStatus.PREVIEW,
-            raw_refs=raw_refs,
-            payload={
-                "repo_id": repo["id"],
-                "full_name": full_name,
-                "url": repo.get("html_url"),
-                "description": repo.get("description") or "",
-                "stars": repo.get("stargazers_count", 0),
-                "forks": repo.get("forks_count", 0),
-                "open_issues": repo.get("open_issues_count", 0),
-                "language": repo.get("language"),
-                "topics": repo.get("topics") or [],
-                "license": (repo.get("license") or {}).get("spdx_id"),
-                "created_at": repo.get("created_at"),
-                "pushed_at": repo.get("pushed_at"),
-                "archived": repo.get("archived", False),
-                "lane": lane,
-                "trending_text": trending_text,
-                "readme_preview": readme,
-                "latest_release": release,
-            },
-        )
+        return readme, release, raw_refs
+
+    def _crossing_thresholds(self) -> list[int]:
+        values = self.config.get("crossing_stars", [500, 5000])
+        return sorted({int(value) for value in values if int(value) >= 0})
+
+    def _growth_threshold(self, label: str) -> int:
+        keys = {
+            "6h": "growth_6h_min_stars",
+            "24h": "growth_24h_min_stars",
+            "7d": "growth_7d_min_stars",
+        }
+        defaults = {"6h": 25, "24h": 75, "7d": 250}
+        return int(self.config.get(keys[label], defaults[label]))
 
 
 def _github_token() -> str:

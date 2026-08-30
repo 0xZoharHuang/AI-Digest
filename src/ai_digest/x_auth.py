@@ -24,7 +24,12 @@ class XTokens:
 
 class XTokenStore:
     def __init__(self, client_id: str | None = None):
-        self.client_id = client_id or os.environ.get("AI_DIGEST_X_CLIENT_ID", "")
+        self.client_id = (
+            client_id
+            or os.environ.get("AI_DIGEST_X_CLIENT_ID", "")
+            or _keychain_get("client_id")
+            or ""
+        )
 
     def load(self) -> XTokens | None:
         access = os.environ.get("AI_DIGEST_X_ACCESS_TOKEN") or _keychain_get("access_token")
@@ -32,6 +37,8 @@ class XTokenStore:
         return XTokens(access, refresh) if access else None
 
     def save(self, tokens: XTokens) -> None:
+        if self.client_id:
+            _keychain_set("client_id", self.client_id)
         _keychain_set("access_token", tokens.access_token)
         if tokens.refresh_token:
             _keychain_set("refresh_token", tokens.refresh_token)
