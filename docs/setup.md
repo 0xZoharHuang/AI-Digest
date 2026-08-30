@@ -47,10 +47,10 @@ Using user identity once:
 3. Put `space_id`, receiver `open_id`, and the tenant Wiki base URL in `config/runtime.toml`.
 4. Verify user and bot auth with `lark-cli auth status --verify`.
 
-The checked-in default uses user identity because it works with a private personal Wiki and the
-current OAuth grant. Switch `lark.identity` to `bot` only after the app has the required Wiki and
-Docx bot scopes. Publication creates year, month, day and report child nodes, reads its local
-manifest before every write, and sends one idempotent direct message.
+The checked-in default uses user identity for the private personal Wiki and bot identity for the
+direct-message reminder. Publication creates year, month, day and report child nodes, reads its
+local manifest before every write, and marks the reminder sent only after Lark returns a real
+`message_id` and `chat_id`.
 
 ## 3. Install the main-user runner
 

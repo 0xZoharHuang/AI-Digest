@@ -17,8 +17,9 @@ The V1 Claude/Notion/OpenClaw implementation is preserved at the annotated Git t
 - Phase 2 is one read-only Codex Router. It assigns every source item to research, watch, or
   no-action and creates at most 18 provisional bundles.
 - Phase 3 gives every bundle to a complete Codex research agent. Three run concurrently; each may
-  use up to four non-recursive subagents and must leave one `report.md`.
-- Phase 4 reads successful reports and watch items and returns one `daily_brief.md`.
+  use up to four non-recursive subagents and must leave one Simplified-Chinese `report.md`.
+- Phase 4 reads successful reports and watch items and returns one Simplified-Chinese
+  `daily_brief.md`.
 - Phase 5 is deterministic code using the open-source Lark CLI.
 
 See [architecture.md](docs/architecture.md) for the data contracts and [setup.md](docs/setup.md) for
