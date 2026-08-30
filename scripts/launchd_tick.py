@@ -18,15 +18,11 @@ STAGING_NAME = re.compile(r"^\.?[A-Za-z0-9_-]{8,96}\.staging$")
 
 def events_for_hour(hour: int) -> list[str]:
     return {
-        1: ["x-compliance", "github"],
-        3: ["x-list"],
-        7: ["x-compliance", "daily"],
-        11: ["x-list"],
-        13: ["x-compliance", "github"],
-        15: ["x-list"],
-        19: ["x-compliance", "x-list", "github"],
+        1: ["x-list", "github"],
+        7: ["daily"],
+        13: ["x-list", "github"],
+        19: ["x-list", "github"],
         20: ["x-for-you"],
-        23: ["x-list"],
     }.get(hour, [])
 
 

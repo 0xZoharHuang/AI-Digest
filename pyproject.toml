@@ -59,8 +59,7 @@ omit = [
     "*/doctor.py",
     "*/pipeline.py",
     "*/publisher.py",
-    "*/x_auth.py",
-    "*/x_setup.py",
+    "*/x_provider.py",
 ]
 
 [tool.coverage.report]

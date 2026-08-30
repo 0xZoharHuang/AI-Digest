@@ -41,12 +41,12 @@ def test_launchd_triggers_keep_collection_and_recovery_separate():
 def test_calendar_event_mapping():
     assert event_for_hour(7) == "daily"
     assert event_for_hour(20) == "x-for-you"
-    assert event_for_hour(3) == "x-list"
-    assert event_for_hour(23) == "x-list"
-    assert events_for_hour(1) == ["x-compliance", "github"]
-    assert events_for_hour(7) == ["x-compliance", "daily"]
-    assert events_for_hour(13) == ["x-compliance", "github"]
-    assert events_for_hour(19) == ["x-compliance", "x-list", "github"]
+    assert event_for_hour(3) == "recover"
+    assert event_for_hour(23) == "recover"
+    assert events_for_hour(1) == ["x-list", "github"]
+    assert events_for_hour(7) == ["daily"]
+    assert events_for_hour(13) == ["x-list", "github"]
+    assert events_for_hour(19) == ["x-list", "github"]
 
 
 def test_daily_calendar_has_bounded_crash_retries_before_cutoff():

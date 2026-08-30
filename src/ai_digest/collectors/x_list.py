@@ -2,193 +2,238 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from typing import Any
-from urllib.parse import urlparse
 
 from ..models import (
     CollectorResult,
     ContentStatus,
+    FetchManifest,
     HealthStatus,
     SourceItem,
     TimeBasis,
 )
 from ..store import x_expiry
-from ..x_auth import XTokenStore
-from .base import (
-    Collector,
-    SafeHTTPClient,
-    fetch_external_metadata,
-    finish_manifest,
-    health_from,
-    new_fetch_manifest,
-)
+from ..utils import parse_datetime
+from ..x_provider import TwitterApiIOKeyStore
+from .base import Collector, SafeHTTPClient, finish_manifest, health_from, new_fetch_manifest
 
 
 class XListCollector(Collector):
+    """Incrementally read multiple public X Lists through TwitterAPI.io."""
+
     source = "x_list"
 
     async def collect(self, now: datetime) -> CollectorResult:
         if not self.enabled:
             return self.disabled()
         started = time.monotonic()
-        token_store = XTokenStore()
-        tokens = token_store.load()
-        token = tokens.access_token if tokens else ""
-        list_id = str(self.config.get("list_id", ""))
-        if not token or not list_id:
-            error = "AI_DIGEST_X_ACCESS_TOKEN and x_list.list_id are required"
+        now = now.astimezone(UTC)
+        api_key = TwitterApiIOKeyStore().load()
+        list_ids = [str(value) for value in self.config.get("list_ids", []) if str(value)]
+        if not api_key or not list_ids:
+            missing = "TwitterAPI.io API key" if not api_key else "x_list.list_ids"
             return CollectorResult(
                 source=self.source,
-                health=health_from(self.source, started, HealthStatus.FAILED, 0, 0, 0, [error]),
+                health=health_from(
+                    self.source,
+                    started,
+                    HealthStatus.FAILED,
+                    0,
+                    0,
+                    0,
+                    [f"{missing} is required"],
+                ),
             )
 
-        url = f"https://api.x.com/2/lists/{list_id}/tweets"
-        client = SafeHTTPClient(timeout=30)
-        manifests = []
-        items: list[SourceItem] = []
+        base_url = str(
+            self.config.get("url", "https://api.twitterapi.io/twitter/list/tweets")
+        )
+        max_pages = int(self.config.get("max_pages_per_list", 500))
+        lookback_hours = int(self.config.get("initial_lookback_hours", 24))
+        overlap_seconds = int(self.config.get("cursor_overlap_seconds", 300))
+        headers = {"X-API-Key": api_key}
+        client = SafeHTTPClient(timeout=45)
+        manifests: list[FetchManifest] = []
+        merged: dict[str, dict[str, Any]] = {}
+        surfaces: dict[str, dict[str, Any]] = {}
+        cursor_updates: dict[str, str | None] = {}
         errors: list[str] = []
-        pagination_token: str | None = None
-        fetched = 0
-        pages = 0
-        stopped_at_known = False
-        metadata_remaining = int(self.config.get("external_metadata_limit", 30))
+        fetched_total = 0
+
         try:
-            while pages < int(self.config.get("max_pages", 8)):
-                pages += 1
-                manifest = new_fetch_manifest(self.source, url)
-                params: dict[str, Any] = {
-                    "max_results": 100,
-                    "tweet.fields": (
-                        "id,text,author_id,created_at,conversation_id,edit_history_tweet_ids,"
-                        "entities,public_metrics,referenced_tweets"
-                    ),
-                    "expansions": "author_id,referenced_tweets.id,referenced_tweets.id.author_id",
-                    "user.fields": "id,name,username,verified",
-                }
-                if pagination_token:
-                    params["pagination_token"] = pagination_token
-                try:
-                    response = await client.request(
-                        "GET", url, headers={"Authorization": f"Bearer {token}"}, params=params
-                    )
-                except Exception as error:
-                    status = getattr(getattr(error, "response", None), "status_code", None)
-                    if status != 401 or not tokens or not tokens.refresh_token:
-                        raise
-                    tokens = await token_store.refresh(tokens.refresh_token)
-                    token = tokens.access_token
-                    response = await client.request(
-                        "GET", url, headers={"Authorization": f"Bearer {token}"}, params=params
-                    )
-                payload = response.json()
-                data = payload.get("data") or []
-                includes = payload.get("includes") or {}
-                users = {user["id"]: user for user in includes.get("users", [])}
-                referenced = {tweet["id"]: tweet for tweet in includes.get("tweets", [])}
-                fetched += len(data)
-                fresh = []
-                for tweet in data:
-                    if await self.state.has_item(f"x_list:{tweet['id']}"):
-                        stopped_at_known = True
+            for list_id in list_ids:
+                cursor_key = f"x_list:{list_id}:since_time"
+                previous = await self.state.get_cursor(cursor_key)
+                since_time = (
+                    int(previous)
+                    if previous and previous.isdigit()
+                    else int((now - timedelta(hours=lookback_hours)).timestamp())
+                )
+                surface_fetched = 0
+                surface_pages = 0
+                surface_error: str | None = None
+                pagination = ""
+                while surface_pages < max_pages:
+                    surface_pages += 1
+                    manifest = new_fetch_manifest(f"x_list:{list_id}", base_url, now)
+                    manifest.cursor_before = str(since_time)
+                    params: dict[str, Any] = {
+                        "listId": list_id,
+                        "sinceTime": since_time,
+                        "includeReplies": bool(self.config.get("include_replies", True)),
+                    }
+                    if pagination:
+                        params["cursor"] = pagination
+                    try:
+                        response = await client.request(
+                            "GET",
+                            base_url,
+                            headers=headers,
+                            params=params,
+                            data_limit=10_000_000,
+                        )
+                        payload = response.json()
+                        if str(payload.get("status", "success")).lower() == "error":
+                            raise RuntimeError(str(payload.get("message") or "provider error"))
+                        tweets = payload.get("tweets") or []
+                        if not isinstance(tweets, list):
+                            raise RuntimeError("TwitterAPI.io returned a non-list tweets payload")
+                        surface_fetched += len(tweets)
+                        fetched_total += len(tweets)
+                        for tweet in tweets:
+                            if not isinstance(tweet, dict) or not tweet.get("id"):
+                                continue
+                            post_id = str(tweet["id"])
+                            record = merged.setdefault(post_id, {"post": tweet, "list_ids": []})
+                            if list_id not in record["list_ids"]:
+                                record["list_ids"].append(list_id)
+                        next_cursor = str(payload.get("next_cursor") or "")
+                        has_next = bool(
+                            payload.get("has_next_page", payload.get("has_more", False))
+                        )
+                        manifest.cursor_after = next_cursor or None
+                        manifests.append(
+                            finish_manifest(
+                                manifest,
+                                response=response,
+                                fetched_count=len(tweets),
+                                parsed_count=len(tweets),
+                            )
+                        )
+                        if not tweets or not has_next or not next_cursor:
+                            break
+                        if next_cursor == pagination:
+                            raise RuntimeError("TwitterAPI.io returned a repeated cursor")
+                        pagination = next_cursor
+                    except Exception as error:
+                        surface_error = f"{type(error).__name__}: {error}"
+                        manifests.append(
+                            finish_manifest(
+                                manifest,
+                                fetched_count=0,
+                                parsed_count=0,
+                                status=HealthStatus.FAILED,
+                                errors=[surface_error],
+                            )
+                        )
                         break
-                    fresh.append(tweet)
-                page_items = []
-                for tweet in fresh:
-                    author = users.get(str(tweet.get("author_id")), {})
-                    references = [
-                        {
-                            **reference,
-                            "expanded": referenced.get(str(reference.get("id")), {}),
-                        }
-                        for reference in tweet.get("referenced_tweets") or []
-                    ]
-                    blob_ref = self.store.write_blob(
-                        json.dumps(
-                            {"post": tweet, "author": author, "references": references},
-                            ensure_ascii=False,
-                            sort_keys=True,
-                        ),
-                        ".x-post.json",
+                else:
+                    surface_error = f"page cap reached: {max_pages} pages"
+
+                if surface_error is None:
+                    cursor_updates[cursor_key] = str(
+                        max(0, int(now.timestamp()) - overlap_seconds)
                     )
-                    page_items.append(
-                        self._to_item(tweet, users, referenced, blob_ref, now)
+                    surface_status = HealthStatus.SUCCESS
+                else:
+                    errors.append(f"list {list_id}: {surface_error}")
+                    surface_status = (
+                        HealthStatus.PARTIAL if surface_fetched else HealthStatus.FAILED
                     )
-                metadata_remaining = await self._enrich_links(
-                    client, page_items, metadata_remaining
-                )
-                items.extend(page_items)
-                api_errors = payload.get("errors") or []
-                if api_errors:
-                    errors.extend(str(error)[:500] for error in api_errors)
-                manifest.blob_refs = [ref for item in page_items for ref in item.raw_refs]
-                manifests.append(
-                    finish_manifest(
-                        manifest,
-                        response=response,
-                        fetched_count=len(data),
-                        parsed_count=len(page_items),
-                        status=HealthStatus.PARTIAL if api_errors else HealthStatus.SUCCESS,
-                        errors=[str(error)[:500] for error in api_errors],
-                    )
-                )
-                pagination_token = (payload.get("meta") or {}).get("next_token")
-                if stopped_at_known or not pagination_token:
-                    break
-            if pagination_token and not stopped_at_known:
-                errors.append(
-                    f"pagination_exhausted: next_token remained after {pages} page(s)"
-                )
-        except Exception as error:  # source failure is isolated by orchestrator
-            errors.append(f"{type(error).__name__}: {error}")
+                surfaces[list_id] = {
+                    "status": surface_status.value,
+                    "fetched_count": surface_fetched,
+                    "pages": surface_pages,
+                    "since_time": since_time,
+                    "error": surface_error,
+                }
         finally:
             await client.close()
 
-        for item in items:
+        items: list[SourceItem] = []
+        for record in merged.values():
+            tweet = record["post"]
+            blob_ref = self.store.write_blob(
+                json.dumps(
+                    {
+                        "provider": "twitterapi_io",
+                        "list_ids": sorted(record["list_ids"]),
+                        "post": tweet,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                ".x-post.json",
+            )
+            item = self._to_item(tweet, sorted(record["list_ids"]), blob_ref, now)
             self.store.write_revision(item)
-        for manifest in manifests:
-            self.store.write_fetch_manifest(manifest)
+            items.append(item)
+
         inserted = await self.state.put_items(items)
-        status = HealthStatus.SUCCESS
-        if errors and items:
+        await self.state.set_cursors(cursor_updates)
+        success_count = sum(
+            1 for value in surfaces.values() if value["status"] == HealthStatus.SUCCESS.value
+        )
+        if success_count == len(list_ids):
+            status = HealthStatus.SUCCESS
+        elif success_count or fetched_total:
             status = HealthStatus.PARTIAL
-        elif errors:
+        else:
             status = HealthStatus.FAILED
+        health = health_from(
+            self.source,
+            started,
+            status,
+            fetched_total,
+            len(items),
+            len(inserted),
+            errors,
+        )
+        health.surfaces = surfaces
         return CollectorResult(
             source=self.source,
             items=items,
             manifests=manifests,
-            health=health_from(
-                self.source, started, status, fetched, len(items), len(inserted), errors
-            ),
+            health=health,
         )
 
     def _to_item(
         self,
         tweet: dict[str, Any],
-        users: dict[str, dict[str, Any]],
-        referenced: dict[str, dict[str, Any]],
+        list_ids: list[str],
         blob_ref: str,
         observed_at: datetime,
     ) -> SourceItem:
-        created = datetime.fromisoformat(tweet["created_at"].replace("Z", "+00:00"))
-        author = users.get(str(tweet.get("author_id")), {})
-        reference_rows = []
-        for reference in tweet.get("referenced_tweets") or []:
-            target = referenced.get(str(reference.get("id")), {})
-            reference_rows.append(
-                {
-                    "type": reference.get("type"),
-                    "id": reference.get("id"),
-                    "text": target.get("text"),
-                }
-            )
-        metrics = tweet.get("public_metrics") or {}
+        post_id = str(tweet["id"])
+        created = _x_datetime(tweet.get("createdAt") or tweet.get("created_at")) or observed_at
+        author = _mapping(tweet.get("author"))
+        entities = _mapping(tweet.get("entities"))
+        metrics = {
+            "repost_count": tweet.get("retweetCount", tweet.get("retweet_count")),
+            "reply_count": tweet.get("replyCount", tweet.get("reply_count")),
+            "like_count": tweet.get("likeCount", tweet.get("like_count")),
+            "quote_count": tweet.get("quoteCount", tweet.get("quote_count")),
+            "view_count": tweet.get("viewCount", tweet.get("view_count")),
+            "bookmark_count": tweet.get("bookmarkCount", tweet.get("bookmark_count")),
+        }
+        username = author.get("userName") or author.get("username")
         return SourceItem(
-            item_id=f"x_list:{tweet['id']}",
+            item_id=f"x_list:{post_id}",
             item_type="x_post",
             source=self.source,
-            surface="private_list",
+            surface="public_lists",
             occurred_at=created,
             first_observed_at=observed_at,
             handoff_at=created,
@@ -197,38 +242,86 @@ class XListCollector(Collector):
             raw_refs=[blob_ref],
             expires_at=x_expiry(observed_at, int(self.config.get("retention_days", 30))),
             payload={
-                "post_id": tweet["id"],
-                "text": tweet.get("text", ""),
-                "author_id": tweet.get("author_id"),
-                "author": author,
-                "conversation_id": tweet.get("conversation_id"),
-                "edit_history_post_ids": tweet.get("edit_history_tweet_ids") or [],
-                "entities": tweet.get("entities") or {},
-                "link_metadata": [],
-                "references": reference_rows,
-                "metrics": metrics,
-                "url": f"https://x.com/{author.get('username', 'i')}/status/{tweet['id']}",
+                "provider": "twitterapi_io",
+                "post_id": post_id,
+                "text": str(tweet.get("text") or ""),
+                "author_id": str(author.get("id") or ""),
+                "author": {
+                    "id": str(author.get("id") or ""),
+                    "name": author.get("name"),
+                    "username": username,
+                    "verified": bool(
+                        author.get("isBlueVerified", author.get("verified", False))
+                    ),
+                },
+                "conversation_id": tweet.get("conversationId")
+                or tweet.get("conversation_id"),
+                "edit_history_post_ids": [post_id],
+                "entities": entities,
+                "expanded_links": _expanded_links(entities),
+                "references": _references(tweet),
+                "metrics": {key: value for key, value in metrics.items() if value is not None},
+                "list_ids": list_ids,
+                "url": str(
+                    tweet.get("url") or f"https://x.com/{username or 'i'}/status/{post_id}"
+                ),
             },
         )
 
-    async def _enrich_links(
-        self, client: SafeHTTPClient, items: list[SourceItem], remaining: int
-    ) -> int:
-        cache: dict[str, dict[str, Any]] = {}
-        for item in items:
-            metadata = []
-            urls = (item.payload.get("entities") or {}).get("urls") or []
-            for row in urls:
-                url = row.get("expanded_url") or row.get("unwound_url")
-                host = urlparse(str(url)).hostname if url else None
-                if not url or not host or host.endswith("x.com") or remaining <= 0:
-                    continue
-                if url not in cache:
-                    try:
-                        cache[url] = await fetch_external_metadata(client, str(url))
-                    except Exception as error:
-                        cache[url] = {"requested_url": url, "error": str(error)[:300]}
-                    remaining -= 1
-                metadata.append(cache[url])
-            item.payload["link_metadata"] = metadata
-        return remaining
+
+def _x_datetime(value: Any) -> datetime | None:
+    parsed = parse_datetime(value)
+    if parsed is not None:
+        return parsed
+    try:
+        return parsedate_to_datetime(str(value)).astimezone(UTC)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _references(tweet: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for key, kind in (("quoted_tweet", "quoted"), ("retweeted_tweet", "reposted")):
+        value = _mapping(tweet.get(key))
+        if not value.get("id"):
+            continue
+        author = _mapping(value.get("author"))
+        rows.append(
+            {
+                "type": kind,
+                "id": str(value["id"]),
+                "text": value.get("text"),
+                "url": value.get("url"),
+                "author": {
+                    "id": str(author.get("id") or ""),
+                    "username": author.get("userName") or author.get("username"),
+                    "name": author.get("name"),
+                },
+            }
+        )
+    reply_id = tweet.get("inReplyToId") or tweet.get("in_reply_to_id")
+    if reply_id:
+        rows.append(
+            {
+                "type": "replied_to",
+                "id": str(reply_id),
+                "author_id": tweet.get("inReplyToUserId"),
+                "username": tweet.get("inReplyToUsername"),
+            }
+        )
+    return rows
+
+
+def _expanded_links(entities: dict[str, Any]) -> list[str]:
+    output: list[str] = []
+    for row in entities.get("urls") or []:
+        if not isinstance(row, dict):
+            continue
+        value = row.get("expanded_url") or row.get("expandedUrl") or row.get("url")
+        if value and str(value) not in output:
+            output.append(str(value))
+    return output
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}

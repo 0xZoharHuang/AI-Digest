@@ -234,39 +234,3 @@ def test_revision_manifest_helpers_and_grouping(tmp_path):
     assert load_jsonl(tmp_path / "missing") == []
     assert source_group(item) == "articles"
     assert x_expiry(now, 30) == now + timedelta(days=30)
-
-
-@pytest.mark.asyncio
-async def test_x_registry_dependencies_and_compliance_state(tmp_path):
-    state = StateDB(tmp_path / "state.db")
-    await state.init()
-    now = datetime(2026, 8, 30, tzinfo=UTC)
-    item = SourceItem(
-        item_id="x_list:123",
-        item_type="x_post",
-        source="x_list",
-        surface="private_list",
-        handoff_at=now,
-        first_observed_at=now,
-        expires_at=now + timedelta(days=30),
-        payload={"post_id": "123", "edit_history_post_ids": ["122", "123"]},
-    )
-    await state.put_items([item])
-    assert await state.active_x_post_ids(now) == ["123"]
-    await state.replace_x_dependencies(
-        "run-1",
-        [
-            {
-                "post_id": "123",
-                "bundle_id": "topic",
-                "thread_id": "thread",
-                "report_path": "topic/report.md",
-                "lark_node_key": "wik1",
-            }
-        ],
-    )
-    dependencies = await state.x_dependencies_for_posts(["123"])
-    assert dependencies[0]["run_id"] == "run-1"
-    assert [row.item_id for row in await state.pop_x_posts(["123"])] == ["x_list:123"]
-    await state.mark_x_compliance(["123"], "deleted")
-    assert await state.active_x_post_ids(now) == []

@@ -11,7 +11,6 @@ import pytest
 from ai_digest.config import RuntimeConfig
 from ai_digest.models import RunManifest, RunStatus
 from ai_digest.pipeline import (
-    _x_dependency_rows,
     enqueue_agent_job,
     import_agent_job,
     recover_and_publish,
@@ -183,42 +182,3 @@ def _write_job_outputs(job: Path, bundle_id: str | None = None) -> None:
     (brief / "source_health.json").write_text("{}")
     (brief / "PHASE4_COMPLETE").write_text("complete\n")
     (job / "DONE").write_text("complete\n")
-
-
-def test_x_dependency_index_maps_post_bundle_thread_and_lark_node(tmp_path):
-    run = tmp_path / "runs" / "2026-08-30" / "attempt-0001"
-    phase1 = run / "01_phase1"
-    routing = run / "02_routing"
-    research = run / "03_research" / "topic"
-    brief = run / "04_brief"
-    publish = run / "05_publish"
-    for path in (phase1, routing, research, brief, publish):
-        path.mkdir(parents=True, exist_ok=True)
-    (phase1 / "x_list.jsonl").write_text(
-        json.dumps({"item_id": "x_list:1", "payload": {"post_id": "1"}}) + "\n"
-    )
-    (phase1 / "x_for_you.jsonl").write_text("")
-    (routing / "assignments.jsonl").write_text(
-        json.dumps({"id": "x_list:1", "d": "r", "t": ["topic"]}) + "\n"
-    )
-    (run / "03_research" / "successes.json").write_text(
-        json.dumps({"topic": "topic/report.md"})
-    )
-    (research / "codex.json").write_text(json.dumps({"thread_id": "research-thread"}))
-    (brief / "codex.json").write_text(json.dumps({"thread_id": "brief-thread"}))
-    (publish / "publish_manifest.json").write_text(
-        json.dumps(
-            {
-                "nodes": {
-                    "report:topic": {"node_token": "report-node"},
-                    "day": {"node_token": "day-node"},
-                }
-            }
-        )
-    )
-    rows = _x_dependency_rows(run, "run-1")
-    by_bundle = {row["bundle_id"]: row for row in rows}
-    assert by_bundle["topic"]["thread_id"] == "research-thread"
-    assert by_bundle["topic"]["lark_node_key"] == "report-node"
-    assert by_bundle["__brief__"]["thread_id"] == "brief-thread"
-    assert by_bundle["__brief__"]["lark_node_key"] == "day-node"

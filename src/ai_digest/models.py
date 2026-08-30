@@ -87,6 +87,7 @@ class SourceHealth(BaseModel):
     duration_seconds: float = 0
     errors: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    surfaces: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class CollectorResult(BaseModel):

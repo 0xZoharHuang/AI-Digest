@@ -7,89 +7,13 @@ import pytest
 from ai_digest.collectors.articles import ArticleCollector
 from ai_digest.collectors.arxiv import ArxivCollector
 from ai_digest.collectors.x_for_you import XForYouCollector, _post_id
-from ai_digest.collectors.x_list import XListCollector
 from ai_digest.models import FetchManifest, SourceItem, TimeBasis
 from ai_digest.store import FileStore, StateDB
-from ai_digest.x_auth import XTokens
 
 
 @pytest.fixture
 def store_state(tmp_path):
     return FileStore(tmp_path), StateDB(tmp_path / "state.db")
-
-
-def test_x_list_item_uses_official_occurrence_time(store_state):
-    store, state = store_state
-    collector = XListCollector({"retention_days": 30}, store, state)
-    now = datetime(2026, 8, 30, tzinfo=UTC)
-    item = collector._to_item(
-        {
-            "id": "123",
-            "text": "hello",
-            "author_id": "9",
-            "created_at": "2026-08-29T23:00:00Z",
-            "public_metrics": {"like_count": 1},
-            "referenced_tweets": [{"type": "quoted", "id": "456"}],
-        },
-        {"9": {"username": "user"}},
-        {"456": {"text": "quote"}},
-        "sha256:" + "a" * 64 + ".json",
-        now,
-    )
-    assert item.item_id == "x_list:123"
-    assert item.time_basis == TimeBasis.OCCURRED
-    assert item.payload["references"][0]["text"] == "quote"
-
-
-@pytest.mark.asyncio
-async def test_x_list_stops_at_first_known_post(store_state, monkeypatch):
-    store, state = store_state
-    await state.init()
-    now = datetime(2026, 8, 30, tzinfo=UTC)
-    known = SourceItem(
-        item_id="x_list:2",
-        item_type="x_post",
-        source="x_list",
-        surface="private_list",
-        handoff_at=now,
-        first_observed_at=now,
-    )
-    await state.put_items([known])
-    collector = XListCollector(
-        {"enabled": True, "list_id": "list", "max_pages": 8, "retention_days": 30},
-        store,
-        state,
-    )
-
-    class Response:
-        text = "{}"
-        headers = {"content-type": "application/json"}
-        status_code = 200
-        url = "https://api.x.com/2/lists/list/tweets"
-
-        def json(self):  # type: ignore[no-untyped-def]
-            return {
-                "data": [
-                    {"id": "3", "text": "new", "created_at": "2026-08-30T00:00:00Z"},
-                    {"id": "2", "text": "known", "created_at": "2026-08-29T23:00:00Z"},
-                    {"id": "1", "text": "older", "created_at": "2026-08-29T22:00:00Z"},
-                ],
-                "meta": {"next_token": "more"},
-            }
-
-    requests = 0
-
-    async def fake_request(*args, **kwargs):  # type: ignore[no-untyped-def]
-        nonlocal requests
-        requests += 1
-        return Response()
-
-    monkeypatch.setattr("ai_digest.collectors.x_list.XTokenStore.load", lambda self: XTokens("t"))
-    monkeypatch.setattr("ai_digest.collectors.x_list.SafeHTTPClient.request", fake_request)
-    result = await collector.collect(now)
-    assert requests == 1
-    assert [item.item_id for item in result.items] == ["x_list:3"]
-    assert result.health.status.value == "success"
 
 
 def test_arxiv_version_is_source_native(store_state):
@@ -355,15 +279,3 @@ async def test_for_you_enters_cooldown_after_repeated_failures(store_state):
     assert await state.get_cursor("x_for_you:cooldown_until") is None
     await collector._record_failure(now)
     assert await state.get_cursor("x_for_you:cooldown_until") == "2026-08-30T06:00:00+00:00"
-
-
-@pytest.mark.asyncio
-async def test_for_you_fails_closed_without_written_permission(store_state):
-    store, state = store_state
-    await state.init()
-    collector = XForYouCollector({"enabled": True}, store, state)
-    result = await collector.collect(datetime(2026, 8, 30, tzinfo=UTC))
-    assert result.health.status == "failed"
-    assert "written permission" in result.health.errors[0]
-    with pytest.raises(RuntimeError, match="written permission"):
-        await collector.interactive_login()

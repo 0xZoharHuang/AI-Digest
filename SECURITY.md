@@ -20,6 +20,6 @@ If an X Post must be removed immediately, run:
 uv run ai-digest maintenance --delete-x-post POST_ID
 ```
 
-The normal maintenance task removes indexed X text after the configured retention period. Scheduled
-X Batch Compliance additionally propagates deletion and edit events through local runs, queue
-copies, Codex artifacts and published Lark output before rebuilding the affected day.
+The normal maintenance task removes indexed X text after the configured retention period. Public
+List API keys are stored in macOS Keychain; personal For You cookies stay in an ignored local file
+and are never shared with the List provider or Codex workspaces.

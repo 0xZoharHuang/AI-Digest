@@ -1,20 +1,20 @@
 [x_list]
 enabled = false
-required = true
-compliance_verified = false
-list_id = ""
-list_name = "AI Intelligence Radar"
-bootstrap_mode = "full_seed_union_freeze"
-seed_list_ids = ["1585430245762441216", "1353454915088052225", "226428000"]
-target_members = 0
-poll_hours = [3, 7, 11, 15, 19, 23]
-max_pages = 8
+required = false
+provider = "twitterapi_io"
+url = "https://api.twitterapi.io/twitter/list/tweets"
+list_ids = ["1585430245762441216", "1353454915088052225", "226428000"]
+poll_hours = [1, 7, 13, 19]
+include_replies = true
+include_reposts = true
+initial_lookback_hours = 24
+cursor_overlap_seconds = 300
+max_pages_per_list = 500
 
 [x_for_you]
 enabled = false
 required = false
 personal_browser_risk_acknowledged = false
-written_permission_confirmed = false
 cookie_file = "config/twitter_cookies.json"
 limit = 150
 scroll_rounds = 45

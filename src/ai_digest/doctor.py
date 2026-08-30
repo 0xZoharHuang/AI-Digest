@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import REPO_ROOT, RuntimeConfig, SourcesConfig, resolve_binary
-from .x_auth import XTokenStore
+from .x_provider import TwitterApiIOKeyStore
 
 
 def run_doctor(runtime: RuntimeConfig, sources: SourcesConfig) -> dict[str, Any]:
@@ -27,35 +27,15 @@ def run_doctor(runtime: RuntimeConfig, sources: SourcesConfig) -> dict[str, Any]
     add("github_auth", _command_ok(["gh", "auth", "status"]), "gh keyring/login")
     x_enabled = bool(sources.x_list.get("enabled"))
     x_required = bool(sources.x_list.get("required", False))
-    x_store = XTokenStore()
-    x_tokens = x_store.load()
     add(
-        "x_api",
-        bool(x_enabled and x_tokens and sources.x_list.get("list_id")),
-        "token/list configured" if x_enabled else "disabled (required)" if x_required else "disabled",
-        required=x_required,
-    )
-    add(
-        "x_refresh",
-        bool(x_enabled and x_tokens and x_tokens.refresh_token and x_store.client_id),
-        "refresh token and persisted client id configured"
+        "x_list_provider",
+        bool(x_enabled and TwitterApiIOKeyStore().load() and sources.x_list.get("list_ids")),
+        "TwitterAPI.io key and public Lists configured"
         if x_enabled
+        else "disabled (required)"
+        if x_required
         else "disabled",
-        required=x_required,
-    )
-    add(
-        "x_content_compliance",
-        bool(x_enabled and sources.x_list.get("compliance_verified", False)),
-        "verified deletion/update propagation"
-        if x_enabled and sources.x_list.get("compliance_verified", False)
-        else "not verified; downstream retention/deletion remains blocked",
-        required=x_required,
-    )
-    add(
-        "x_app_bearer",
-        bool(not x_enabled or x_store.load_bearer()),
-        "App bearer configured for Batch Compliance" if x_enabled else "disabled",
-        required=x_required,
+        required=x_enabled or x_required,
     )
     executable = _playwright_executable()
     add(
@@ -67,15 +47,10 @@ def run_doctor(runtime: RuntimeConfig, sources: SourcesConfig) -> dict[str, Any]
     add(
         "x_for_you_policy",
         not bool(sources.x_for_you.get("enabled"))
-        or (
-            bool(sources.x_for_you.get("personal_browser_risk_acknowledged"))
-            and bool(sources.x_for_you.get("written_permission_confirmed"))
-        ),
+        or bool(sources.x_for_you.get("personal_browser_risk_acknowledged")),
         "disabled"
         if not sources.x_for_you.get("enabled")
-        else "risk acknowledged and X written permission confirmed"
-        if sources.x_for_you.get("written_permission_confirmed")
-        else "blocked: X written permission not confirmed",
+        else "personal browser risk explicitly acknowledged",
         required=True,
     )
     cookie_file = Path(
