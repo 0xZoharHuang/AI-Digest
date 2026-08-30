@@ -11,6 +11,7 @@
   <key>WorkingDirectory</key><string>__PROJECT__</string>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>HOME</key><string>__HOME__</string>
     <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
   <key>QueueDirectories</key>

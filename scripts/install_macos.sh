@@ -73,11 +73,13 @@ sed -e "s|__PROJECT__|$project_dir|g" \
     -e "s|__PYTHON__|$project_dir/.venv/bin/python|g" \
     -e "s|__RUNTIME__|$runtime_dir|g" \
     -e "s|__SHARED__|$queue_dir|g" \
+    -e "s|__HOME__|$HOME|g" \
     "$project_dir/deploy/com.ai-digest.tick.plist.example" > "$tick_tmp"
 sed -e "s|__PROJECT__|$project_dir|g" \
     -e "s|__PYTHON__|$project_dir/.venv/bin/python|g" \
     -e "s|__RUNTIME__|$runtime_dir|g" \
     -e "s|__SHARED__|$queue_dir|g" \
+    -e "s|__HOME__|$HOME|g" \
     "$project_dir/deploy/com.ai-digest.recover.plist.example" > "$recover_tmp"
 sed -e "s|__PROJECT__|$shared_app|g" \
     -e "s|__PYTHON__|$shared_app/.venv/bin/python|g" \
