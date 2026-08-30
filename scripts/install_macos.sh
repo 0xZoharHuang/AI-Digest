@@ -100,6 +100,7 @@ fi
 git -C "$project_dir" diff --quiet
 git -C "$project_dir" diff --cached --quiet
 mkdir -p "$runtime_dir/logs" "$app_root" "$launch_agents"
+install -d -m 700 "$queue_dir"
 for queue_name in staging jobs completed publish_pending archived failed logs; do
   install -d -m 700 "$queue_dir/$queue_name"
 done
