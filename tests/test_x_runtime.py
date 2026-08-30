@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from ai_digest.cli import async_main, parser
 from ai_digest.config import RuntimeConfig, SourcesConfig
 from ai_digest.models import RoutingOutput, SourceItem
 from ai_digest.x_auth import XTokens
@@ -22,6 +23,26 @@ from ai_digest.x_compliance import (
     _thread_ids,
 )
 from ai_digest.x_setup import _members, build_private_list
+
+
+@pytest.mark.asyncio
+async def test_x_auth_cli_uses_keychain_client_id(tmp_path, monkeypatch):
+    runtime = RuntimeConfig(runtime_root=tmp_path / "runtime")
+    monkeypatch.setattr("ai_digest.cli.load_runtime_config", lambda path: runtime)
+    monkeypatch.setattr("ai_digest.cli.load_sources_config", lambda path: SourcesConfig())
+    monkeypatch.setattr(
+        "ai_digest.cli.XTokenStore", lambda: SimpleNamespace(client_id="keychain-client")
+    )
+    called = []
+
+    async def fake_to_thread(function, *args):
+        called.append(args)
+        return XTokens("access", "refresh")
+
+    monkeypatch.setattr("ai_digest.cli.asyncio.to_thread", fake_to_thread)
+    result = await async_main(parser().parse_args(["x-auth"]))
+    assert result == 0
+    assert called == [("keychain-client", "http://127.0.0.1:8765/callback")]
 
 
 @pytest.mark.asyncio

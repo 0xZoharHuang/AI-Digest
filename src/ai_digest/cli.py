@@ -168,9 +168,9 @@ async def async_main(args: argparse.Namespace) -> int:
         console.print(f"completed {len(completed)} job(s)")
         return 0
     if args.command == "x-auth":
-        client_id = args.client_id or __import__("os").environ.get("AI_DIGEST_X_CLIENT_ID")
+        client_id = args.client_id or XTokenStore().client_id
         if not client_id:
-            console.print("AI_DIGEST_X_CLIENT_ID or --client-id is required")
+            console.print("X Client ID is required in Keychain, AI_DIGEST_X_CLIENT_ID, or --client-id")
             return 2
         tokens = await asyncio.to_thread(authorize_pkce, client_id, args.redirect_uri)
         console.print(f"X OAuth ready; refresh token: {'yes' if tokens.refresh_token else 'no'}")
