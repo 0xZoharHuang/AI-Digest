@@ -35,8 +35,15 @@ class XComplianceRunner:
         active = await self.state.active_x_post_ids()
         expired = await self.state.expired_x_post_ids()
         events: dict[str, str] = {post_id: "expired" for post_id in expired}
+        mode = "batch"
+        warning = None
         if active:
-            events.update(await self._batch_events(active))
+            try:
+                events.update(await self._batch_events(active))
+            except (httpx.HTTPError, RuntimeError, TimeoutError) as error:
+                mode = "lookup_fallback"
+                warning = f"batch unavailable: {type(error).__name__}"
+                events.update(await self._lookup_events(active))
             await self.state.mark_x_verified(
                 [post_id for post_id in active if post_id not in events]
             )
@@ -45,8 +52,39 @@ class XComplianceRunner:
             "checked_posts": len(active),
             "expired_posts": len(expired),
             "compliance_events": len(events),
+            "compliance_mode": mode,
+            "warning": warning,
             **result,
         }
+
+    async def _lookup_events(self, post_ids: list[str]) -> dict[str, str]:
+        bearer = XTokenStore().load_bearer()
+        if not bearer:
+            raise RuntimeError("X App bearer token is required for Post lookup compliance")
+        events: dict[str, str] = {}
+        headers = {"Authorization": f"Bearer {bearer}"}
+        async with httpx.AsyncClient(timeout=60, headers=headers) as client:
+            for offset in range(0, len(post_ids), 100):
+                chunk = post_ids[offset : offset + 100]
+                response = await client.get(
+                    f"{X_API}/tweets", params={"ids": ",".join(chunk)}
+                )
+                response.raise_for_status()
+                payload = response.json()
+                returned = {
+                    str(row["id"])
+                    for row in payload.get("data") or []
+                    if isinstance(row, dict) and row.get("id")
+                }
+                errored = {
+                    str(row.get("resource_id") or row.get("value") or "")
+                    for row in payload.get("errors") or []
+                    if isinstance(row, dict)
+                }
+                for post_id in chunk:
+                    if post_id not in returned and post_id in errored:
+                        events[post_id] = "unavailable"
+        return events
 
     async def _batch_events(self, post_ids: list[str]) -> dict[str, str]:
         bearer = XTokenStore().load_bearer()

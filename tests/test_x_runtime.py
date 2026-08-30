@@ -283,11 +283,37 @@ async def test_compliance_run_and_apply_events(tmp_path, monkeypatch):
         "checked_posts": 2,
         "expired_posts": 1,
         "compliance_events": 2,
+        "compliance_mode": "batch",
+        "warning": None,
         "purged_posts": 2,
         "rebuilt_runs": 2,
     }
     assert removed == [item]
     assert [value[1] for value in rebuilt] == ["run-a", "run-b"]
+
+
+@pytest.mark.asyncio
+async def test_compliance_lookup_fallback_marks_only_explicit_errors(tmp_path, monkeypatch):
+    class Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get(self, url, params):
+            assert params["ids"] == "1,2,3"
+            return _Response(
+                {"data": [{"id": "1"}, {"id": "3"}], "errors": [{"resource_id": "2"}]}
+            )
+
+    monkeypatch.setattr("ai_digest.x_compliance.XTokenStore.load_bearer", lambda self: "b")
+    monkeypatch.setattr("ai_digest.x_compliance.httpx.AsyncClient", Client)
+    runner = XComplianceRunner(RuntimeConfig(runtime_root=tmp_path / "runtime"), SourcesConfig())
+    assert await runner._lookup_events(["1", "2", "3"]) == {"2": "unavailable"}
 
 
 def test_compliance_helpers(tmp_path):
