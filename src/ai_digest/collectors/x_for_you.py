@@ -46,7 +46,8 @@ class XForYouCollector(Collector):
                 await context.add_cookies(cookies)
             page = await context.new_page()
             await page.goto("https://x.com/home", wait_until="domcontentloaded")
-            await page.wait_for_selector('article[data-testid="tweet"]', timeout=300_000)
+            await page.wait_for_selector('article[data-testid="tweet"]', timeout=900_000)
+            atomic_write_json(cookie_path, await context.cookies())
             await self._select_for_you(page)
             atomic_write_json(cookie_path, await context.cookies())
             await context.close()
@@ -152,8 +153,11 @@ class XForYouCollector(Collector):
         selected = await page.evaluate(
             """
             () => {
-              const tabs = [...document.querySelectorAll('a[role="tab"]')];
-              const target = tabs.find(tab => (tab.textContent || '').trim() === 'For you');
+              const tabs = [...document.querySelectorAll('[role="tab"]')];
+              const labels = new Set(['for you', '为你推荐', '為你推薦', '推荐', '推薦']);
+              const target = tabs.find(tab =>
+                labels.has((tab.textContent || '').trim().toLowerCase())
+              ) || tabs[0];
               if (!target) return 'missing';
               if (target.getAttribute('aria-selected') === 'true') return 'selected';
               target.click();
@@ -167,9 +171,14 @@ class XForYouCollector(Collector):
             await page.wait_for_timeout(1500)
         verified = await page.evaluate(
             """
-            () => [...document.querySelectorAll('a[role="tab"]')].some(tab =>
-              (tab.textContent || '').trim() === 'For you' &&
-              tab.getAttribute('aria-selected') === 'true')
+            () => {
+              const tabs = [...document.querySelectorAll('[role="tab"]')];
+              const labels = new Set(['for you', '为你推荐', '為你推薦', '推荐', '推薦']);
+              const target = tabs.find(tab =>
+                labels.has((tab.textContent || '').trim().toLowerCase())
+              ) || tabs[0];
+              return target?.getAttribute('aria-selected') === 'true';
+            }
             """
         )
         if not verified:
