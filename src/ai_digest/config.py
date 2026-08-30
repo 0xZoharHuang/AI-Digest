@@ -44,6 +44,7 @@ class LarkConfig(BaseModel):
     wiki_name: str = "AI Intelligence Radar"
     wiki_base_url: str = "https://feishu.cn/wiki"
     identity: str = "user"
+    dm_identity: str = "bot"
 
 
 class RuntimeConfig(BaseModel):

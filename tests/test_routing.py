@@ -2,8 +2,16 @@ from __future__ import annotations
 
 import json
 
-from ai_digest.agent_phases import ROUTING_SCHEMA, AgentPhases
+from ai_digest.agent_phases import (
+    ROUTING_SCHEMA,
+    AgentPhases,
+    _brief_agents_md,
+    _brief_prompt,
+    _research_agents_md,
+    _research_prompt,
+)
 from ai_digest.config import RuntimeConfig
+from ai_digest.models import Bundle, RoutingOutput
 
 
 def test_routing_requires_complete_coverage(tmp_path):
@@ -27,6 +35,15 @@ def test_routing_requires_complete_coverage(tmp_path):
 
 def test_router_schema_requires_nullable_quiet_reason():
     assert "quiet_reason" in ROUTING_SCHEMA["required"]
+
+
+def test_phase3_and_phase4_prompts_require_simplified_chinese():
+    bundle = Bundle(bundle_id="topic", label="Topic", item_ids=["a"])
+    routing = RoutingOutput(bundles=[bundle], assignments=[])
+    assert "简体中文" in _research_agents_md()
+    assert "Simplified Chinese" in _research_prompt(bundle)
+    assert "简体中文" in _brief_agents_md()
+    assert "Simplified Chinese" in _brief_prompt(routing, {"topic": "topic/report.md"})
 
 
 def test_routing_accepts_research_watch_and_noise(tmp_path):

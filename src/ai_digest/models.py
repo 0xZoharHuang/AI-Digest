@@ -163,4 +163,7 @@ class PublishManifest(BaseModel):
     nodes: dict[str, PublishNode] = Field(default_factory=dict)
     dm_idempotency_key: str | None = None
     dm_sent: bool = False
+    dm_identity: str | None = None
+    dm_message_id: str | None = None
+    dm_chat_id: str | None = None
     errors: list[str] = Field(default_factory=list)

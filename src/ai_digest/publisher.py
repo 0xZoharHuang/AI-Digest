@@ -167,8 +167,8 @@ class LarkCLI:
             raise LarkError(f"document readback verification failed; missing {missing}")
         return str(document.get("revision_id", ""))
 
-    def send_dm(self, markdown: str, idempotency_key: str) -> None:
-        self.call(
+    def send_dm(self, markdown: str, idempotency_key: str) -> dict[str, Any]:
+        return self.call(
             [
                 "im",
                 "+messages-send",
@@ -179,7 +179,7 @@ class LarkCLI:
                 "--idempotency-key",
                 idempotency_key[:50],
                 "--as",
-                self.config.identity,
+                self.config.dm_identity,
             ]
         )
 
@@ -228,8 +228,10 @@ class LarkPublisher:
             manifest = PublishManifest.model_validate_json(
                 manifest_path.read_text(encoding="utf-8")
             )
-            if manifest.status == "success" and manifest.dm_sent:
+            if manifest.status == "success" and manifest.dm_sent and manifest.dm_message_id:
                 return manifest
+            if manifest.dm_sent and not manifest.dm_message_id:
+                manifest.dm_sent = False
         else:
             run_manifest = json.loads(
                 (run_dir / "00_run_manifest.json").read_text(encoding="utf-8")
@@ -296,7 +298,9 @@ class LarkPublisher:
             day_node.status = "written"
             manifest.nodes["day"] = day_node
 
-            idempotency_key = hashlib.sha256(f"ai-digest:{date}".encode()).hexdigest()[:48]
+            idempotency_key = hashlib.sha256(
+                f"ai-digest:{self.config.dm_identity}:{date}".encode()
+            ).hexdigest()[:48]
             manifest.dm_idempotency_key = idempotency_key
             if not manifest.dm_sent:
                 failures = json.loads(
@@ -332,8 +336,15 @@ class LarkPublisher:
                     f"异常来源：{', '.join(source_issues) if source_issues else '无'}  \n"
                     f"[打开今日 Brief]({day_node.url})"
                 )
-                self.cli.send_dm(message, idempotency_key)
+                sent = self.cli.send_dm(message, idempotency_key)
+                message_id = str(sent.get("message_id") or "")
+                chat_id = str(sent.get("chat_id") or "")
+                if not message_id or not chat_id:
+                    raise LarkError("Lark DM returned no message_id/chat_id")
                 manifest.dm_sent = True
+                manifest.dm_identity = self.config.dm_identity
+                manifest.dm_message_id = message_id
+                manifest.dm_chat_id = chat_id
             manifest.status = "success"
         except Exception as error:
             manifest.status = "failed"
