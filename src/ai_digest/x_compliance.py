@@ -59,6 +59,7 @@ class XComplianceRunner:
                 json={
                     "type": "tweets",
                     "name": f"ai-digest-{datetime.now(UTC).strftime('%Y%m%d-%H%M')}",
+                    "resumable": True,
                 },
             )
             response.raise_for_status()
@@ -66,12 +67,9 @@ class XComplianceRunner:
             upload_url = str(job["upload_url"])
             job_id = str(job["id"])
             async with httpx.AsyncClient(timeout=60) as storage_client:
-                upload = await storage_client.put(
-                    upload_url,
-                    content=("\n".join(post_ids) + "\n").encode(),
-                    headers={"Content-Type": "text/plain"},
+                await _upload_compliance_ids(
+                    storage_client, upload_url, ("\n".join(post_ids) + "\n").encode()
                 )
-            upload.raise_for_status()
             completed: dict[str, Any] | None = None
             for _ in range(180):
                 status = await client.get(f"{X_API}/compliance/jobs/{job_id}")
@@ -137,6 +135,34 @@ def _parse_compliance_events(text: str) -> dict[str, str]:
             if isinstance(payload, dict) and payload.get("id"):
                 events[str(payload["id"])] = key
     return events
+
+
+async def _upload_compliance_ids(
+    client: httpx.AsyncClient, upload_url: str, content: bytes
+) -> None:
+    initiation = await client.post(
+        upload_url,
+        content=b"",
+        headers={
+            "Content-Type": "text/plain",
+            "Content-Length": "0",
+            "x-goog-resumable": "start",
+        },
+    )
+    location = initiation.headers.get("location")
+    if initiation.is_success and location:
+        upload = await client.put(
+            location,
+            content=content,
+            headers={"Content-Type": "text/plain"},
+        )
+    else:
+        upload = await client.put(
+            upload_url,
+            content=content,
+            headers={"Content-Type": "text/plain"},
+        )
+    upload.raise_for_status()
 
 
 def _group_events(events: dict[str, str]) -> dict[str, list[str]]:

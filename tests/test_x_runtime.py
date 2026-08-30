@@ -22,6 +22,7 @@ from ai_digest.x_compliance import (
     _row_post_id,
     _run_dir,
     _thread_ids,
+    _upload_compliance_ids,
 )
 from ai_digest.x_setup import _members, _response_detail, build_private_list
 
@@ -152,9 +153,15 @@ def test_compliance_rewrites_x_handoff_and_index(tmp_path):
 
 
 class _Response:
-    def __init__(self, data=None, text=""):
+    def __init__(self, data=None, text="", headers=None, status_code=200):
         self._data = data or {}
         self.text = text
+        self.headers = headers or {}
+        self.status_code = status_code
+
+    @property
+    def is_success(self):
+        return 200 <= self.status_code < 300
 
     def raise_for_status(self):
         return None
@@ -173,10 +180,13 @@ class _HTTPClient:
     async def __aexit__(self, *args):
         return None
 
-    async def post(self, url, json):
+    async def post(self, url, json=None, content=None, headers=None):
+        if url == "https://upload":
+            return _Response(headers={"location": "https://upload-session"})
         return _Response({"data": {"id": "job-1", "upload_url": "https://upload"}})
 
     async def put(self, url, content, headers):
+        assert url == "https://upload-session"
         assert content == b"1\n2\n"
         return _Response()
 
@@ -198,6 +208,22 @@ async def test_batch_compliance_upload_poll_and_download(tmp_path, monkeypatch):
     monkeypatch.setattr("ai_digest.x_compliance.XTokenStore.load_bearer", lambda self: None)
     with pytest.raises(RuntimeError, match="bearer token"):
         await runner._batch_events(["1"])
+
+
+@pytest.mark.asyncio
+async def test_compliance_upload_falls_back_to_direct_put():
+    calls = []
+
+    class Client:
+        async def post(self, url, content, headers):
+            return _Response(status_code=404)
+
+        async def put(self, url, content, headers):
+            calls.append((url, content))
+            return _Response()
+
+    await _upload_compliance_ids(Client(), "https://upload", b"1\n")
+    assert calls == [("https://upload", b"1\n")]
 
 
 @pytest.mark.asyncio
