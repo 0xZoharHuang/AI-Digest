@@ -5,7 +5,8 @@
   <key>Label</key><string>com.ai-digest.recover</string>
   <key>ProgramArguments</key>
   <array>
-    <string>__PYTHON__</string><string>-m</string><string>ai_digest.cli</string>
+    <string>__UV__</string><string>run</string><string>--no-sync</string>
+    <string>python</string><string>-m</string><string>ai_digest.cli</string>
     <string>tick</string><string>--event</string><string>recover</string>
   </array>
   <key>WorkingDirectory</key><string>__PROJECT__</string>

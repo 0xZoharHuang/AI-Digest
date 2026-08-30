@@ -6,6 +6,7 @@ runtime_dir=${AI_DIGEST_RUNTIME_ROOT:-$HOME/Library/Application Support/ai-diges
 queue_dir=${AI_DIGEST_SHARED_RUNTIME_ROOT:-$runtime_dir/queue}
 mode=${1:-}
 user_uid=$(id -u)
+uv_binary=$(command -v uv)
 launch_domain="gui/$user_uid"
 launch_agents="$HOME/Library/LaunchAgents"
 legacy_dir="$runtime_dir/legacy-launchagents"
@@ -71,12 +72,14 @@ runner_tmp=$(mktemp /tmp/com.ai-digest.agent-runner.XXXXXX)
 
 sed -e "s|__PROJECT__|$project_dir|g" \
     -e "s|__PYTHON__|$project_dir/.venv/bin/python|g" \
+    -e "s|__UV__|$uv_binary|g" \
     -e "s|__RUNTIME__|$runtime_dir|g" \
     -e "s|__SHARED__|$queue_dir|g" \
     -e "s|__HOME__|$HOME|g" \
     "$project_dir/deploy/com.ai-digest.tick.plist.example" > "$tick_tmp"
 sed -e "s|__PROJECT__|$project_dir|g" \
     -e "s|__PYTHON__|$project_dir/.venv/bin/python|g" \
+    -e "s|__UV__|$uv_binary|g" \
     -e "s|__RUNTIME__|$runtime_dir|g" \
     -e "s|__SHARED__|$queue_dir|g" \
     -e "s|__HOME__|$HOME|g" \
