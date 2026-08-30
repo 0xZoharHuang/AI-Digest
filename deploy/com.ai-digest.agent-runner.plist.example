@@ -3,7 +3,6 @@
 <plist version="1.0">
 <dict>
   <key>Label</key><string>com.ai-digest.agent-runner</string>
-  <key>UserName</key><string>ai-digest-runner</string>
   <key>ProgramArguments</key>
   <array>
     <string>/usr/bin/caffeinate</string><string>-i</string>
@@ -13,8 +12,8 @@
   <key>WorkingDirectory</key><string>__PROJECT__</string>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>HOME</key><string>/Users/ai-digest-runner</string>
-    <key>CODEX_HOME</key><string>/Users/ai-digest-runner/.codex</string>
+    <key>HOME</key><string>__HOME__</string>
+    <key>CODEX_HOME</key><string>__CODEX_HOME__</string>
     <key>AI_DIGEST_RUNTIME_ROOT</key><string>__SHARED__</string>
     <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>

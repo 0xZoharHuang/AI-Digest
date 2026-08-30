@@ -155,7 +155,7 @@ def test_required_disabled_source_makes_phase_partial():
         source="x_list",
         health=SourceHealth(source="x_list", status=HealthStatus.DISABLED),
     )
-    assert Phase1Runner._phase_status([result], [], {"x_list"}) == RunStatus.PARTIAL
+    assert Phase1Runner._phase_status([result], [], {"x_list"}) == RunStatus.FAILED
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime
 from typing import Any
@@ -80,7 +81,6 @@ class XListCollector(Collector):
                     response = await client.request(
                         "GET", url, headers={"Authorization": f"Bearer {token}"}, params=params
                     )
-                blob_ref = self.store.write_blob(response.text, ".json")
                 payload = response.json()
                 data = payload.get("data") or []
                 includes = payload.get("includes") or {}
@@ -93,9 +93,27 @@ class XListCollector(Collector):
                         stopped_at_known = True
                         break
                     fresh.append(tweet)
-                page_items = [
-                    self._to_item(tweet, users, referenced, blob_ref, now) for tweet in fresh
-                ]
+                page_items = []
+                for tweet in fresh:
+                    author = users.get(str(tweet.get("author_id")), {})
+                    references = [
+                        {
+                            **reference,
+                            "expanded": referenced.get(str(reference.get("id")), {}),
+                        }
+                        for reference in tweet.get("referenced_tweets") or []
+                    ]
+                    blob_ref = self.store.write_blob(
+                        json.dumps(
+                            {"post": tweet, "author": author, "references": references},
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
+                        ".x-post.json",
+                    )
+                    page_items.append(
+                        self._to_item(tweet, users, referenced, blob_ref, now)
+                    )
                 metadata_remaining = await self._enrich_links(
                     client, page_items, metadata_remaining
                 )
@@ -103,7 +121,7 @@ class XListCollector(Collector):
                 api_errors = payload.get("errors") or []
                 if api_errors:
                     errors.extend(str(error)[:500] for error in api_errors)
-                manifest.blob_refs = [blob_ref]
+                manifest.blob_refs = [ref for item in page_items for ref in item.raw_refs]
                 manifests.append(
                     finish_manifest(
                         manifest,

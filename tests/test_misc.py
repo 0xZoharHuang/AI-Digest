@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import subprocess
-import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -53,10 +52,6 @@ def test_codex_permission_profile_denies_auth_but_allows_workspace_write(
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     name, definition = _permission_profile("workspace-write")
-    code = (
-        "from pathlib import Path; Path('workspace-ok').write_text('ok'); "
-        f"open({str(auth)!r}, 'rb').read(0)"
-    )
     process = subprocess.run(
         [
             str(binary),
@@ -67,9 +62,9 @@ def test_codex_permission_profile_denies_auth_but_allows_workspace_write(
             name,
             "-C",
             str(workspace),
-            sys.executable,
+            "/bin/sh",
             "-c",
-            code,
+            f"printf ok > workspace-ok; /bin/dd if={str(auth)!r} of=/dev/null bs=1 count=0",
         ],
         capture_output=True,
         text=True,

@@ -10,6 +10,7 @@ import stat
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from .agent_phases import AgentPhases
@@ -59,11 +60,14 @@ async def run_local_pipeline(
         manifest.status = RunStatus.FAILED
         _write_pipeline_failure(run_dir, str(error))
     atomic_write_json(run_dir / "00_run_manifest.json", manifest.model_dump(mode="json"))
+    state = StateDB(runtime.runtime_root / "state.db")
+    await state.init()
+    await state.replace_x_dependencies(
+        manifest.run_id, _x_dependency_rows(run_dir, manifest.run_id)
+    )
     if manifest.phases.get("phase4") == RunStatus.SUCCESS and (
         not publish or manifest.phases.get("phase5") == RunStatus.SUCCESS
     ):
-        state = StateDB(runtime.runtime_root / "state.db")
-        await state.init()
         await state.mark_run_locally_completed(
             manifest.run_id, "published" if publish else "local_complete"
         )
@@ -302,6 +306,7 @@ def recover_and_publish(runtime: RuntimeConfig) -> list[Path]:
         try:
             run_dir = import_agent_job(runtime, job_dir)
             manifest = _reconcile_manifest(runtime, run_dir)
+            _replace_x_dependencies_sync(runtime, run_dir, manifest.run_id)
         except Exception as error:
             detail = f"{type(error).__name__}: {error}"
             try:
@@ -322,6 +327,7 @@ def recover_and_publish(runtime: RuntimeConfig) -> list[Path]:
                 run_dir / "00_run_manifest.json", manifest.model_dump(mode="json")
             )
             _update_run_state(runtime, manifest.run_id, manifest.status.value, "published")
+            _replace_x_dependencies_sync(runtime, run_dir, manifest.run_id)
             published.append(run_dir)
             destination = archived_root / job_dir.name
             if destination.exists():
@@ -481,6 +487,104 @@ def _publish_import_failure(runtime: RuntimeConfig, run_id: str, detail: str) ->
             LarkPublisher(runtime.lark).publish(run_dir, "FAILED")
     except Exception:
         return
+
+
+def _x_dependency_rows(run_dir: Path, run_id: str) -> list[dict[str, Any]]:
+    item_to_post: dict[str, str] = {}
+    for name in ("x_list.jsonl", "x_for_you.jsonl"):
+        for row in load_jsonl(run_dir / "01_phase1" / name):
+            payload = row.get("payload") or {}
+            if isinstance(payload, dict) and payload.get("post_id"):
+                item_to_post[str(row["item_id"])] = str(payload["post_id"])
+    if not item_to_post:
+        return []
+    assignments = [
+        Assignment.model_validate(row)
+        for row in load_jsonl(run_dir / "02_routing" / "assignments.jsonl")
+    ]
+    successes_path = run_dir / "03_research" / "successes.json"
+    successes = (
+        json.loads(successes_path.read_text(encoding="utf-8"))
+        if successes_path.exists()
+        else {}
+    )
+    publish_path = run_dir / "05_publish" / "publish_manifest.json"
+    publish_nodes = {}
+    if publish_path.exists():
+        publish_nodes = json.loads(publish_path.read_text(encoding="utf-8")).get("nodes", {})
+    brief_thread = _codex_thread(run_dir / "04_brief" / "codex.json")
+    rows: list[dict[str, Any]] = []
+    for assignment in assignments:
+        post_id = item_to_post.get(assignment.id)
+        if not post_id or assignment.d == "n":
+            continue
+        for bundle_id in assignment.t:
+            rows.append(
+                {
+                    "post_id": post_id,
+                    "run_id": run_id,
+                    "bundle_id": bundle_id,
+                    "thread_id": _codex_thread(
+                        run_dir / "03_research" / bundle_id / "codex.json"
+                    ),
+                    "report_path": successes.get(bundle_id),
+                    "lark_node_key": (
+                        publish_nodes.get(f"report:{bundle_id}") or {}
+                    ).get("node_token"),
+                }
+            )
+        rows.append(
+            {
+                "post_id": post_id,
+                "run_id": run_id,
+                "bundle_id": "__brief__",
+                "thread_id": brief_thread,
+                "report_path": "04_brief/daily_brief.md",
+                "lark_node_key": (publish_nodes.get("day") or {}).get("node_token"),
+            }
+        )
+    unique: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        unique[(str(row["post_id"]), str(row["bundle_id"]))] = row
+    return list(unique.values())
+
+
+def _codex_thread(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    thread_id = value.get("thread_id") if isinstance(value, dict) else None
+    return str(thread_id) if thread_id else None
+
+
+def _replace_x_dependencies_sync(
+    runtime: RuntimeConfig, run_dir: Path, run_id: str
+) -> None:
+    values = _x_dependency_rows(run_dir, run_id)
+    with sqlite3.connect(runtime.runtime_root / "state.db") as connection:
+        connection.execute("DELETE FROM x_dependencies WHERE run_id = ?", (run_id,))
+        connection.executemany(
+            """
+            INSERT INTO x_dependencies
+            (post_id, run_id, bundle_id, thread_id, report_path, lark_node_key)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    row["post_id"],
+                    run_id,
+                    row["bundle_id"],
+                    row.get("thread_id"),
+                    row.get("report_path"),
+                    row.get("lark_node_key"),
+                )
+                for row in values
+            ],
+        )
+        connection.commit()
 
 
 def _lookup_run_dir(runtime: RuntimeConfig, run_id: str) -> Path:

@@ -3,17 +3,26 @@ enabled = false
 required = true
 compliance_verified = false
 list_id = ""
+list_name = "AI Intelligence Radar"
+bootstrap_mode = "full_seed_union_freeze"
 seed_list_ids = ["1585430245762441216", "1353454915088052225", "226428000"]
-target_members = 1100
+target_members = 0
 poll_hours = [3, 7, 11, 15, 19, 23]
 max_pages = 8
 
 [x_for_you]
 enabled = false
 required = false
-profile_dir = "~/Library/Application Support/ai-digest/browser-profile"
+personal_browser_risk_acknowledged = false
+cookie_file = "config/twitter_cookies.json"
 limit = 150
-scroll_rounds = 30
+scroll_rounds = 45
+refresh_rounds = 3
+consecutive_empty = 3
+delay_min_seconds = 2.0
+delay_max_seconds = 5.0
+max_consecutive_failures = 2
+cooldown_hours = 6
 hours = [7, 20]
 
 [github]

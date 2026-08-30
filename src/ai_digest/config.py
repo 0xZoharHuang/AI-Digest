@@ -35,7 +35,7 @@ class LarkConfig(BaseModel):
 class RuntimeConfig(BaseModel):
     timezone: str = "Asia/Shanghai"
     runtime_root: Path = Path("~/Library/Application Support/ai-digest")
-    shared_runtime_root: Path = Path("/Users/Shared/ai-digest-runtime")
+    shared_runtime_root: Path = Path("~/Library/Application Support/ai-digest/queue")
     daily_hour: int = 7
     late_start_cutoff: str = "07:20"
     window_hours: int = 24

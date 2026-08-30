@@ -43,6 +43,16 @@ class XTokenStore:
         if tokens.refresh_token:
             _keychain_set("refresh_token", tokens.refresh_token)
 
+    def load_bearer(self) -> str | None:
+        return os.environ.get("AI_DIGEST_X_BEARER_TOKEN") or _keychain_get(
+            "app_bearer_token"
+        )
+
+    def save_bearer(self, token: str) -> None:
+        if not token.strip():
+            raise ValueError("X bearer token must not be empty")
+        _keychain_set("app_bearer_token", token.strip())
+
     async def refresh(self, refresh_token: str) -> XTokens:
         if not self.client_id:
             raise RuntimeError("AI_DIGEST_X_CLIENT_ID is required for token refresh")

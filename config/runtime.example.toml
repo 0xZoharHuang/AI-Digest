@@ -1,6 +1,6 @@
 timezone = "Asia/Shanghai"
 runtime_root = "~/Library/Application Support/ai-digest"
-shared_runtime_root = "/Users/Shared/ai-digest-runtime"
+shared_runtime_root = "~/Library/Application Support/ai-digest/queue"
 daily_hour = 7
 late_start_cutoff = "07:20"
 window_hours = 24

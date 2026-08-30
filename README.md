@@ -26,8 +26,9 @@ the one-time X, Lark, Codex runner and launchd setup.
 
 ## Sources
 
-- X private List via the official API. X For You is not a production source because there is no
-  official personalized-feed API and X prohibits browser automation.
+- X private List via the official API as the required X source. A personal, cookie-backed
+  Playwright adapter preserves the existing For You workflow as a best-effort supplementary
+  signal; it is never treated as an official API or a hard publication gate.
 - GitHub Trending plus bounded recent/activity search lanes for 1–499-star and 500–5000-star
   repos, immutable forward snapshots, 6h/24h/7d deltas, threshold crossings and growth events.
 - arXiv categories `cs.RO`, `cs.AI`, `cs.LG`, `cs.CV`, `cs.CL`, `stat.ML`.
@@ -85,15 +86,16 @@ must additionally pass `doctor` and a no-publish smoke run before launchd is ins
 
 ## Security
 
-External posts, README text and webpages are untrusted evidence, never instructions. The production
-design runs Phase 2–4 under a dedicated macOS standard user and exchanges only sanitized run files
-through `/Users/Shared/ai-digest-runtime`. The main user retains X, GitHub, browser and Lark
-credentials. Arbitrary external metadata requests reject private, loopback, link-local and cloud
-metadata addresses.
+External posts, README text and webpages are untrusted evidence, never instructions. Phase 2–4 run
+under the current macOS user with a custom Codex permission profile: only the current run workspace
+is writable, while the repository, Codex credential directory, SSH directory and login Keychains
+are denied. The queue lives under `~/Library/Application Support/ai-digest/queue`; no second macOS
+account or copied Codex login is required. Arbitrary external metadata requests reject private,
+loopback, link-local and cloud metadata addresses.
 
-X For You browser automation is disabled because X's current developer rules prohibit non-API
-browser automation. X List remains disabled until official API access and deletion/update
-compliance are both verified; a local expiry alone is not presented as full compliance.
+The For You adapter uses the owner's existing browser session, can break when X changes its UI,
+and cools down after repeated failures. The official X List remains disabled until API access and
+deletion/update compliance are both verified; a local expiry alone is not full compliance.
 
 ## License
 

@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import grp
+import json
 import os
-import pwd
 import shutil
 import subprocess
 import sys
@@ -52,6 +51,12 @@ def run_doctor(runtime: RuntimeConfig, sources: SourcesConfig) -> dict[str, Any]
         else "not verified; downstream retention/deletion remains blocked",
         required=x_required,
     )
+    add(
+        "x_app_bearer",
+        bool(not x_enabled or x_store.load_bearer()),
+        "App bearer configured for Batch Compliance" if x_enabled else "disabled",
+        required=x_required,
+    )
     executable = _playwright_executable()
     add(
         "playwright_chromium",
@@ -61,26 +66,25 @@ def run_doctor(runtime: RuntimeConfig, sources: SourcesConfig) -> dict[str, Any]
     )
     add(
         "x_for_you_policy",
-        not bool(sources.x_for_you.get("enabled")),
-        "disabled; X policy prohibits browser automation"
+        not bool(sources.x_for_you.get("enabled"))
+        or bool(sources.x_for_you.get("personal_browser_risk_acknowledged")),
+        "disabled"
         if not sources.x_for_you.get("enabled")
-        else "enabled browser automation is not production-compliant",
+        else "personal browser risk explicitly acknowledged",
         required=True,
     )
-    try:
-        runner = pwd.getpwnam("ai-digest-runner")
-        add("runner_user", True, f"uid={runner.pw_uid}, home={runner.pw_dir}")
-        group_names = {
-            grp.getgrgid(group_id).gr_name
-            for group_id in os.getgrouplist(runner.pw_name, runner.pw_gid)
-        }
-        add(
-            "runner_staff_group",
-            "staff" in group_names,
-            ",".join(sorted(group_names)),
-        )
-    except KeyError:
-        add("runner_user", False, "ai-digest-runner does not exist")
+    cookie_file = Path(
+        str(sources.x_for_you.get("cookie_file", "config/twitter_cookies.json"))
+    ).expanduser()
+    if not cookie_file.is_absolute():
+        cookie_file = REPO_ROOT / cookie_file
+    add(
+        "x_for_you_cookie",
+        _valid_x_cookie_file(cookie_file),
+        str(cookie_file),
+        required=bool(sources.x_for_you.get("enabled")),
+    )
+    add("runner_identity", True, f"current user uid={os.getuid()}")
     add(
         "shared_runtime",
         runtime.shared_runtime_root.exists(),
@@ -140,6 +144,15 @@ def _playwright_executable() -> Path | None:
     except subprocess.SubprocessError:
         pass
     return None
+
+
+def _valid_x_cookie_file(path: Path) -> bool:
+    try:
+        cookies = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    names = {str(cookie.get("name")) for cookie in cookies if isinstance(cookie, dict)}
+    return {"auth_token", "ct0"} <= names
 
 
 def _lark_space_access(binary: str, space_id: str, identity: str) -> bool:

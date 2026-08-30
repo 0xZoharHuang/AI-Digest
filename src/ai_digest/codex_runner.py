@@ -46,6 +46,8 @@ class CodexRunner:
         resume_thread_id: str | None = None,
     ) -> CodexResult:
         workspace.mkdir(parents=True, exist_ok=True)
+        isolated_tmp = workspace / ".tmp"
+        isolated_tmp.mkdir(parents=True, exist_ok=True)
         permission_name, permission_definition = _permission_profile(sandbox)
         args = [
             self.binary,
@@ -64,7 +66,7 @@ class CodexRunner:
             "-c",
             'cli_auth_credentials_store="file"',
             "-c",
-            "shell_environment_policy.include_only=[]",
+            'shell_environment_policy.include_only=["PATH","TMPDIR","LANG","LC_ALL"]',
             "-c",
             "shell_environment_policy.ignore_default_excludes=false",
             "-c",
@@ -106,7 +108,7 @@ class CodexRunner:
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            env=_safe_environment(),
+            env=_safe_environment(isolated_tmp),
         )
         assert process.stdout is not None
         result = CodexResult(exit_code=-1)
@@ -164,9 +166,12 @@ def classify_codex_error(text: str) -> str:
     return "process_error"
 
 
-def _safe_environment() -> dict[str, str]:
+def _safe_environment(isolated_tmp: Path | None = None) -> dict[str, str]:
     allowed = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TMPDIR", "CODEX_HOME")
-    return {key: os.environ[key] for key in allowed if key in os.environ}
+    environment = {key: os.environ[key] for key in allowed if key in os.environ}
+    if isolated_tmp is not None:
+        environment["TMPDIR"] = str(isolated_tmp)
+    return environment
 
 
 def _permission_profile(sandbox: str) -> tuple[str, str]:
@@ -176,8 +181,13 @@ def _permission_profile(sandbox: str) -> tuple[str, str]:
     name = "ai_digest_read" if sandbox == "read-only" else "ai_digest_workspace"
     home = Path(os.environ.get("HOME", str(Path.home()))).expanduser().resolve()
     codex_home = Path(os.environ.get("CODEX_HOME", str(home / ".codex"))).expanduser().resolve()
-    denied = [codex_home, home / ".ssh", home / "Library" / "Keychains"]
-    filesystem = ",".join(f"{json.dumps(str(path))}=\"deny\"" for path in denied)
+    explicit_denies = [codex_home, home / ".ssh", home / "Library" / "Keychains"]
+    denied = ",".join(
+        f"{json.dumps(str(path))}=\"deny\"" for path in explicit_denies
+    )
+    filesystem = (
+        '":root"="deny",":minimal"="read",":slash_tmp"="deny",' + denied
+    )
     definition = (
         f'permissions.{name}={{extends="{parents[sandbox]}",'
         f"filesystem={{{filesystem}}}}}"

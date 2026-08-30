@@ -182,6 +182,40 @@ class StateDB:
                     first_seen_at TEXT NOT NULL,
                     last_checked_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS x_posts (
+                    post_id TEXT PRIMARY KEY,
+                    expires_at TEXT NOT NULL,
+                    state TEXT NOT NULL DEFAULT 'active',
+                    last_verified_at TEXT,
+                    edit_history_json TEXT NOT NULL DEFAULT '[]',
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS x_post_items (
+                    post_id TEXT NOT NULL,
+                    item_id TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    PRIMARY KEY (post_id, item_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS x_dependencies (
+                    post_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    bundle_id TEXT NOT NULL,
+                    thread_id TEXT,
+                    report_path TEXT,
+                    lark_node_key TEXT,
+                    PRIMARY KEY (post_id, run_id, bundle_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS x_compliance_audit (
+                    audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    post_id TEXT NOT NULL,
+                    event TEXT NOT NULL,
+                    occurred_at TEXT NOT NULL,
+                    details_json TEXT NOT NULL
+                );
                 """
             )
             await self._ensure_column(db, "source_items", "sealed_run_id", "TEXT")
@@ -204,6 +238,10 @@ class StateDB:
                     ON github_repo_snapshots(repo_id, observed_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_github_early_watch_rotation
                     ON github_early_watch(first_seen_at, last_checked_at);
+                CREATE INDEX IF NOT EXISTS idx_x_posts_expiry
+                    ON x_posts(state, expires_at);
+                CREATE INDEX IF NOT EXISTS idx_x_dependencies_run
+                    ON x_dependencies(run_id, bundle_id);
                 """
             )
             await db.commit()
@@ -244,6 +282,31 @@ class StateDB:
                 )
                 if cursor.rowcount == 1:
                     inserted.append(item.item_id)
+                if item.source in {"x_list", "x_for_you"} and item.payload.get("post_id"):
+                    post_id = str(item.payload["post_id"])
+                    expiry = item.expires_at or datetime.now(UTC)
+                    edit_history = item.payload.get("edit_history_post_ids") or [post_id]
+                    now = datetime.now(UTC).isoformat()
+                    await db.execute(
+                        """
+                        INSERT INTO x_posts
+                        (post_id, expires_at, state, edit_history_json, updated_at)
+                        VALUES (?, ?, 'active', ?, ?)
+                        ON CONFLICT(post_id) DO UPDATE SET
+                            expires_at=excluded.expires_at,
+                            state='active',
+                            edit_history_json=excluded.edit_history_json,
+                            updated_at=excluded.updated_at
+                        """,
+                        (post_id, expiry.isoformat(), json.dumps(edit_history), now),
+                    )
+                    await db.execute(
+                        """
+                        INSERT OR IGNORE INTO x_post_items(post_id, item_id, source)
+                        VALUES (?, ?, ?)
+                        """,
+                        (post_id, item.item_id, item.source),
+                    )
             await db.commit()
         return inserted
 
@@ -761,6 +824,162 @@ class StateDB:
                 (date, cutoff.isoformat()),
             )
             return await cursor.fetchone() is not None
+
+    async def active_x_post_ids(self, now: datetime | None = None) -> list[str]:
+        cutoff = (now or datetime.now(UTC)).isoformat()
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                SELECT post_id FROM x_posts
+                WHERE state = 'active' AND expires_at >= ?
+                ORDER BY post_id
+                """,
+                (cutoff,),
+            )
+            return [str(row[0]) for row in await cursor.fetchall()]
+
+    async def expired_x_post_ids(self, now: datetime | None = None) -> list[str]:
+        cutoff = (now or datetime.now(UTC)).isoformat()
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                SELECT post_id FROM x_posts
+                WHERE state = 'active' AND expires_at < ?
+                ORDER BY post_id
+                """,
+                (cutoff,),
+            )
+            return [str(row[0]) for row in await cursor.fetchall()]
+
+    async def replace_x_dependencies(
+        self, run_id: str, dependencies: Iterable[dict[str, Any]]
+    ) -> None:
+        values = list(dependencies)
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            await db.execute("DELETE FROM x_dependencies WHERE run_id = ?", (run_id,))
+            await db.executemany(
+                """
+                INSERT INTO x_dependencies
+                (post_id, run_id, bundle_id, thread_id, report_path, lark_node_key)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        str(row["post_id"]),
+                        run_id,
+                        str(row["bundle_id"]),
+                        row.get("thread_id"),
+                        row.get("report_path"),
+                        row.get("lark_node_key"),
+                    )
+                    for row in values
+                ],
+            )
+            await db.commit()
+
+    async def x_dependencies_for_posts(
+        self, post_ids: Iterable[str]
+    ) -> list[dict[str, Any]]:
+        values = list(dict.fromkeys(str(value) for value in post_ids))
+        if not values:
+            return []
+        placeholders = ",".join("?" for _ in values)
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                f"""
+                SELECT post_id, run_id, bundle_id, thread_id, report_path, lark_node_key
+                FROM x_dependencies WHERE post_id IN ({placeholders})
+                ORDER BY run_id, bundle_id, post_id
+                """,
+                values,
+            )
+            rows = await cursor.fetchall()
+        return [
+            {
+                "post_id": str(row[0]),
+                "run_id": str(row[1]),
+                "bundle_id": str(row[2]),
+                "thread_id": row[3],
+                "report_path": row[4],
+                "lark_node_key": row[5],
+            }
+            for row in rows
+        ]
+
+    async def pop_x_posts(self, post_ids: Iterable[str]) -> list[SourceItem]:
+        values = list(dict.fromkeys(str(value) for value in post_ids))
+        if not values:
+            return []
+        placeholders = ",".join("?" for _ in values)
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute(
+                f"""
+                SELECT s.payload_json FROM source_items s
+                JOIN x_post_items x ON x.item_id = s.item_id
+                WHERE x.post_id IN ({placeholders})
+                """,
+                values,
+            )
+            rows = await cursor.fetchall()
+            await db.execute(
+                f"""
+                DELETE FROM source_items WHERE item_id IN (
+                    SELECT item_id FROM x_post_items WHERE post_id IN ({placeholders})
+                )
+                """,
+                values,
+            )
+            await db.commit()
+        return [SourceItem.model_validate_json(row[0]) for row in rows]
+
+    async def mark_x_compliance(
+        self,
+        post_ids: Iterable[str],
+        event: str,
+        details: dict[str, Any] | None = None,
+        occurred_at: datetime | None = None,
+    ) -> None:
+        values = list(dict.fromkeys(str(value) for value in post_ids))
+        if not values:
+            return
+        moment = (occurred_at or datetime.now(UTC)).isoformat()
+        payload = json.dumps(details or {}, ensure_ascii=False, sort_keys=True)
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            await db.executemany(
+                """
+                UPDATE x_posts SET state = ?, last_verified_at = ?, updated_at = ?
+                WHERE post_id = ?
+                """,
+                [(event, moment, moment, post_id) for post_id in values],
+            )
+            await db.executemany(
+                """
+                INSERT INTO x_compliance_audit(post_id, event, occurred_at, details_json)
+                VALUES (?, ?, ?, ?)
+                """,
+                [(post_id, event, moment, payload) for post_id in values],
+            )
+            await db.commit()
+
+    async def mark_x_verified(
+        self, post_ids: Iterable[str], verified_at: datetime | None = None
+    ) -> None:
+        values = list(dict.fromkeys(str(value) for value in post_ids))
+        if not values:
+            return
+        moment = (verified_at or datetime.now(UTC)).isoformat()
+        async with aiosqlite.connect(self.path) as db:
+            await db.executemany(
+                """
+                UPDATE x_posts SET last_verified_at = ?, updated_at = ?
+                WHERE post_id = ? AND state = 'active'
+                """,
+                [(moment, moment, post_id) for post_id in values],
+            )
+            await db.commit()
 
     async def pop_expired_x_items(self, now: datetime | None = None) -> list[SourceItem]:
         cutoff = (now or datetime.now(UTC)).isoformat()

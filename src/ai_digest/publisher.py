@@ -183,6 +183,24 @@ class LarkCLI:
             ]
         )
 
+    def delete_node(self, node: PublishNode) -> None:
+        self.call(
+            [
+                "wiki",
+                "+node-delete",
+                "--node-token",
+                node.node_token,
+                "--obj-type",
+                "wiki",
+                "--space-id",
+                self.config.space_id,
+                "--yes",
+                "--as",
+                self.config.identity,
+            ],
+            retry=False,
+        )
+
     def _node(self, title: str, row: dict[str, Any]) -> PublishNode:
         node_token = row.get("node_token") or row.get("wiki_token")
         obj_token = row.get("obj_token") or row.get("document_id")

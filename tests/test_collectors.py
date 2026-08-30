@@ -6,7 +6,7 @@ import pytest
 
 from ai_digest.collectors.articles import ArticleCollector
 from ai_digest.collectors.arxiv import ArxivCollector
-from ai_digest.collectors.x_for_you import _post_id
+from ai_digest.collectors.x_for_you import XForYouCollector, _post_id
 from ai_digest.collectors.x_list import XListCollector
 from ai_digest.models import FetchManifest, SourceItem, TimeBasis
 from ai_digest.store import FileStore, StateDB
@@ -319,3 +319,39 @@ async def test_article_cursors_advance_only_after_all_durable_writes(
 def test_post_id_parser():
     assert _post_id("/user/status/123?x=1") == "123"
     assert _post_id("/home") is None
+
+
+@pytest.mark.asyncio
+async def test_for_you_explicitly_selects_and_verifies_tab(store_state):
+    store, state = store_state
+    collector = XForYouCollector({}, store, state)
+
+    class Page:
+        calls = 0
+        waited = 0
+
+        async def evaluate(self, script):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            return "clicked" if self.calls == 1 else True
+
+        async def wait_for_timeout(self, milliseconds):  # type: ignore[no-untyped-def]
+            self.waited = milliseconds
+
+    page = Page()
+    await collector._select_for_you(page)  # type: ignore[arg-type]
+    assert page.calls == 2
+    assert page.waited == 1500
+
+
+@pytest.mark.asyncio
+async def test_for_you_enters_cooldown_after_repeated_failures(store_state):
+    store, state = store_state
+    await state.init()
+    collector = XForYouCollector(
+        {"max_consecutive_failures": 2, "cooldown_hours": 6}, store, state
+    )
+    now = datetime(2026, 8, 30, tzinfo=UTC)
+    await collector._record_failure(now)
+    assert await state.get_cursor("x_for_you:cooldown_until") is None
+    await collector._record_failure(now)
+    assert await state.get_cursor("x_for_you:cooldown_until") == "2026-08-30T06:00:00+00:00"

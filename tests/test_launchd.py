@@ -31,6 +31,8 @@ def test_launchd_triggers_keep_collection_and_recovery_separate():
     assert recover["QueueDirectories"] == ["__SHARED__/completed"]
     assert recover["ProgramArguments"][-3:] == ["tick", "--event", "recover"]
     assert runner["QueueDirectories"] == ["__SHARED__/jobs"]
+    assert "UserName" not in runner
+    assert runner["EnvironmentVariables"]["HOME"] == "__HOME__"
     assert tick["EnvironmentVariables"]["PATH"] == EXPECTED_PATH
     assert recover["EnvironmentVariables"]["PATH"] == EXPECTED_PATH
     assert runner["EnvironmentVariables"]["PATH"] == EXPECTED_PATH
@@ -41,10 +43,10 @@ def test_calendar_event_mapping():
     assert event_for_hour(20) == "x-for-you"
     assert event_for_hour(3) == "x-list"
     assert event_for_hour(23) == "x-list"
-    assert events_for_hour(1) == ["github"]
-    assert events_for_hour(7) == ["daily"]
-    assert events_for_hour(13) == ["github"]
-    assert events_for_hour(19) == ["x-list", "github"]
+    assert events_for_hour(1) == ["x-compliance", "github"]
+    assert events_for_hour(7) == ["x-compliance", "daily"]
+    assert events_for_hour(13) == ["x-compliance", "github"]
+    assert events_for_hour(19) == ["x-compliance", "x-list", "github"]
 
 
 def test_daily_calendar_has_bounded_crash_retries_before_cutoff():
@@ -83,15 +85,18 @@ def test_stale_staging_cleanup_is_bounded(tmp_path):
 def test_installer_creates_every_queue_and_preserves_executables():
     installer = (ROOT / "scripts" / "install_macos.sh").read_text(encoding="utf-8")
     assert "staging jobs completed publish_pending archived failed logs" in installer
-    assert "chmod -R u=rwX,go=rX" in installer
+    assert "chmod -R u=rwX,go=" in installer
     assert "uv sync --no-editable" in installer
-    assert "AI_DIGEST_COPY_CODEX_AUTH" in installer
     assert '"$shared_app/node_modules/.bin/codex"' in installer
     assert "login status" in installer
     assert "legacy-launchagents" in installer
     assert "com.ai-digest.daily.plist" in installer
-    assert "$legacy_name.disabled-$release_stamp" in installer
+    assert "$legacy_name.disabled-$cutover_stamp" in installer
     assert "permission-probe-$release_stamp" in installer
     assert "Operation not permitted" in installer
     assert "-type f -exec chmod 660" not in installer
     assert 's|__PROJECT__|$shared_app|g' in installer
+    assert "ai-digest-runner" not in installer
+    assert "sudo " not in installer
+    assert "--cutover" in installer
+    assert "--rollback" in installer

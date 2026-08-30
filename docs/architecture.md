@@ -81,16 +81,15 @@ validates coverage and asks the same Router session to repair an incomplete outp
 ## Queue isolation
 
 The main LaunchAgent first seals an immutable Phase 1 run in SQLite, materializes it under the
-unwatched shared `staging/` directory, and atomically renames it into `jobs/`. Only after that queue
+unwatched `staging/` directory, and atomically renames it into `jobs/`. Only after that queue
 directory is visible does one transaction mark the run queued and its items delivered. Sealed runs
-are replayed at the beginning of every tick. A LaunchDaemon
-running as `ai-digest-runner` moves the job to `completed/` after Phase 2–4. A distinct main-user
-recovery LaunchAgent watches only `completed/`, imports the artifacts and publishes them; its entry
+are replayed at the beginning of every tick. A user LaunchAgent moves the job to `completed/` after
+Phase 2–4. A distinct recovery LaunchAgent watches only `completed/`, imports the artifacts and publishes them; its entry
 point is `tick --event recover`, so a queue wake cannot start another collection. Successful jobs
 move to `archived/`, Lark retryable jobs to `publish_pending/`, and failed worker jobs to `failed/`.
 
 Every Codex call uses a custom permission profile rather than the broad built-in sandbox flag. The
-profile denies reads of the runner's entire `CODEX_HOME`, `.ssh`, and login Keychains while granting
+profile denies reads of the current user's entire `CODEX_HOME`, `.ssh`, and login Keychains while granting
 only read-only or current-workspace access as the phase requires. Installation fails closed unless
 an exact sandbox probe can write its workspace but receives `Operation not permitted` when opening
 `auth.json`, including a zero-byte read.
