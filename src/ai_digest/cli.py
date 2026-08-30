@@ -17,12 +17,12 @@ from .phase1 import Phase1Runner
 from .pipeline import (
     enqueue_agent_job,
     enqueue_pending_agent_jobs,
+    publish_existing_run,
     recover_and_publish,
     run_agent_worker,
     run_local_pipeline,
     should_skip_late,
 )
-from .publisher import LarkPublisher
 from .x_provider import TwitterApiIOKeyStore
 
 console = Console()
@@ -94,7 +94,7 @@ async def async_main(args: argparse.Namespace) -> int:
             console.print(str(brief_path))
         return 0
     if args.command == "publish":
-        publish_manifest = LarkPublisher(runtime.lark).publish(args.run_dir, "MANUAL")
+        publish_manifest = publish_existing_run(runtime, args.run_dir)
         console.print_json(data=publish_manifest.model_dump(mode="json"))
         return 0
     if args.command == "pipeline":

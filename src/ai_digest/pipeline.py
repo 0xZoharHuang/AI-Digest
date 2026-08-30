@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from .agent_phases import AgentPhases
 from .config import RuntimeConfig, SourcesConfig, load_interests
-from .models import Assignment, Bundle, RunManifest, RunStatus
+from .models import Assignment, Bundle, PublishManifest, RunManifest, RunStatus
 from .phase1 import Phase1Runner
 from .publisher import LarkPublisher
 from .store import FileStore, StateDB, load_jsonl
@@ -227,6 +227,7 @@ def _reconcile_manifest(runtime: RuntimeConfig, run_dir: Path) -> RunManifest:
     manifest = RunManifest.model_validate_json(
         (run_dir / "00_run_manifest.json").read_text(encoding="utf-8")
     )
+    manifest.errors = []
     manifest.phases.pop("phase5", None)
     worker_failure: dict[str, object] | None = None
     failure_path = run_dir / "worker_failure.json"
@@ -280,6 +281,26 @@ def _reconcile_manifest(runtime: RuntimeConfig, run_dir: Path) -> RunManifest:
     atomic_write_json(run_dir / "00_run_manifest.json", manifest.model_dump(mode="json"))
     _update_run_state(runtime, manifest.run_id, manifest.status.value, "agent_complete")
     return manifest
+
+
+def publish_existing_run(runtime: RuntimeConfig, run_dir: Path) -> PublishManifest:
+    manifest = _reconcile_manifest(runtime, run_dir)
+    try:
+        publish_manifest = LarkPublisher(runtime.lark).publish(
+            run_dir, manifest.status.value.upper()
+        )
+        manifest.phases["phase5"] = RunStatus.SUCCESS
+        manifest.status = _overall_status(manifest)
+        atomic_write_json(run_dir / "00_run_manifest.json", manifest.model_dump(mode="json"))
+        _update_run_state(runtime, manifest.run_id, manifest.status.value, "published")
+        return publish_manifest
+    except Exception as error:
+        manifest.phases["phase5"] = RunStatus.FAILED
+        manifest.errors.append(f"Phase 5: {type(error).__name__}: {error}")
+        manifest.status = _overall_status(manifest)
+        atomic_write_json(run_dir / "00_run_manifest.json", manifest.model_dump(mode="json"))
+        _update_run_state(runtime, manifest.run_id, manifest.status.value, "publish_pending")
+        raise
 
 
 def recover_and_publish(runtime: RuntimeConfig) -> list[Path]:

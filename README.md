@@ -5,7 +5,7 @@ collects independent source records, seals a reproducible Phase 1 handoff, lets 
 research provisional bundles, writes one human-readable brief, and publishes a private Lark Wiki.
 
 ```text
-independent sources -> sealed typed JSONL -> Router -> Research Agents -> Brief -> Lark
+independent sources -> sealed typed JSONL -> batched Router + calibration -> Research -> Brief -> Lark
 ```
 
 The V1 Claude/Notion/OpenClaw implementation is preserved at the annotated Git tag `legacy-v1`.
@@ -14,8 +14,9 @@ The V1 Claude/Notion/OpenClaw implementation is preserved at the annotated Git t
 
 - Phase 1 collects and performs source-local deduplication. It does not score quality, merge
   platforms, build a semantic graph, or execute third-party code.
-- Phase 2 is one read-only Codex Router. It assigns every source item to research, watch, or
-  no-action and creates at most 18 provisional bundles.
+- Phase 2 uses source-stratified, read-only Codex batches of at most 100 items. It consolidates
+  provisional topics into at most 18 global bundles, then recalibrates every r/w/n decision against
+  that shared map; unmatched high-signal topics remain visible as watch suggestions.
 - Phase 3 gives every bundle to a complete Codex research agent. Three run concurrently; each may
   use up to four non-recursive subagents and must leave one Simplified-Chinese `report.md`.
 - Phase 4 reads successful reports and watch items and returns one Simplified-Chinese

@@ -9,6 +9,8 @@ from typing import Any
 
 from .config import resolve_binary
 
+CODEX_EVENT_STREAM_LIMIT_BYTES = 16 * 1024 * 1024
+
 
 @dataclass
 class CodexResult:
@@ -109,6 +111,7 @@ class CodexRunner:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             env=_safe_environment(isolated_tmp),
+            limit=CODEX_EVENT_STREAM_LIMIT_BYTES,
         )
         assert process.stdout is not None
         result = CodexResult(exit_code=-1)

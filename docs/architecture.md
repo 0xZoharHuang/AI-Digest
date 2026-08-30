@@ -78,6 +78,17 @@ Every Phase 1 `item_id` must appear exactly once in `assignments.jsonl`:
 Research items may enter one or two bundles. A valid quiet day has zero bundles and a reason. Code
 validates coverage and asks the same Router session to repair an incomplete output once.
 
+The implementation does not ask one model response to emit thousands of assignments. It distributes
+items into deterministic source-stratified batches of at most 100, validates each batch, and then
+consolidates the local topic proposals into at most 18 global bundles. A second batched calibration
+pass re-evaluates every item against the shared global topic map. Items that are high-signal but do
+not fit the map remain `watch` and are recorded in `new_topic_suggestions.json`; they are never
+silently forced into an unrelated topic. The final validator again requires exact Phase 1 coverage.
+
+Each Phase 3 workspace contains the selected full normalized payloads, any resolved article body
+files, and `bundle_context.json` with source/content counts plus an ordered item-id hash. Reports
+must disclose how the supplied corpus was used or deliberately deprioritized.
+
 ## Queue isolation
 
 The main LaunchAgent first seals an immutable Phase 1 run in SQLite, materializes it under the
