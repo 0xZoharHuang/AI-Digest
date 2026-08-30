@@ -11,7 +11,7 @@ from pathlib import Path
 from ai_digest.config import load_runtime_config
 
 PROJECT = Path(__file__).resolve().parents[1]
-CLI = PROJECT / ".venv" / "bin" / "ai-digest"
+PYTHON = PROJECT / ".venv" / "bin" / "python"
 STALE_AFTER_SECONDS = 24 * 60 * 60
 STAGING_NAME = re.compile(r"^\.?[A-Za-z0-9_-]{8,96}\.staging$")
 
@@ -63,10 +63,16 @@ def main() -> int:
     for path in remove_stale_staging(runtime.shared_runtime_root):
         print(f"removed stale queue staging directory: {path}")
     if now.hour == 3:
-        subprocess.run([str(CLI), "maintenance", "--prune-x"], cwd=PROJECT)
+        subprocess.run(
+            [str(PYTHON), "-m", "ai_digest.cli", "maintenance", "--prune-x"],
+            cwd=PROJECT,
+        )
     return_code = 0
     for event in events:
-        process = subprocess.run([str(CLI), "tick", "--event", event], cwd=PROJECT)
+        process = subprocess.run(
+            [str(PYTHON), "-m", "ai_digest.cli", "tick", "--event", event],
+            cwd=PROJECT,
+        )
         if process.returncode != 0:
             return_code = process.returncode
     return return_code
