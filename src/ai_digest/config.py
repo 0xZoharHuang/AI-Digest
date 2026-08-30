@@ -7,7 +7,21 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+
+def _repo_root() -> Path:
+    explicit = os.environ.get("AI_DIGEST_PROJECT_ROOT")
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    source_root = Path(__file__).resolve().parents[2]
+    if (source_root / "config").is_dir():
+        return source_root
+    working_root = Path.cwd().resolve()
+    if (working_root / "config").is_dir():
+        return working_root
+    return source_root
+
+
+REPO_ROOT = _repo_root()
 
 
 class CodexConfig(BaseModel):

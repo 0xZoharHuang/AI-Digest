@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import ai_digest.config as config_module
 from ai_digest.config import (
     REPO_ROOT,
+    _repo_root,
     load_interests,
     load_runtime_config,
     load_sources_config,
@@ -36,6 +38,17 @@ def test_config_loaders_accept_explicit_files(tmp_path):
 def test_checked_in_example_source_config_parses():
     sources = load_sources_config(REPO_ROOT / "config" / "sources.example.toml")
     assert sources.github["early_watch_rechecks_per_poll"] == 20
+
+
+def test_repo_root_falls_back_to_installed_working_directory(tmp_path, monkeypatch):
+    working = tmp_path / "app"
+    (working / "config").mkdir(parents=True)
+    monkeypatch.delenv("AI_DIGEST_PROJECT_ROOT", raising=False)
+    monkeypatch.setattr(
+        config_module, "__file__", str(tmp_path / "site-packages" / "ai_digest" / "config.py")
+    )
+    monkeypatch.chdir(working)
+    assert _repo_root() == working
 
 
 def test_atomic_writes_hash_dates_and_redaction(tmp_path):
