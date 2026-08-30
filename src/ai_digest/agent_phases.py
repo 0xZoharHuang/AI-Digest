@@ -50,7 +50,7 @@ ROUTING_SCHEMA = {
         },
         "quiet_reason": {"type": ["string", "null"]},
     },
-    "required": ["bundles", "assignments"],
+    "required": ["bundles", "assignments", "quiet_reason"],
 }
 
 

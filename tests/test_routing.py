@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from ai_digest.agent_phases import AgentPhases
+from ai_digest.agent_phases import ROUTING_SCHEMA, AgentPhases
 from ai_digest.config import RuntimeConfig
 
 
@@ -23,6 +23,10 @@ def test_routing_requires_complete_coverage(tmp_path):
     routing, errors = phases._read_and_validate_routing(output, index)
     assert routing is not None
     assert any("missing 1" in error for error in errors)
+
+
+def test_router_schema_requires_nullable_quiet_reason():
+    assert "quiet_reason" in ROUTING_SCHEMA["required"]
 
 
 def test_routing_accepts_research_watch_and_noise(tmp_path):
