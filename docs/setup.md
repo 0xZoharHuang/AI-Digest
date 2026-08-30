@@ -23,18 +23,20 @@ For the X private List:
 Leave it `false` until deletion/update propagation has an end-to-end test covering the local run,
 shared queue/archive, Codex context and published Lark copies.
 
-X exposes no official API for the personalized For You feed. The personal Playwright adapter is a
-best-effort supplement that reuses `config/twitter_cookies.json`; it is not a substitute for the
-official List and may require periodic manual login:
+X exposes no official API for the personalized For You feed, and its current Terms prohibit
+automated crawling or scraping without express written permission. The historical personal
+Playwright adapter remains available only for an account that has obtained that permission. Set
+both the local risk acknowledgment and `written_permission_confirmed=true` only after retaining
+that written approval; then a periodic manual login may be performed with:
 
 ```bash
 uv run ai-digest x-login
 ```
 
 The interactive window must visibly land on the English `For you` tab before cookies are saved.
-Keep the risk acknowledgment local, never commit the cookie file, and expect UI or account
-challenges to interrupt collection. After two failures it cools down for six hours. A For You
-failure is reported but does not block the day; the required official List does.
+Never commit the approval record or cookie file, and expect UI or account challenges to interrupt
+collection. After two failures it cools down for six hours. A For You failure is reported but does
+not block the day; the required official List does.
 
 ## 2. Configure Lark
 

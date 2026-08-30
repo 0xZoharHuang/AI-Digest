@@ -67,10 +67,15 @@ def run_doctor(runtime: RuntimeConfig, sources: SourcesConfig) -> dict[str, Any]
     add(
         "x_for_you_policy",
         not bool(sources.x_for_you.get("enabled"))
-        or bool(sources.x_for_you.get("personal_browser_risk_acknowledged")),
+        or (
+            bool(sources.x_for_you.get("personal_browser_risk_acknowledged"))
+            and bool(sources.x_for_you.get("written_permission_confirmed"))
+        ),
         "disabled"
         if not sources.x_for_you.get("enabled")
-        else "personal browser risk explicitly acknowledged",
+        else "risk acknowledged and X written permission confirmed"
+        if sources.x_for_you.get("written_permission_confirmed")
+        else "blocked: X written permission not confirmed",
         required=True,
     )
     cookie_file = Path(

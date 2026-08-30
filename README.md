@@ -26,9 +26,9 @@ the one-time X, Lark, Codex runner and launchd setup.
 
 ## Sources
 
-- X private List via the official API as the required X source. A personal, cookie-backed
-  Playwright adapter preserves the existing For You workflow as a best-effort supplementary
-  signal; it is never treated as an official API or a hard publication gate.
+- X private List via the official API as the required X source. The historical cookie-backed
+  Playwright For You adapter is retained but fails closed unless the owner has X's express written
+  permission for automated access; it is not part of normal production operation.
 - GitHub Trending plus bounded recent/activity search lanes for 1–499-star and 500–5000-star
   repos, immutable forward snapshots, 6h/24h/7d deltas, threshold crossings and growth events.
 - arXiv categories `cs.RO`, `cs.AI`, `cs.LG`, `cs.CV`, `cs.CL`, `stat.ML`.
@@ -93,9 +93,10 @@ are denied. The queue lives under `~/Library/Application Support/ai-digest/queue
 account or copied Codex login is required. Arbitrary external metadata requests reject private,
 loopback, link-local and cloud metadata addresses.
 
-The For You adapter uses the owner's existing browser session, can break when X changes its UI,
-and cools down after repeated failures. The official X List remains disabled until API access and
-deletion/update compliance are both verified; a local expiry alone is not full compliance.
+X's current Terms prohibit crawling or scraping without prior written consent. The For You adapter
+therefore remains disabled unless that consent is documented. The official X List remains disabled
+until API access and deletion/update compliance are both verified; a local expiry alone is not full
+compliance.
 
 ## License
 

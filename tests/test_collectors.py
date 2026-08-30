@@ -355,3 +355,15 @@ async def test_for_you_enters_cooldown_after_repeated_failures(store_state):
     assert await state.get_cursor("x_for_you:cooldown_until") is None
     await collector._record_failure(now)
     assert await state.get_cursor("x_for_you:cooldown_until") == "2026-08-30T06:00:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_for_you_fails_closed_without_written_permission(store_state):
+    store, state = store_state
+    await state.init()
+    collector = XForYouCollector({"enabled": True}, store, state)
+    result = await collector.collect(datetime(2026, 8, 30, tzinfo=UTC))
+    assert result.health.status == "failed"
+    assert "written permission" in result.health.errors[0]
+    with pytest.raises(RuntimeError, match="written permission"):
+        await collector.interactive_login()

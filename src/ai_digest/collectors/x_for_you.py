@@ -34,6 +34,10 @@ class XForYouCollector(Collector):
         return configured.expanduser() if configured.is_absolute() else REPO_ROOT / configured
 
     async def interactive_login(self) -> None:
+        if not bool(self.config.get("written_permission_confirmed")):
+            raise RuntimeError(
+                "X written permission is required before automated For You access"
+            )
         cookie_path = self._cookie_path()
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(
@@ -56,6 +60,19 @@ class XForYouCollector(Collector):
         if not self.enabled:
             return self.disabled()
         started = time.monotonic()
+        if not bool(self.config.get("written_permission_confirmed")):
+            return CollectorResult(
+                source=self.source,
+                health=health_from(
+                    self.source,
+                    started,
+                    HealthStatus.FAILED,
+                    0,
+                    0,
+                    0,
+                    ["X written permission is required for automated For You access"],
+                ),
+            )
         now = now.astimezone(UTC)
         cooldown = await self.state.get_cursor("x_for_you:cooldown_until")
         cooldown_until = datetime.fromisoformat(cooldown) if cooldown else None
