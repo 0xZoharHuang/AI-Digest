@@ -150,12 +150,13 @@ async def test_phase1_x_content_pruning_and_explicit_delete(tmp_path):
     assert await runner.delete_x_post_content("2") == 1
 
 
-def test_required_disabled_source_makes_phase_partial():
+def test_one_failed_source_with_other_items_is_partial():
     result = CollectorResult(
         source="x_list",
-        health=SourceHealth(source="x_list", status=HealthStatus.DISABLED),
+        health=SourceHealth(source="x_list", status=HealthStatus.FAILED),
     )
-    assert Phase1Runner._phase_status([result], [], {"x_list"}) == RunStatus.FAILED
+    item = SourceItem(item_id="github:1", item_type="repo", source="github", surface="search")
+    assert Phase1Runner._phase_status([result], [item]) == RunStatus.PARTIAL
 
 
 @pytest.mark.asyncio

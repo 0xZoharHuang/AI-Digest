@@ -163,14 +163,7 @@ class Phase1Runner:
         }
         atomic_write_json(phase_dir / "index.json", index)
 
-        required_unhealthy = {
-            result.source
-            for result in results
-            if result.health.status
-            in {HealthStatus.DISABLED, HealthStatus.FAILED, HealthStatus.PARTIAL}
-            and bool(getattr(self.sources, result.source, {}).get("required", False))
-        }
-        phase_status = self._phase_status(results, pending, required_unhealthy)
+        phase_status = self._phase_status(results, pending)
         manifest.phases["phase1"] = phase_status
         manifest.status = phase_status
         atomic_write_json(run_dir / "00_run_manifest.json", manifest.model_dump(mode="json"))
@@ -239,7 +232,6 @@ class Phase1Runner:
     def _phase_status(
         results: list[CollectorResult],
         items: list[SourceItem],
-        required_unhealthy: set[str] | None = None,
     ) -> RunStatus:
         enabled = [result for result in results if result.health.status != HealthStatus.DISABLED]
         failures = [
@@ -247,8 +239,6 @@ class Phase1Runner:
             for result in enabled
             if result.health.status in {HealthStatus.FAILED, HealthStatus.PARTIAL}
         ]
-        if required_unhealthy:
-            return RunStatus.FAILED
         if not items and failures:
             return RunStatus.FAILED
         if failures:
