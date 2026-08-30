@@ -5,7 +5,6 @@
   <key>Label</key><string>com.ai-digest.agent-runner</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/bin/caffeinate</string><string>-i</string>
     <string>__PYTHON__</string><string>-m</string><string>ai_digest.cli</string>
     <string>agent-worker</string>
   </array>

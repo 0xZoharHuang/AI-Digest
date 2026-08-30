@@ -5,7 +5,6 @@
   <key>Label</key><string>com.ai-digest.tick</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/bin/caffeinate</string><string>-i</string>
     <string>__PYTHON__</string><string>__PROJECT__/scripts/launchd_tick.py</string>
   </array>
   <key>WorkingDirectory</key><string>__PROJECT__</string>

@@ -4,6 +4,10 @@ import argparse
 import asyncio
 import getpass
 import json
+import os
+import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -26,6 +30,44 @@ from .pipeline import (
 from .x_provider import TwitterApiIOKeyStore
 
 console = Console()
+
+_KEEP_AWAKE_COMMANDS = {
+    "collect",
+    "phase1",
+    "route",
+    "research",
+    "brief",
+    "publish",
+    "pipeline",
+    "tick",
+    "agent-worker",
+    "x-login",
+}
+
+
+@contextmanager
+def _keep_awake(enabled: bool) -> Iterator[None]:
+    process: subprocess.Popen[bytes] | None = None
+    caffeinate = Path("/usr/bin/caffeinate")
+    if enabled and caffeinate.exists():
+        try:
+            process = subprocess.Popen(
+                [str(caffeinate), "-i", "-w", str(os.getpid())],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError:
+            process = None
+    try:
+        yield
+    finally:
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -173,7 +215,8 @@ async def async_main(args: argparse.Namespace) -> int:
 
 def main() -> None:
     args = parser().parse_args()
-    raise SystemExit(asyncio.run(async_main(args)))
+    with _keep_awake(args.command in _KEEP_AWAKE_COMMANDS):
+        raise SystemExit(asyncio.run(async_main(args)))
 
 
 if __name__ == "__main__":
