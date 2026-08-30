@@ -68,6 +68,10 @@ async def build_private_list(
             for value in previous.get("applied_member_ids", [])
             if isinstance(value, (str, int))
         }
+        unaddable_members = {
+            str(key): str(value)
+            for key, value in (previous.get("unaddable_members") or {}).items()
+        }
         effective_target = target_list_id or previous.get("created_list_id")
         plan: dict[str, Any] = {
             "schema_version": 2,
@@ -92,6 +96,7 @@ async def build_private_list(
             "estimated_list_create_usd": 0.0 if effective_target else 0.01,
             "estimated_list_write_usd": round(len(candidates) * 0.005, 2),
             "applied_member_ids": sorted(applied_ids, key=int),
+            "unaddable_members": unaddable_members,
             "applied": False,
             "members": ordered,
         }
@@ -119,16 +124,24 @@ async def build_private_list(
 
         for member in candidates:
             user_id = str(member["id"])
-            if user_id in applied_ids:
+            if user_id in applied_ids or user_id in unaddable_members:
                 continue
-            response, tokens = await _request(
-                client,
-                store,
-                tokens,
-                "POST",
-                f"{X_API}/lists/{effective_target}/members",
-                json={"user_id": user_id},
-            )
+            try:
+                response, tokens = await _request(
+                    client,
+                    store,
+                    tokens,
+                    "POST",
+                    f"{X_API}/lists/{effective_target}/members",
+                    json={"user_id": user_id},
+                )
+            except httpx.HTTPStatusError as error:
+                if error.response.status_code != 403:
+                    raise
+                unaddable_members[user_id] = _response_detail(error.response)
+                plan["unaddable_members"] = unaddable_members
+                atomic_write_json(output_path, plan)
+                continue
             if not (response.json().get("data") or {}).get("is_member"):
                 raise RuntimeError(f"X did not confirm List membership for user {user_id}")
             applied_ids.add(user_id)
@@ -152,12 +165,17 @@ async def build_private_list(
             {str(row["id"]) for row in ordered} - verified_ids,
             key=int,
         )
+        unexpected_missing = [
+            user_id for user_id in missing if user_id not in unaddable_members
+        ]
         plan.update(
             {
                 "verified_member_count": len(verified_members),
                 "missing_member_ids": missing,
+                "unexpected_missing_member_ids": unexpected_missing,
+                "unaddable_members": unaddable_members,
                 "list_details": details,
-                "applied": not missing and bool(details.get("private")),
+                "applied": not unexpected_missing and bool(details.get("private")),
             }
         )
         atomic_write_json(output_path, plan)
@@ -166,6 +184,16 @@ async def build_private_list(
                 f"private List verification failed: missing={len(missing)}, details={details}"
             )
         return plan
+
+
+def _response_detail(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+    except json.JSONDecodeError:
+        return response.text[:500] or "forbidden"
+    if isinstance(payload, dict):
+        return str(payload.get("detail") or payload.get("title") or "forbidden")[:500]
+    return "forbidden"
 
 
 async def _members(

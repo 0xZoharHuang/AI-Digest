@@ -4,6 +4,7 @@ import json
 import sqlite3
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from ai_digest.cli import async_main, parser
@@ -22,7 +23,7 @@ from ai_digest.x_compliance import (
     _run_dir,
     _thread_ids,
 )
-from ai_digest.x_setup import _members, build_private_list
+from ai_digest.x_setup import _members, _response_detail, build_private_list
 
 
 @pytest.mark.asyncio
@@ -97,6 +98,14 @@ async def test_list_members_uses_get_and_follows_pagination(monkeypatch):
     assert [call[0] for call in calls] == ["GET", "GET"]
     assert calls[0][1].endswith("/lists/list-1/members")
     assert calls[1][2]["pagination_token"] == "next"
+
+
+def test_x_forbidden_response_detail_is_bounded():
+    request = httpx.Request("POST", "https://api.x.com/2/lists/1/members")
+    response = httpx.Response(
+        403, request=request, json={"detail": "member cannot be added"}
+    )
+    assert _response_detail(response) == "member cannot be added"
 
 
 def test_compliance_event_parser_accepts_flat_and_nested_ndjson():
