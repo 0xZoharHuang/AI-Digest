@@ -51,7 +51,7 @@ def test_codex_permission_profile_denies_auth_but_allows_workspace_write(
     workspace.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
-    name, definition = _permission_profile("workspace-write")
+    name, definition = _permission_profile("workspace-write", workspace)
     process = subprocess.run(
         [
             str(binary),
@@ -71,5 +71,44 @@ def test_codex_permission_profile_denies_auth_but_allows_workspace_write(
         timeout=30,
     )
     assert (workspace / "workspace-ok").read_text() == "ok"
+    assert process.returncode != 0
+    assert "Operation not permitted" in process.stderr
+
+
+def test_codex_read_profile_can_read_workspace_but_not_auth(tmp_path, monkeypatch):
+    binary = Path(__file__).resolve().parents[1] / "node_modules" / ".bin" / "codex"
+    if not binary.exists():
+        pytest.skip("Codex CLI is not installed")
+    home = tmp_path / "runner-home"
+    codex_home = home / ".codex"
+    codex_home.mkdir(parents=True)
+    auth = codex_home / "auth.json"
+    auth.write_text("probe-only")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = workspace / "input.txt"
+    source.write_text("workspace-readable")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    name, definition = _permission_profile("read-only", workspace)
+    process = subprocess.run(
+        [
+            str(binary),
+            "sandbox",
+            "-c",
+            definition,
+            "-P",
+            name,
+            "-C",
+            str(workspace),
+            "/bin/sh",
+            "-c",
+            f"cat input.txt; /bin/dd if={str(auth)!r} of=/dev/null bs=1 count=0",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert "workspace-readable" in process.stdout
     assert process.returncode != 0
     assert "Operation not permitted" in process.stderr

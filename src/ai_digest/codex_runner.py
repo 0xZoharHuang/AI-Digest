@@ -48,7 +48,7 @@ class CodexRunner:
         workspace.mkdir(parents=True, exist_ok=True)
         isolated_tmp = workspace / ".tmp"
         isolated_tmp.mkdir(parents=True, exist_ok=True)
-        permission_name, permission_definition = _permission_profile(sandbox)
+        permission_name, permission_definition = _permission_profile(sandbox, workspace)
         args = [
             self.binary,
             "exec",
@@ -174,7 +174,7 @@ def _safe_environment(isolated_tmp: Path | None = None) -> dict[str, str]:
     return environment
 
 
-def _permission_profile(sandbox: str) -> tuple[str, str]:
+def _permission_profile(sandbox: str, workspace: Path | None = None) -> tuple[str, str]:
     parents = {"read-only": ":read-only", "workspace-write": ":workspace"}
     if sandbox not in parents:
         raise ValueError(f"unsupported protected Codex sandbox: {sandbox}")
@@ -185,8 +185,14 @@ def _permission_profile(sandbox: str) -> tuple[str, str]:
     denied = ",".join(
         f"{json.dumps(str(path))}=\"deny\"" for path in explicit_denies
     )
+    workspace_rule = ""
+    if workspace is not None:
+        access = "read" if sandbox == "read-only" else "write"
+        workspace_rule = f',{json.dumps(str(workspace.resolve()))}="{access}"'
     filesystem = (
-        '":root"="deny",":minimal"="read",":slash_tmp"="deny",' + denied
+        '":root"="deny",":minimal"="read",":slash_tmp"="deny",'
+        + denied
+        + workspace_rule
     )
     definition = (
         f'permissions.{name}={{extends="{parents[sandbox]}",'
