@@ -93,6 +93,25 @@ async def test_content_hash_change_creates_revision_observation(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_article_bootstrap_classification_is_idempotent(tmp_path):
+    state = StateDB(tmp_path / "state.db")
+    await state.init()
+    now = datetime(2026, 8, 30, tzinfo=UTC)
+    item = SourceItem(
+        item_id="article:old",
+        item_type="article",
+        source="article:test",
+        surface="primary",
+        first_observed_at=now,
+        handoff_at=now - timedelta(days=10),
+        ready_at=now,
+    )
+    await state.put_items([item])
+    assert await state.classify_pending_article_bootstrap(now + timedelta(seconds=1)) == 1
+    assert await state.classify_pending_article_bootstrap(now + timedelta(seconds=1)) == 0
+
+
+@pytest.mark.asyncio
 async def test_state_cursor_baseline_and_expiry(tmp_path):
     state = StateDB(tmp_path / "state.db")
     await state.init()

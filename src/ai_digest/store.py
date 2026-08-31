@@ -365,10 +365,12 @@ class StateDB:
                 UPDATE source_items SET observation_kind = ?
                 WHERE delivered_run_id IS NULL AND sealed_run_id IS NULL
                     AND source LIKE 'article:%'
+                    AND observation_kind != ?
                     AND first_observed_at <= ?
                     AND handoff_at < first_observed_at
                 """,
                 (
+                    ObservationKind.BOOTSTRAP_SNAPSHOT.value,
                     ObservationKind.BOOTSTRAP_SNAPSHOT.value,
                     first_seen_before.isoformat(),
                 ),
