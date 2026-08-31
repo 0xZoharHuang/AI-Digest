@@ -42,7 +42,7 @@ Documentation = "https://github.com/0xZoharHuang/AI-Digest/tree/main/docs"
 [project.optional-dependencies]
 dev = [
     "mypy>=1.15,<2",
-    "pytest>=8.3,<9",
+    "pytest>=8.3,<10",
     "pytest-asyncio>=0.25,<1",
     "pytest-cov>=6,<8",
     "respx>=0.22,<1",
