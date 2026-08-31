@@ -12,6 +12,7 @@ from ai_digest.models import (
     ObservationUnit,
     Phase2Annotation,
     Phase2CatalogEntry,
+    Phase2PackagePlan,
     Phase2Summary,
     ResearchPackage,
     SourceItem,
@@ -21,6 +22,7 @@ from ai_digest.v3 import (
     V3Phases,
     adopt_thread_id,
     build_observation_units,
+    materialize_research_packages,
     read_summary_output,
     read_summary_subset,
     unit_batches,
@@ -124,7 +126,9 @@ def test_summary_output_is_recoverable_without_accepting_partial(tmp_path):
     output.write_text(
         json.dumps(
             {
-                "summaries": [{"unit_id": "u_a", "summary_zh": "A"}],
+                "summaries": [
+                    {"unit_id": "u_a", "summary_zh": "A", "group_id": "group_a"}
+                ],
                 "working_map": "# map",
             }
         )
@@ -161,25 +165,25 @@ def test_packages_cover_every_unit_once_and_match_catalog():
 
 def test_1354_units_fit_without_the_old_90_unit_mechanical_split():
     summaries = [
-        Phase2Summary(unit_id=f"u_{value}", summary_zh=str(value))
+        Phase2Summary(
+            unit_id=f"u_{value}",
+            summary_zh=str(value),
+            group_id=f"group_{value % 15}",
+        )
         for value in range(1354)
     ]
-    packages = []
-    for package_number in range(15):
-        unit_ids = [
-            value.unit_id
-            for index, value in enumerate(summaries)
-            if index % 15 == package_number
-        ]
-        packages.append(
-            ResearchPackage(
+    plans = [
+        Phase2PackagePlan(
                 package_id=f"p_{package_number}",
                 label_zh=f"分类 {package_number}",
                 scope_note_zh="按语义和认知负载交给同一研究 Agent。",
-                unit_ids=unit_ids,
-            )
+                group_ids=[f"group_{package_number}"],
         )
+        for package_number in range(15)
+    ]
+    packages = materialize_research_packages(plans, summaries)
     validate_packages(packages, summaries)
+    assert sum(len(package.unit_ids) for package in packages) == 1354
 
 
 def test_legacy_phase2_contract_remains_strictly_readable():
@@ -402,6 +406,7 @@ async def test_phase2_uses_one_daily_resumed_thread_and_writes_new_contract(
                                 {
                                     "unit_id": row["unit_id"],
                                     "summary_zh": f"摘要 {row['unit_id']}",
+                                    "group_id": "robotics",
                                 }
                                 for row in rows
                             ],
@@ -411,7 +416,6 @@ async def test_phase2_uses_one_daily_resumed_thread_and_writes_new_contract(
                     )
                 )
             else:
-                rows = load_jsonl(workspace / "summaries.jsonl")
                 output.write_text(
                     json.dumps(
                         {
@@ -420,7 +424,7 @@ async def test_phase2_uses_one_daily_resumed_thread_and_writes_new_contract(
                                     "package_id": "robotics",
                                     "label_zh": "机器人",
                                     "scope_note_zh": "这些材料适合一起交给机器人研究 Agent。",
-                                    "unit_ids": [row["unit_id"] for row in rows],
+                                    "group_ids": ["robotics"],
                                 }
                             ]
                         },
@@ -467,14 +471,17 @@ async def test_phase2_missing_session_abandons_generation_and_starts_from_batch_
                     json.dumps(
                         {
                             "summaries": [
-                                {"unit_id": row["unit_id"], "summary_zh": "摘要"}
+                                {
+                                    "unit_id": row["unit_id"],
+                                    "summary_zh": "摘要",
+                                    "group_id": "robotics",
+                                }
                             ],
                             "working_map": "# Map",
                         }
                     )
                 )
             else:
-                row = load_jsonl(workspace / "summaries.jsonl")[0]
                 output.write_text(
                     json.dumps(
                         {
@@ -483,7 +490,7 @@ async def test_phase2_missing_session_abandons_generation_and_starts_from_batch_
                                     "package_id": "p",
                                     "label_zh": "分类",
                                     "scope_note_zh": "自然分组。",
-                                    "unit_ids": [row["unit_id"]],
+                                    "group_ids": ["robotics"],
                                 }
                             ]
                         },

@@ -84,16 +84,18 @@ and 256 KiB projection. Each batch returns exactly one factual Chinese summary p
 working map:
 
 ```json
-{"unit_id":"u_...","summary_zh":"..."}
+{"unit_id":"u_...","summary_zh":"...","group_id":"dynamic-topic-key"}
 ```
 
 Phase 2 does not decide importance, research depth, questions or conclusions. The application
 persists the thread as soon as Codex starts it, hashes every input checkpoint, and rejects mixed
 threads or stale outputs.
 
-After all batches, the same thread creates 1–15 semantic packages. Every unit belongs to exactly one
-package. Code validates exact coverage but does not reclassify or mechanically split an Agent-made
-package; large package catalogs are stored as bounded shards for the Lead.
+As it reads, the Agent reuses or creates dynamic group IDs and carries their meanings in the working
+map. After all batches, the same thread consolidates every observed group into 1–15 semantic
+packages. Code only expands group membership back to units and validates exact coverage; it does not
+perform semantic matching, importance filtering or mechanical package splitting. Large package
+catalogs are stored as bounded shards for the Lead.
 
 ## Phase 3 contract
 
