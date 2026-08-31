@@ -103,6 +103,28 @@ def package_schema(group_ids: set[str]) -> dict[str, Any]:
     }
 
 
+def working_map_schema(group_ids: set[str]) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["groups"],
+        "properties": {
+            "groups": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["group_id", "description_zh"],
+                    "properties": {
+                        "group_id": {"type": "string", "enum": sorted(group_ids)},
+                        "description_zh": {"type": "string"},
+                    },
+                },
+            }
+        },
+    }
+
+
 class V3Phases:
     def __init__(self, runtime: RuntimeConfig, runner: CodexRunner):
         self.runtime = runtime
@@ -386,6 +408,73 @@ class V3Phases:
             work_root / "summaries.jsonl",
             (value.model_dump(mode="json") for value in phase2_summaries),
         )
+        map_repair_summary: dict[str, Any] | None = None
+        group_ids = {value.group_id for value in phase2_summaries}
+        if group_ids and not working_map_covers_groups(working_map, group_ids):
+            map_root = work_root / "map-repair"
+            map_root.mkdir(parents=True, exist_ok=True)
+            atomic_write_jsonl(
+                map_root / "summaries.jsonl",
+                (value.model_dump(mode="json") for value in phase2_summaries),
+            )
+            atomic_write_text(map_root / "working_map.md", working_map)
+            atomic_write_text(map_root / "interests.md", interests)
+            atomic_write_text(map_root / "AGENTS.md", phase2_agents_md())
+            atomic_write_json(
+                map_root / "working_map.schema.json",
+                working_map_schema(group_ids),
+            )
+            map_hash = phase2_working_map_input_hash(
+                phase2_summaries,
+                working_map,
+                model=self.runtime.codex.router_model,
+                reasoning=self.runtime.codex.router_reasoning,
+            )
+            map_output = map_root / f"working_map_output.{map_hash[:16]}.json"
+            prior_map_input = _read_json(map_root / "input.json", {})
+            map_input_matches = prior_map_input.get("hash") == map_hash
+            atomic_write_json(map_root / "input.json", {"hash": map_hash})
+            map_checkpoint = _read_json(map_root / "codex.json", {})
+            repaired_map = None
+            if (
+                map_input_matches
+                and map_checkpoint.get("input_hash") == map_hash
+                and map_checkpoint.get("thread_id") == thread_id
+            ):
+                repaired_map = read_working_map_output(map_output, group_ids)
+            if repaired_map is None:
+                map_result = await run_phase2_turn(
+                    self.runner,
+                    workspace=map_root,
+                    prompt=(
+                        "summaries.jsonl 已包含当天全部已分类 units，但 working_map.md 遗漏了"
+                        "部分实际出现的 group_id。不要重新分类、合并或判断重要性；仅为每个"
+                        "出现过的 group_id 返回一条准确、简短的中文边界说明，使文件 checkpoint"
+                        "可以独立恢复。"
+                    ),
+                    model=self.runtime.codex.router_model,
+                    reasoning=self.runtime.codex.router_reasoning,
+                    sandbox="read-only",
+                    output_file=map_output,
+                    output_schema=map_root / "working_map.schema.json",
+                    resume_thread_id=thread_id,
+                    thread_checkpoint_path=session_path,
+                )
+                thread_id = persist_phase2_thread(
+                    session_path, thread_id, map_result.thread_id
+                )
+                map_repair_summary = codex_summary(map_result)
+                map_repair_summary["input_hash"] = map_hash
+                atomic_write_json(map_root / "codex.json", map_repair_summary)
+                _raise_if_retryable("Phase 2 working map repair", map_result)
+                repaired_map = read_working_map_output(map_output, group_ids)
+            else:
+                map_repair_summary = {**map_checkpoint, "reused": True}
+            if repaired_map is None:
+                raise RuntimeError(
+                    "Phase 2 working map repair did not cover every group exactly"
+                )
+            working_map = repaired_map
         atomic_write_text(root / "working_map.md", working_map)
         finalizer_summary: dict[str, Any] | None = None
         package_plans: list[Phase2PackagePlan] | None
@@ -535,6 +624,7 @@ class V3Phases:
                 "batch_count": len(batches),
                 "thread_id": thread_id,
                 "batches": codex_batches,
+                "working_map_repair": map_repair_summary,
                 "finalizer": finalizer_summary,
             },
         )
@@ -923,6 +1013,37 @@ def validate_summary_coverage(
         )
 
 
+def working_map_covers_groups(working_map: str, group_ids: set[str]) -> bool:
+    return all(group_id in working_map for group_id in group_ids)
+
+
+def read_working_map_output(path: Path, expected: set[str]) -> str | None:
+    if not path.is_file() or path.is_symlink():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        groups = payload["groups"]
+        rows = [
+            (str(value["group_id"]), str(value["description_zh"]).strip())
+            for value in groups
+        ]
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    actual = [group_id for group_id, _ in rows]
+    if (
+        len(actual) != len(set(actual))
+        or set(actual) != expected
+        or any(not description for _, description in rows)
+    ):
+        return None
+    rendered = "# Working map\n\n" + "\n".join(
+        f"- `{group_id}`：{description}" for group_id, description in rows
+    ) + "\n"
+    if len(rendered.encode()) > PHASE2_WORKING_MAP_MAX_BYTES:
+        return None
+    return rendered
+
+
 def read_and_validate_package_plans(
     path: Path, summaries: list[Phase2Summary]
 ) -> list[Phase2PackagePlan]:
@@ -1231,6 +1352,20 @@ def phase2_finalizer_input_hash(
     return hashlib.sha256(
         f"unit_packages_v1\0{PHASE2_PROMPT_VERSION}\0{model}\0{reasoning}\0"
         f"{interests}\0{working_map}\0{payload}".encode()
+    ).hexdigest()
+
+
+def phase2_working_map_input_hash(
+    summaries: list[Phase2Summary],
+    working_map: str,
+    *,
+    model: str,
+    reasoning: str,
+) -> str:
+    payload = "\n".join(value.model_dump_json() for value in summaries)
+    return hashlib.sha256(
+        f"unit_packages_v1-map-repair\0{PHASE2_PROMPT_VERSION}\0{model}\0"
+        f"{reasoning}\0{working_map}\0{payload}".encode()
     ).hexdigest()
 
 
