@@ -1856,8 +1856,11 @@ def phase4_agents_md() -> str:
 读取 reports/、quality.json、failures.json、not_published.json 和 source_health.json，生成一份简体中文阅读入口。
 你的职责是帮助读者快速看到今天研究了哪些具体问题并进入 main report/subreport，不进行新的联网
 研究，不重写 Phase 3，不强行提炼统一趋势。每个成功 package 必须至少包含一个
-report://<package-id> 链接；如实呈现来源、研究失败，以及有多少 package 经 Lead 核查后未发布，
+report://<package-id> 链接；如实呈现来源、研究失败，以及有多少研究主题经核查后未形成报告，
 但不要向读者列内部 package ID。
+
+上述文件名和 package ID 只用于读取与链接校验。最终正文不得出现 Phase 1/2/3/4、Lead、package、
+unit、Agent 调度等内部实现词；使用“研究报告”“研究主题”“研究状态”等读者语言。
 
 source_health 描述采集器运行状态，不等于当天研究 corpus 是否为空。只要 reports/ 中存在成功报告，
 就不得写“今日没有新增信息/没有可研究内容”。Brief 应让读者快速知道每份 main report 由哪些新看到的
@@ -1891,11 +1894,17 @@ def append_run_status(path: Path, run_dir: Path, successes: dict[str, str]) -> N
     failures = _read_json(run_dir / "03_research" / "failures.json", [])
     not_published = _read_json(run_dir / "03_research" / "not_published.json", [])
     issues = [name for name, value in health.items() if value.get("status") in {"partial", "failed"}]
+    research_status = {
+        "success": "完成",
+        "partial": "部分完成",
+        "quiet": "今日无可发布研究",
+    }.get(str(quality.get("status", "unknown")), "待确认")
     addition = (
         "\n\n---\n\n## 运行状态\n\n"
-        f"- 研究档案：{len(successes)}\n"
-        f"- 核查后未发布：{len(not_published) if isinstance(not_published, list) else 0}\n"
-        f"- Phase 3：{quality.get('status', 'unknown')}\n"
+        f"- 研究报告：{len(successes)}\n"
+        f"- 核查后未形成报告的研究主题："
+        f"{len(not_published) if isinstance(not_published, list) else 0}\n"
+        f"- 研究状态：{research_status}\n"
         f"- 研究失败：{len(failures)}\n"
         f"- 异常来源：{', '.join(issues) if issues else '无'}\n"
     )
