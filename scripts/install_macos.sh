@@ -6,85 +6,57 @@ runtime_dir=${AI_DIGEST_RUNTIME_ROOT:-$HOME/Library/Application Support/ai-diges
 queue_dir=${AI_DIGEST_SHARED_RUNTIME_ROOT:-$runtime_dir/queue}
 mode=${1:-}
 user_uid=$(id -u)
-launch_domain="gui/$user_uid"
-launch_agents="$HOME/Library/LaunchAgents"
-legacy_dir="$runtime_dir/legacy-launchagents"
-
-tick_target="$launch_agents/com.ai-digest.tick.plist"
-recover_target="$launch_agents/com.ai-digest.recover.plist"
-runner_target="$launch_agents/com.ai-digest.agent-runner.plist"
-
-require_empty_active_queues() {
-  for queue_name in staging jobs retry_wait completed publish_pending; do
-    queue_path="$queue_dir/$queue_name"
-    [[ -d "$queue_path" ]] || continue
-    first_entry=$(find "$queue_path" -mindepth 1 -maxdepth 1 -print -quit)
-    if [[ -n "$first_entry" ]]; then
-      echo "Refusing schedule switch while $queue_name is not empty: $first_entry" >&2
-      exit 2
-    fi
-  done
-}
-
-if [[ "$mode" == "--cutover" ]]; then
-  require_empty_active_queues
-  for target in "$tick_target" "$recover_target" "$runner_target"; do
-    [[ -f "$target" ]] || { echo "Missing installed plist: $target" >&2; exit 2; }
-  done
-  launchctl bootout "$launch_domain/com.ai-digest" 2>/dev/null || true
-  launchctl bootout "$launch_domain/com.ai-digest.daily" 2>/dev/null || true
-  launchctl bootout "$launch_domain/com.ai-digest.tick" 2>/dev/null || true
-  launchctl bootout "$launch_domain/com.ai-digest.recover" 2>/dev/null || true
-  launchctl bootout "$launch_domain/com.ai-digest.agent-runner" 2>/dev/null || true
-  mkdir -p "$legacy_dir"
-  cutover_stamp=$(date -u +%Y%m%dT%H%M%SZ)
-  for legacy_name in com.ai-digest.plist com.ai-digest.daily.plist; do
-    legacy_plist="$launch_agents/$legacy_name"
-    if [[ -f "$legacy_plist" ]]; then
-      mv "$legacy_plist" "$legacy_dir/$legacy_name.disabled-$cutover_stamp"
-    fi
-  done
-  launchctl bootstrap "$launch_domain" "$tick_target"
-  launchctl bootstrap "$launch_domain" "$recover_target"
-  launchctl bootstrap "$launch_domain" "$runner_target"
-  active_app=$(plutil -extract WorkingDirectory raw -o - "$tick_target")
-  "$active_app/.venv/bin/python" "$active_app/scripts/prune_app_snapshots.py" \
-    --app-root "$runtime_dir/apps" --active "$active_app" --keep 3
-  echo "Cut over to V3 user LaunchAgents. Legacy plists are archived in $legacy_dir"
-  exit 0
-fi
+app_root="$runtime_dir/apps"
+control_script="$project_dir/scripts/manage_launchagents.py"
+control_python="$project_dir/.venv/bin/python"
+[[ -x "$control_python" ]] || control_python=$(command -v python3)
+control_args=(
+  --runtime "$runtime_dir"
+  --queue "$queue_dir"
+  --home "$HOME"
+  --uid "$user_uid"
+)
 
 if [[ "$mode" == "--rollback" ]]; then
-  require_empty_active_queues
-  launchctl bootout "$launch_domain/com.ai-digest.tick" 2>/dev/null || true
-  launchctl bootout "$launch_domain/com.ai-digest.recover" 2>/dev/null || true
-  launchctl bootout "$launch_domain/com.ai-digest.agent-runner" 2>/dev/null || true
-  for legacy_name in com.ai-digest.plist com.ai-digest.daily.plist; do
-    archived=$(find "$legacy_dir" -maxdepth 1 -type f \
-      -name "$legacy_name.disabled-*" -print 2>/dev/null | sort | tail -1)
-    if [[ -n "$archived" ]]; then
-      cp "$archived" "$launch_agents/$legacy_name"
-      launchctl bootstrap "$launch_domain" "$launch_agents/$legacy_name"
-    fi
-  done
-  echo "Rolled back to the most recent archived V1 LaunchAgents."
-  exit 0
-fi
-
-if [[ "$mode" != "" && "$mode" != "--apply" ]]; then
-  echo "Usage: $0 [--apply|--cutover|--rollback]" >&2
+  echo "--rollback is deprecated and unsupported; follow the legacy-v1 manual migration guide." >&2
   exit 2
 fi
 
+if [[ "$mode" == "--apply" || "$mode" == "--cutover" \
+    || "$mode" == "--rollback-v3" ]]; then
+  if [[ "${AI_DIGEST_INSTALLER_LOCK_HELD:-0}" != "1" ]]; then
+    exec "$control_python" "$control_script" "${control_args[@]}" \
+      locked-run --script "${0:A}" --mode="$mode"
+  fi
+fi
+
+case "$mode" in
+  --cutover)
+    exec "$control_python" "$control_script" "${control_args[@]}" cutover
+    ;;
+  --rollback-v3)
+    exec "$control_python" "$control_script" "${control_args[@]}" rollback-v3
+    ;;
+  ""|--apply)
+    ;;
+  *)
+    echo "Usage: $0 [--apply|--cutover|--rollback-v3]" >&2
+    exit 2
+    ;;
+esac
+
 revision=$(git -C "$project_dir" rev-parse --short=12 HEAD)
 release_stamp=$(date -u +%Y%m%dT%H%M%SZ)
-app_root="$runtime_dir/apps"
 shared_app="$app_root/app-$revision-$release_stamp"
 app_staging="$app_root/.app-$revision-$release_stamp.staging"
 
 tick_tmp=$(mktemp /tmp/com.ai-digest.tick.XXXXXX)
 recover_tmp=$(mktemp /tmp/com.ai-digest.recover.XXXXXX)
 runner_tmp=$(mktemp /tmp/com.ai-digest.agent-runner.XXXXXX)
+cleanup_generated_plists() {
+  rm -f "$tick_tmp" "$recover_tmp" "$runner_tmp"
+}
+trap cleanup_generated_plists EXIT
 
 sed -e "s|__PROJECT__|$shared_app|g" \
     -e "s|__PYTHON__|$shared_app/.venv/bin/python|g" \
@@ -110,15 +82,16 @@ plutil -lint "$recover_tmp"
 plutil -lint "$runner_tmp"
 
 if [[ "$mode" != "--apply" ]]; then
-  echo "Dry run passed. No account, service, or plist was changed."
-  echo "Re-run with --apply to install files without enabling schedules."
+  echo "Dry run passed. No account, service, plist, lock, or runtime file was changed."
+  echo "Re-run with --apply to install an immutable snapshot and stage pending LaunchAgents."
   echo "Use --cutover only after the manual full-pipeline acceptance run."
   exit 0
 fi
 
+"$control_python" "$control_script" "${control_args[@]}" repair-current
 git -C "$project_dir" diff --quiet
 git -C "$project_dir" diff --cached --quiet
-mkdir -p "$runtime_dir/logs" "$app_root" "$launch_agents"
+mkdir -p "$runtime_dir/logs" "$app_root"
 install -d -m 700 "$queue_dir"
 for queue_name in staging jobs retry_wait completed publish_pending archived failed logs; do
   install -d -m 700 "$queue_dir/$queue_name"
@@ -175,8 +148,8 @@ fi
   --classify-existing-article-bootstrap \
   --repair-completed-handoff-ledger
 
-install -m 600 "$tick_tmp" "$tick_target"
-install -m 600 "$recover_tmp" "$recover_target"
-install -m 600 "$runner_tmp" "$runner_target"
-echo "Installed V3 files for the current user; schedules are still disabled."
+"$shared_app/.venv/bin/python" "$shared_app/scripts/manage_launchagents.py" \
+  "${control_args[@]}" stage-pending \
+  --tick "$tick_tmp" --recover "$recover_tmp" --runner "$runner_tmp"
+echo "Installed V3 files and staged pending LaunchAgents; the current schedule was not changed."
 echo "Run the full manual acceptance, then execute: $0 --cutover"
