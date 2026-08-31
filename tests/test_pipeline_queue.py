@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -257,6 +258,115 @@ async def test_v3_import_preserves_dossier_and_nested_subreport(tmp_path):
     assert (run_dir / "03_research/package/dossier.md").exists()
     assert (run_dir / "03_research/package/subreports/detail.md").exists()
     assert "\u2028" in (run_dir / "02_routing/units.jsonl").read_text()
+
+
+@pytest.mark.asyncio
+async def test_unit_packages_v1_import_preserves_main_report_and_ledgers(tmp_path):
+    runtime, _state, run_dir, run_id = await _sealed_run(tmp_path, "v4-import")
+    (run_dir / "01_phase1" / "index.json").write_text(json.dumps({"item_ids": ["a"]}))
+    job = runtime.shared_runtime_root / "completed" / run_id
+    routing = job / "02_routing"
+    package_root = job / "03_research" / "package"
+    brief = job / "04_brief"
+    routing.mkdir(parents=True)
+    package_root.mkdir(parents=True)
+    brief.mkdir(parents=True)
+    unit = {
+        "unit_id": "u_a",
+        "entity_key": "item:a",
+        "item_ids": ["a"],
+        "sources": ["x_list"],
+        "summary": "A\u2028B\u2029C",
+        "projection": {"text": "A\u2028B\u2029C"},
+    }
+    catalog = {"unit_id": "u_a", "summary_zh": "A\u2028B\u2029C", "package_id": "package"}
+    package = {
+        "package_id": "package",
+        "label_zh": "机器人",
+        "scope_note_zh": "自然分组。",
+        "unit_ids": ["u_a"],
+    }
+    (routing / "units.jsonl").write_text(json.dumps(unit, ensure_ascii=False) + "\n")
+    (routing / "catalog.jsonl").write_text(json.dumps(catalog, ensure_ascii=False) + "\n")
+    (routing / "packages.json").write_text(json.dumps([package], ensure_ascii=False))
+    (routing / "working_map.md").write_text("# Map\n")
+    (routing / "codex.json").write_text(
+        json.dumps({"thread_id": "thread-one", "batches": [{"batch": 1}]})
+    )
+    hashes = {
+        name: hashlib.sha256((routing / name).read_bytes()).hexdigest()
+        for name in ("units.jsonl", "catalog.jsonl", "packages.json", "working_map.md")
+    }
+    (routing / "phase2_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "contract": "unit_packages_v1",
+                "thread_id": "thread-one",
+                "unit_count": 1,
+                "package_count": 1,
+                "batch_count": 1,
+                "hashes": hashes,
+            }
+        )
+    )
+    (routing / "PHASE2_COMPLETE").write_text("v4 complete\n")
+
+    (package_root / "main_report.md").write_text("# 主报告\n\n正文。")
+    (package_root / "intake.jsonl").write_text(
+        json.dumps(
+            {
+                "unit_id": "u_a",
+                "research_use": "research_subject",
+                "note_zh": "已研究 A\u2028B\u2029C",
+            },
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
+    (package_root / "evidence.jsonl").write_text(
+        json.dumps(
+            {
+                "claim": "事实 A\u2028B\u2029C",
+                "status": "verified_fact",
+                "evidence": ["https://example.com/source"],
+                "scope": "当前版本",
+                "conflict": "",
+                "related_unit_ids": ["u_a"],
+            },
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
+    (package_root / "research_manifest.json").write_text(
+        json.dumps(
+            {
+                "package_id": "package",
+                "main_report": "main_report.md",
+                "subreports": [],
+                "reviewed_unit_ids": ["u_a"],
+                "status": "success",
+            }
+        )
+    )
+    (job / "03_research" / "successes.json").write_text(
+        json.dumps({"package": "package/main_report.md"})
+    )
+    (job / "03_research" / "failures.json").write_text("[]")
+    (job / "03_research" / "quality.json").write_text(json.dumps({"status": "success"}))
+    (job / "03_research" / "PHASE3_COMPLETE").write_text("complete\n")
+    (brief / "daily_brief.md").write_text("# Brief\n\n[主报告](report://package)\n")
+    (brief / "watch.jsonl").write_text("")
+    (brief / "failures.json").write_text("[]")
+    (brief / "quality.json").write_text(json.dumps({"status": "success"}))
+    (brief / "source_health.json").write_text("{}")
+    (brief / "PHASE4_COMPLETE").write_text("complete\n")
+
+    assert import_agent_job(runtime, job) == run_dir
+    assert (run_dir / "02_routing/catalog.jsonl").exists()
+    assert (run_dir / "03_research/package/main_report.md").exists()
+    assert "\u2028" in (run_dir / "03_research/package/intake.jsonl").read_text()
+    assert "\u2029" in (run_dir / "03_research/package/evidence.jsonl").read_text()
 
 
 @pytest.mark.asyncio

@@ -91,7 +91,7 @@ failure/partial artifact rather than silently losing the run.
 
 ### `completed/`
 
-The owner validates every imported path, schema, unit/package coverage, dossier manifest, and Brief
+The owner validates every imported path, schema, unit/package coverage, research artifact, and Brief
 before publication.
 
 ### `publish_pending/`

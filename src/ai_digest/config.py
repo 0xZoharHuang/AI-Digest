@@ -29,7 +29,7 @@ class CodexConfig(BaseModel):
     router_model: str = "gpt-5.6-sol"
     router_reasoning: str = "high"
     research_model: str = "gpt-5.6-sol"
-    research_reasoning: str = "xhigh"
+    research_reasoning: str = "medium"
     brief_model: str = "gpt-5.6-sol"
     brief_reasoning: str = "high"
     top_level_concurrency: int = 3

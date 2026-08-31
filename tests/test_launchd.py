@@ -117,6 +117,7 @@ def test_installer_creates_every_queue_and_preserves_executables():
     assert "sudo " not in installer
     assert "--cutover" in installer
     assert "--rollback" in installer
+    assert installer.count("require_empty_active_queues") >= 3
     assert "prune_app_snapshots.py" in installer
 
 

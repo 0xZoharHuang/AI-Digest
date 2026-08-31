@@ -5,10 +5,21 @@ versioning for public releases.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-31
+
 ### Added
 
 - Open-source documentation index, operations/source/verification/Wiki guides, contribution policy,
   issue templates, and CI configuration.
+- Daily single-thread semantic grouping with exact unit-to-package catalog coverage.
+- Artifact-level Phase 3 deep research with `main_report.md`, intake/evidence ledgers, and optional
+  subreports, using GPT-5.6 Sol at medium reasoning.
+
+### Changed
+
+- Phase 2 no longer makes importance or research-depth decisions; every unit reaches exactly one
+  Phase 3 package.
+- Wiki research pages are self-contained main reports rather than dossier navigation wrappers.
 
 ## [0.3.0] — 2026-08-31
 

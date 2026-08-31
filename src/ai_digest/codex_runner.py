@@ -3,15 +3,18 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .config import resolve_binary
+from .utils import atomic_write_json
 
 CODEX_EVENT_STREAM_LIMIT_BYTES = 16 * 1024 * 1024
 RETRYABLE_CODEX_ERROR_CLASSES = {
     "authentication",
+    "capacity",
     "idle_timeout",
     "network",
     "quota",
@@ -59,6 +62,7 @@ class CodexRunner:
         agents: bool = False,
         subagent_threads: int = 4,
         resume_thread_id: str | None = None,
+        thread_checkpoint_path: Path | None = None,
     ) -> CodexResult:
         workspace.mkdir(parents=True, exist_ok=True)
         isolated_tmp = workspace / ".tmp"
@@ -151,7 +155,27 @@ class CodexRunner:
                     continue
                 result.events.append(event)
                 if event.get("type") == "thread.started":
-                    result.thread_id = event.get("thread_id")
+                    started_thread_id = str(event.get("thread_id") or "") or None
+                    if (
+                        resume_thread_id
+                        and started_thread_id
+                        and started_thread_id != resume_thread_id
+                    ):
+                        process.terminate()
+                        await process.wait()
+                        result.exit_code = process.returncode or -1
+                        result.error_class = "thread_mismatch"
+                        result.error = (
+                            "Codex resume started a different thread: "
+                            f"expected={resume_thread_id} actual={started_thread_id}"
+                        )
+                        return result
+                    result.thread_id = started_thread_id
+                    if result.thread_id and thread_checkpoint_path is not None:
+                        atomic_write_json(
+                            thread_checkpoint_path,
+                            {"thread_id": result.thread_id},
+                        )
                 if event.get("type") == "turn.completed":
                     usage = event.get("usage") or {}
                     result.usage = {
@@ -159,20 +183,44 @@ class CodexRunner:
                         "cached_input_tokens": int(usage.get("cached_input_tokens", 0)),
                         "output_tokens": int(usage.get("output_tokens", 0)),
                     }
+                if event.get("type") == "turn.failed":
+                    error = event.get("error") or {}
+                    message = (
+                        str(error.get("message") or "")
+                        if isinstance(error, dict)
+                        else str(error)
+                    )
+                    result.error = message or "Codex turn failed"
+                    result.error_class = classify_codex_error(result.error)
             result.exit_code = await process.wait()
         except asyncio.CancelledError:
-            process.terminate()
-            await process.wait()
+            if process.returncode is None:
+                with suppress(ProcessLookupError):
+                    process.terminate()
+                await process.wait()
+            raise
+        except Exception:
+            if process.returncode is None:
+                with suppress(ProcessLookupError):
+                    process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except TimeoutError:
+                    with suppress(ProcessLookupError):
+                        process.kill()
+                    await process.wait()
             raise
         if result.exit_code != 0:
             combined = "\n".join(result.raw_lines[-40:])
-            result.error_class = classify_codex_error(combined)
-            result.error = combined[-4000:]
+            result.error_class = result.error_class or classify_codex_error(combined)
+            result.error = result.error or combined[-4000:]
         return result
 
 
 def classify_codex_error(text: str) -> str:
     lowered = text.lower()
+    if "selected model is at capacity" in lowered or "model is at capacity" in lowered:
+        return "capacity"
     if any(value in lowered for value in ("quota", "usage limit", "billing", "credits")):
         return "quota"
     if any(value in lowered for value in ("unauthorized", "authentication", "token expired")):

@@ -8,21 +8,51 @@ import pytest
 from ai_digest.codex_runner import CodexResult
 from ai_digest.config import RuntimeConfig
 from ai_digest.models import (
+    LegacyResearchPackage,
     ObservationUnit,
     Phase2Annotation,
+    Phase2CatalogEntry,
+    Phase2Summary,
     ResearchPackage,
     SourceItem,
 )
+from ai_digest.store import load_jsonl
 from ai_digest.v3 import (
     V3Phases,
+    adopt_thread_id,
     build_observation_units,
-    read_annotation_output,
-    read_annotation_subset,
-    split_oversize_packages,
+    read_summary_output,
+    read_summary_subset,
     unit_batches,
+    validate_legacy_phase2,
     validate_packages,
     validate_research_manifest,
 )
+
+
+def _source_item(value: str, now: datetime) -> SourceItem:
+    return SourceItem(
+        item_id=f"x_list:{value}",
+        item_type="x_post",
+        source="x_list",
+        surface="public_lists",
+        ready_at=now,
+        payload={"post_id": value, "text": f"robot update {value}"},
+    )
+
+
+def _sealed_run(tmp_path, values: tuple[str, ...] = ("1",)):  # type: ignore[no-untyped-def]
+    run = tmp_path / "runs" / "2026-08-31" / "attempt-0001"
+    phase1 = run / "01_phase1"
+    phase1.mkdir(parents=True)
+    now = datetime(2026, 8, 31, tzinfo=UTC)
+    items = [_source_item(value, now) for value in values]
+    (phase1 / "x_list.jsonl").write_text(
+        "".join(item.model_dump_json() + "\n" for item in items),
+        encoding="utf-8",
+    )
+    (phase1 / "PHASE1_COMPLETE").write_text("complete\n", encoding="utf-8")
+    return run
 
 
 def test_observation_units_mechanically_merge_cross_source_entities():
@@ -83,161 +113,264 @@ def test_unit_batches_are_bounded_without_loss():
         for index in range(450)
     ]
     batches = unit_batches(units)
-    assert all(len(batch) <= 200 for batch in batches)
+    assert all(len(batch) <= 160 for batch in batches)
     assert {unit.unit_id for batch in batches for unit in batch} == {
         unit.unit_id for unit in units
     }
 
 
-def test_packages_cover_every_investigate_unit_once():
+def test_summary_output_is_recoverable_without_accepting_partial(tmp_path):
+    output = tmp_path / "summaries.json"
+    output.write_text(
+        json.dumps(
+            {
+                "summaries": [{"unit_id": "u_a", "summary_zh": "A"}],
+                "working_map": "# map",
+            }
+        )
+    )
+    subset = read_summary_subset(output, {"u_a", "u_b"})
+    assert subset is not None
+    assert [value.unit_id for value in subset[0]] == ["u_a"]
+    assert read_summary_output(output, {"u_a", "u_b"}) is None
+
+
+def test_packages_cover_every_unit_once_and_match_catalog():
+    catalog = [
+        Phase2CatalogEntry(unit_id="u_a", summary_zh="A", package_id="p"),
+        Phase2CatalogEntry(unit_id="u_b", summary_zh="B", package_id="p"),
+    ]
+    package = ResearchPackage(
+        package_id="p",
+        label_zh="机器人",
+        scope_note_zh="这些材料讨论机器人。",
+        unit_ids=["u_a", "u_b"],
+    )
+    validate_packages([package], catalog)
+    with pytest.raises(RuntimeError, match="coverage mismatch"):
+        validate_packages([], catalog)
+    with pytest.raises(RuntimeError, match="duplicate package ids"):
+        validate_packages([package, package], catalog)
+    bad_catalog = [
+        Phase2CatalogEntry(unit_id="u_a", summary_zh="A", package_id="other"),
+        catalog[1],
+    ]
+    with pytest.raises(RuntimeError, match="membership mismatch"):
+        validate_packages([package], bad_catalog)
+
+
+def test_1354_units_fit_without_the_old_90_unit_mechanical_split():
+    summaries = [
+        Phase2Summary(unit_id=f"u_{value}", summary_zh=str(value))
+        for value in range(1354)
+    ]
+    packages = []
+    for package_number in range(15):
+        unit_ids = [
+            value.unit_id
+            for index, value in enumerate(summaries)
+            if index % 15 == package_number
+        ]
+        packages.append(
+            ResearchPackage(
+                package_id=f"p_{package_number}",
+                label_zh=f"分类 {package_number}",
+                scope_note_zh="按语义和认知负载交给同一研究 Agent。",
+                unit_ids=unit_ids,
+            )
+        )
+    validate_packages(packages, summaries)
+
+
+def test_legacy_phase2_contract_remains_strictly_readable():
+    units = [
+        ObservationUnit(
+            unit_id="u_a",
+            entity_key="a",
+            item_ids=["a"],
+            sources=["x_list"],
+        )
+    ]
     annotations = [
         Phase2Annotation(
             unit_id="u_a",
             disposition="investigate",
             summary_zh="A",
             reason="A",
-        ),
-        Phase2Annotation(
-            unit_id="u_b",
-            disposition="supporting",
-            summary_zh="B",
-            reason="B",
-        ),
+        )
     ]
-    package = ResearchPackage(
-        package_id="p",
-        label="P",
-        investigate_unit_ids=["u_a"],
-        supporting_unit_ids=["u_b"],
+    packages = [
+        LegacyResearchPackage(
+            package_id="p",
+            label="P",
+            investigate_unit_ids=["u_a"],
+        )
+    ]
+    validate_legacy_phase2(units, annotations, packages)
+    with pytest.raises(RuntimeError, match="exactly cover"):
+        validate_legacy_phase2(units, [], packages)
+
+
+def _write_research_artifacts(
+    tmp_path, unit_ids: list[str], *, subreport: bool = False
+):  # type: ignore[no-untyped-def]
+    (tmp_path / "main_report.md").write_text("# 主报告\n\n研究正文。", encoding="utf-8")
+    (tmp_path / "intake.jsonl").write_text(
+        "".join(
+            json.dumps(
+                {
+                    "unit_id": unit_id,
+                    "research_use": "research_subject",
+                    "note_zh": "已研究",
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+            for unit_id in unit_ids
+        ),
+        encoding="utf-8",
     )
-    validate_packages([package], annotations)
-    with pytest.raises(RuntimeError, match="coverage mismatch"):
-        validate_packages([], annotations)
-
-
-def test_partial_annotation_output_is_recoverable_without_being_accepted(tmp_path):
-    output = tmp_path / "annotations.json"
-    output.write_text(
+    (tmp_path / "evidence.jsonl").write_text(
         json.dumps(
             {
-                "annotations": [
-                    {
-                        "unit_id": "u_a",
-                        "disposition": "investigate",
-                        "summary_zh": "A",
-                        "reason": "A",
-                        "entities": [],
-                        "relation_hints": [],
-                        "duplicate_of": None,
-                    }
-                ],
-                "working_map": "# map",
-            }
+                "claim": "已核查的具体事实",
+                "status": "verified_fact",
+                "evidence": ["https://example.com/source"],
+                "scope": "当前版本",
+                "conflict": "",
+                "related_unit_ids": unit_ids,
+            },
+            ensure_ascii=False,
         )
+        + "\n",
+        encoding="utf-8",
     )
-    subset = read_annotation_subset(output, {"u_a", "u_b"})
-    assert subset is not None
-    assert [value.unit_id for value in subset[0]] == ["u_a"]
-    assert read_annotation_output(output, {"u_a", "u_b"}) is None
-
-
-def test_oversize_package_is_split_deterministically():
-    units = {
-        f"u_{index}": ObservationUnit(
-            unit_id=f"u_{index}",
-            entity_key=f"item:{index}",
-            item_ids=[str(index)],
-            sources=["github"],
-            summary="item",
+    subreports = []
+    if subreport:
+        (tmp_path / "subreports").mkdir()
+        (tmp_path / "subreports" / "detail.md").write_text("# 细节\n\n正文。")
+        subreports.append(
+            {"slug": "detail", "path": "subreports/detail.md", "unit_ids": unit_ids}
         )
-        for index in range(91)
-    }
-    package = ResearchPackage(
-        package_id="large",
-        label="Large",
-        investigate_unit_ids=list(units),
-    )
-    result = split_oversize_packages([package], units)
-    assert [len(value.investigate_unit_ids) for value in result] == [90, 1]
-
-
-def test_research_manifest_records_missing_without_triggering_repair(tmp_path):
-    package = ResearchPackage(
-        package_id="package",
-        label="Package",
-        investigate_unit_ids=["u_a", "u_b"],
-    )
-    (tmp_path / "dossier.md").write_text("# Dossier\n", encoding="utf-8")
     (tmp_path / "research_manifest.json").write_text(
         json.dumps(
             {
                 "package_id": "package",
-                "dossier": "dossier.md",
+                "main_report": "main_report.md",
+                "subreports": subreports,
+                "reviewed_unit_ids": unit_ids,
+                "status": "complete",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_research_manifest_accepts_main_report_without_required_subreports(tmp_path):
+    package = ResearchPackage(
+        package_id="package",
+        label_zh="Package",
+        scope_note_zh="Scope",
+        unit_ids=["u_a", "u_b"],
+    )
+    _write_research_artifacts(tmp_path, package.unit_ids)
+    manifest = validate_research_manifest(tmp_path, package)
+    assert manifest.reviewed_unit_ids == package.unit_ids
+    assert manifest.subreports == []
+
+
+def test_research_manifest_rejects_silent_intake_omission(tmp_path):
+    package = ResearchPackage(
+        package_id="package",
+        label_zh="Package",
+        scope_note_zh="Scope",
+        unit_ids=["u_a", "u_b"],
+    )
+    _write_research_artifacts(tmp_path, package.unit_ids, subreport=True)
+    (tmp_path / "intake.jsonl").write_text(
+        json.dumps(
+            {
+                "unit_id": "u_a",
+                "research_use": "research_subject",
+                "note_zh": "已研究",
+            },
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
+    with pytest.raises(ValueError, match="intake unit coverage"):
+        validate_research_manifest(tmp_path, package)
+
+
+def test_research_manifest_rejects_internal_ids_in_reader_output(tmp_path):
+    package = ResearchPackage(
+        package_id="package",
+        label_zh="Package",
+        scope_note_zh="Scope",
+        unit_ids=["u_0123456789abcdefabcd"],
+    )
+    _write_research_artifacts(tmp_path, package.unit_ids)
+    (tmp_path / "main_report.md").write_text(
+        "# 主报告\n\n内部编号 u_0123456789abcdefabcd 不应出现。"
+    )
+    with pytest.raises(RuntimeError, match="internal identifiers"):
+        validate_research_manifest(tmp_path, package)
+
+
+def test_research_lead_can_withhold_a_package_without_reader_pages(tmp_path):
+    package = ResearchPackage(
+        package_id="package",
+        label_zh="偏离兴趣的信号",
+        scope_note_zh="由 Lead 核查是否有意外关联。",
+        unit_ids=["u_a"],
+    )
+    (tmp_path / "intake.jsonl").write_text(
+        json.dumps(
+            {
+                "unit_id": "u_a",
+                "research_use": "not_used",
+                "note_zh": "核查后与目标读者无实质关联",
+            },
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
+    (tmp_path / "evidence.jsonl").write_text(
+        json.dumps(
+            {
+                "claim": "该信号与本项目关注领域无实质关联",
+                "status": "verified_fact",
+                "evidence": ["https://example.com/source"],
+                "scope": "当前信号",
+                "conflict": "",
+                "related_unit_ids": ["u_a"],
+            },
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
+    (tmp_path / "research_manifest.json").write_text(
+        json.dumps(
+            {
+                "package_id": "package",
+                "main_report": None,
                 "subreports": [],
-                "primary_unit_ids": ["u_a"],
-                "unresolved_unit_ids": [],
-                "missing_unit_ids": [],
-                "status": "success",
+                "reviewed_unit_ids": ["u_a"],
+                "status": "not_published",
             }
-        ),
-        encoding="utf-8",
+        )
     )
     manifest = validate_research_manifest(tmp_path, package)
-    assert manifest.status == "partial"
-    assert manifest.missing_unit_ids == ["u_b"]
-
-
-def test_research_manifest_allows_attached_supporting_evidence(tmp_path):
-    package = ResearchPackage(
-        package_id="package",
-        label="Package",
-        investigate_unit_ids=["u_primary"],
-        supporting_unit_ids=["u_support"],
-    )
-    (tmp_path / "subreports").mkdir()
-    (tmp_path / "dossier.md").write_text("# Dossier\n", encoding="utf-8")
-    (tmp_path / "subreports" / "detail.md").write_text("# Detail\n", encoding="utf-8")
-    (tmp_path / "research_manifest.json").write_text(
-        json.dumps(
-            {
-                "package_id": "package",
-                "dossier": "dossier.md",
-                "subreports": [
-                    {
-                        "slug": "detail",
-                        "path": "subreports/detail.md",
-                        "unit_ids": ["u_primary", "u_support"],
-                    }
-                ],
-                "primary_unit_ids": ["u_primary"],
-                "unresolved_unit_ids": [],
-                "missing_unit_ids": [],
-                "status": "success",
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    manifest = validate_research_manifest(tmp_path, package)
-    assert manifest.missing_unit_ids == []
+    assert manifest.status == "not_published"
+    assert not (tmp_path / "main_report.md").exists()
 
 
 @pytest.mark.asyncio
-async def test_phase2_uses_one_resumed_thread_and_writes_v3_artifacts(tmp_path):
-    run = tmp_path / "runs" / "2026-08-31" / "attempt-0001"
-    phase1 = run / "01_phase1"
-    phase1.mkdir(parents=True)
-    now = datetime(2026, 8, 31, tzinfo=UTC)
-    item = SourceItem(
-        item_id="x_list:1",
-        item_type="x_post",
-        source="x_list",
-        surface="public_lists",
-        ready_at=now,
-        payload={"post_id": "1", "text": "new agent release"},
-    )
-    (phase1 / "x_list.jsonl").write_text(item.model_dump_json() + "\n", encoding="utf-8")
-    (phase1 / "PHASE1_COMPLETE").write_text("complete\n", encoding="utf-8")
+async def test_phase2_uses_one_daily_resumed_thread_and_writes_new_contract(
+    tmp_path, monkeypatch
+):
+    run = _sealed_run(tmp_path, ("1", "2", "3"))
+    monkeypatch.setattr("ai_digest.v3.PHASE2_BATCH_MAX_UNITS", 1)
 
     class FakeRunner:
         calls: list[str | None] = []
@@ -245,160 +378,202 @@ async def test_phase2_uses_one_resumed_thread_and_writes_v3_artifacts(tmp_path):
         async def run(self, **kwargs):  # type: ignore[no-untyped-def]
             self.calls.append(kwargs.get("resume_thread_id"))
             output = kwargs["output_file"]
-            if output.name == "annotation_output.json":
-                unit_id = json.loads((output.parent / "units.jsonl").read_text())["unit_id"]
+            workspace = kwargs["workspace"]
+            if workspace.name.startswith("batch-"):
+                rows = load_jsonl(workspace / "units.jsonl")
                 output.write_text(
                     json.dumps(
                         {
-                            "annotations": [
+                            "summaries": [
                                 {
-                                    "unit_id": unit_id,
-                                    "disposition": "investigate",
-                                    "summary_zh": "新Agent发布",
-                                    "reason": "需要核查",
-                                    "entities": ["agent"],
-                                    "relation_hints": [],
-                                    "duplicate_of": None,
+                                    "unit_id": row["unit_id"],
+                                    "summary_zh": f"摘要 {row['unit_id']}",
                                 }
+                                for row in rows
                             ],
-                            "working_map": "# Map\n\n- Agent release",
-                        }
-                    ),
-                    encoding="utf-8",
+                            "working_map": "# Map\n\n- 机器人",
+                        },
+                        ensure_ascii=False,
+                    )
                 )
             else:
-                annotation = json.loads(
-                    (output.parent / "annotations.jsonl").read_text().splitlines()[0]
-                )
+                rows = load_jsonl(workspace / "summaries.jsonl")
                 output.write_text(
                     json.dumps(
                         {
                             "packages": [
                                 {
-                                    "package_id": "agent_release",
-                                    "label": "Agent release",
-                                    "investigate_unit_ids": [annotation["unit_id"]],
-                                    "supporting_unit_ids": [],
+                                    "package_id": "robotics",
+                                    "label_zh": "机器人",
+                                    "scope_note_zh": "这些材料适合一起交给机器人研究 Agent。",
+                                    "unit_ids": [row["unit_id"] for row in rows],
                                 }
-                            ],
-                            "unassigned_supporting_unit_ids": [],
-                        }
-                    ),
-                    encoding="utf-8",
+                            ]
+                        },
+                        ensure_ascii=False,
+                    )
                 )
             return CodexResult(exit_code=0, thread_id="thread-one")
 
     runner = FakeRunner()
     runtime = RuntimeConfig(runtime_root=tmp_path, shared_runtime_root=tmp_path / "queue")
     routing = await V3Phases(runtime, runner).route(run)  # type: ignore[arg-type]
-    assert runner.calls == [None, "thread-one"]
-    assert [bundle.bundle_id for bundle in routing.bundles] == ["agent_release"]
-    assert (run / "02_routing" / "units.jsonl").exists()
-    assert (run / "02_routing" / "annotations.jsonl").exists()
-    assert (run / "02_routing" / "packages.json").exists()
+    assert runner.calls == [None, "thread-one", "thread-one", "thread-one"]
+    assert [bundle.bundle_id for bundle in routing.bundles] == ["robotics"]
+    root = run / "02_routing"
+    assert len(load_jsonl(root / "catalog.jsonl")) == 3
+    assert not (root / "annotations.jsonl").exists()
+    manifest = json.loads((root / "phase2_manifest.json").read_text())
+    assert manifest["contract"] == "unit_packages_v1"
+    assert manifest["thread_id"] == "thread-one"
+
+    runner.calls.clear()
+    await V3Phases(runtime, runner).route(run)  # type: ignore[arg-type]
+    assert runner.calls == []
 
 
 @pytest.mark.asyncio
-async def test_phase2_repairs_partial_checkpoint_without_a_thread_id(tmp_path):
-    run = tmp_path / "runs" / "2026-08-31" / "attempt-0001"
-    phase1 = run / "01_phase1"
-    phase1.mkdir(parents=True)
-    now = datetime(2026, 8, 31, tzinfo=UTC)
-    items = {
-        f"x_list:{value}": SourceItem(
-            item_id=f"x_list:{value}",
-            item_type="x_post",
-            source="x_list",
-            surface="public_lists",
-            ready_at=now,
-            payload={"post_id": value, "text": f"robot update {value}"},
-        )
-        for value in ("1", "2")
-    }
-    (phase1 / "x_list.jsonl").write_text(
-        "".join(item.model_dump_json() + "\n" for item in items.values())
-    )
-    (phase1 / "PHASE1_COMPLETE").write_text("complete\n")
-    units = build_observation_units(items)
-    batch = run / "02_routing" / "batches" / "batch-0001"
-    batch.mkdir(parents=True)
-    first = units[0]
-    (batch / "annotation_output.json").write_text(
-        json.dumps(
-            {
-                "annotations": [
-                    {
-                        "unit_id": first.unit_id,
-                        "disposition": "investigate",
-                        "summary_zh": "已有 checkpoint",
-                        "reason": "需要研究",
-                        "entities": [],
-                        "relation_hints": [],
-                        "duplicate_of": None,
-                    }
-                ],
-                "working_map": "# Partial",
-            }
-        )
-    )
+async def test_phase2_missing_session_abandons_generation_and_starts_from_batch_one(tmp_path):
+    run = _sealed_run(tmp_path)
+    stale = run / "02_routing" / "unit-packages-v1"
+    stale.mkdir(parents=True)
+    (stale / "generation_input.json").write_text(json.dumps({"hash": "old"}))
+    (stale / "summaries.partial.jsonl").write_text("{}\n")
 
-    class RepairRunner:
-        repair_resume: str | None | object = object()
+    class FakeRunner:
+        calls: list[str | None] = []
 
         async def run(self, **kwargs):  # type: ignore[no-untyped-def]
-            workspace = kwargs["workspace"]
+            self.calls.append(kwargs.get("resume_thread_id"))
             output = kwargs["output_file"]
-            if workspace.name == "repair":
-                self.repair_resume = kwargs.get("resume_thread_id")
-                missing = json.loads((workspace / "units.jsonl").read_text())
+            workspace = kwargs["workspace"]
+            if workspace.name.startswith("batch-"):
+                row = load_jsonl(workspace / "units.jsonl")[0]
                 output.write_text(
                     json.dumps(
                         {
-                            "annotations": [
-                                {
-                                    "unit_id": missing["unit_id"],
-                                    "disposition": "investigate",
-                                    "summary_zh": "恢复缺失标注",
-                                    "reason": "需要研究",
-                                    "entities": [],
-                                    "relation_hints": [],
-                                    "duplicate_of": None,
-                                }
+                            "summaries": [
+                                {"unit_id": row["unit_id"], "summary_zh": "摘要"}
                             ],
-                            "working_map": "# Repaired",
+                            "working_map": "# Map",
                         }
                     )
                 )
-                return CodexResult(exit_code=0, thread_id="repair-thread")
-            assert workspace.name == "planner"
-            annotations = [
-                json.loads(line)
-                for line in (workspace / "annotations.jsonl").read_text().splitlines()
-            ]
-            output.write_text(
-                json.dumps(
-                    {
-                        "packages": [
-                            {
-                                "package_id": "robotics",
-                                "label": "Robotics",
-                                "investigate_unit_ids": [
-                                    value["unit_id"] for value in annotations
-                                ],
-                                "supporting_unit_ids": [],
-                            }
-                        ],
-                        "unassigned_supporting_unit_ids": [],
-                    }
+            else:
+                row = load_jsonl(workspace / "summaries.jsonl")[0]
+                output.write_text(
+                    json.dumps(
+                        {
+                            "packages": [
+                                {
+                                    "package_id": "p",
+                                    "label_zh": "分类",
+                                    "scope_note_zh": "自然分组。",
+                                    "unit_ids": [row["unit_id"]],
+                                }
+                            ]
+                        },
+                        ensure_ascii=False,
+                    )
                 )
-            )
-            return CodexResult(exit_code=0, thread_id="planner-thread")
+            return CodexResult(exit_code=0, thread_id="fresh-thread")
 
-    runner = RepairRunner()
-    routing = await V3Phases(
+    runner = FakeRunner()
+    await V3Phases(
         RuntimeConfig(runtime_root=tmp_path, shared_runtime_root=tmp_path / "queue"),
         runner,  # type: ignore[arg-type]
     ).route(run)
-    assert runner.repair_resume is None
-    assert len(routing.assignments) == 2
-    assert (run / "02_routing" / "PHASE2_COMPLETE").exists()
+    assert runner.calls == [None, "fresh-thread"]
+    assert (run / "02_routing" / "unit-packages-v1-abandoned-001").is_dir()
+
+
+def test_phase2_thread_identity_must_not_change():
+    assert adopt_thread_id("same", "same") == "same"
+    with pytest.raises(RuntimeError, match="multiple threads"):
+        adopt_thread_id("first", "second")
+
+
+@pytest.mark.asyncio
+async def test_phase3_uses_sol_medium_and_accepts_main_report_without_subreports(tmp_path):
+    run = _sealed_run(tmp_path)
+    phase1_items = {
+        item.item_id: item
+        for item in [
+            SourceItem.model_validate_json(
+                (run / "01_phase1" / "x_list.jsonl").read_text().strip()
+            )
+        ]
+    }
+    unit = build_observation_units(phase1_items)[0]
+    routing = run / "02_routing"
+    routing.mkdir()
+    (routing / "units.jsonl").write_text(unit.model_dump_json() + "\n")
+    catalog = Phase2CatalogEntry(
+        unit_id=unit.unit_id,
+        summary_zh="机器人项目发布了新的技术材料。",
+        package_id="robotics",
+    )
+    (routing / "catalog.jsonl").write_text(catalog.model_dump_json() + "\n")
+    package = ResearchPackage(
+        package_id="robotics",
+        label_zh="机器人",
+        scope_note_zh="相关机器人材料。",
+        unit_ids=[unit.unit_id],
+    )
+    (routing / "packages.json").write_text(
+        json.dumps([package.model_dump(mode="json")], ensure_ascii=False)
+    )
+
+    class ResearchRunner:
+        calls: list[dict[str, object]] = []
+
+        async def run(self, **kwargs):  # type: ignore[no-untyped-def]
+            self.calls.append(kwargs)
+            workspace = kwargs["workspace"]
+            (workspace / "main_report.md").write_text("# 机器人研究\n\n深入核查后的正文。")
+            (workspace / "intake.jsonl").write_text(
+                json.dumps(
+                    {
+                        "unit_id": unit.unit_id,
+                        "research_use": "research_subject",
+                        "note_zh": "已进入原始材料核查",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            (workspace / "evidence.jsonl").write_text(
+                json.dumps(
+                    {
+                        "claim": "项目发布了新的技术材料",
+                        "status": "verified_fact",
+                        "evidence": ["https://example.com/source"],
+                        "scope": "当前发布",
+                        "conflict": "",
+                        "related_unit_ids": [unit.unit_id],
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            (workspace / "research_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "package_id": package.package_id,
+                        "main_report": "main_report.md",
+                        "subreports": [],
+                        "reviewed_unit_ids": [unit.unit_id],
+                        "status": "success",
+                    }
+                )
+            )
+            return CodexResult(exit_code=0, thread_id="research-thread")
+
+    runner = ResearchRunner()
+    runtime = RuntimeConfig(runtime_root=tmp_path, shared_runtime_root=tmp_path / "queue")
+    successes = await V3Phases(runtime, runner).research(run)  # type: ignore[arg-type]
+    assert successes == {"robotics": "robotics/main_report.md"}
+    assert len(runner.calls) == 1
+    assert runner.calls[0]["model"] == "gpt-5.6-sol"
+    assert runner.calls[0]["reasoning"] == "medium"
+    assert not (run / "03_research/robotics/subreports").exists()

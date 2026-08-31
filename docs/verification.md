@@ -38,9 +38,9 @@ The smoke must prove:
 - a real Phase 1 runner writes and seals the fixture;
 - the fixture covers X List, For You, GitHub, media, HN, and an arXiv/HF pair;
 - literal U+2028/U+2029 and a referenced blob cross the JSONL queue boundary;
-- every item belongs to exactly one unit and every unit has exactly one annotation;
+- every item belongs to exactly one unit and every unit has exactly one catalog summary/package;
 - at least one research package exists;
-- Phase 3 failure and missing-unit counts are zero;
+- Phase 3 failures are zero and each intake exactly covers its package;
 - `DONE=complete`, not failure fallback;
 - queue transition is `jobs -> completed -> archived`;
 - publish preflight resolves every internal link;
@@ -54,8 +54,8 @@ Tests include:
 
 - legal JSON strings containing Unicode line/paragraph separators;
 - interrupted enqueue and visible-job recovery;
-- partial Phase 2 output without a resumable thread;
-- Phase 3 supporting evidence in subreport manifests;
+- Phase 2 thread checkpoints written before turn completion and stale-output rejection;
+- Phase 3 intake/evidence closure with optional subreports;
 - Codex retry metadata written before the queue move;
 - due/not-due agent retry promotion;
 - Lark backoff and DM retry without Wiki write amplification;
@@ -69,9 +69,9 @@ Tests include:
 For the first natural daily run after a release, verify:
 
 1. source receipts and coverage modes;
-2. Phase 2 unit/annotation/package exactness;
+2. Phase 2 unit/catalog/package exactness and one daily thread ID;
 3. Phase 3 `failures.json`, `quality.json`, and each research manifest;
-4. Brief links and Wiki year/month/day/dossier/subreport hierarchy;
+4. Brief links and Wiki year/month/day/main-report/subreport hierarchy;
 5. Lark `publish_manifest.json`, real message/chat IDs, and no duplicate DM;
 6. queue directories empty or in an explained retry state;
 7. log modification times after the installed snapshot timestamp.

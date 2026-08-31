@@ -38,8 +38,9 @@ Do not place API secrets or cookies in the checked-in example. The X List API ke
 
 ## Reader interests
 
-`interests.md` is context, not a fixed taxonomy. It tells Phase 2 what the reader cares about while
-still allowing an unexpected item to be investigated. It must not contain credentials or operational
+`interests.md` is context, not a fixed taxonomy. It helps Phase 2 form natural packages and lets each
+Phase 3 Lead decide whether its completed research materially serves the reader, while still allowing
+an unexpected item to be investigated. It must not contain credentials or operational
 instructions from external sources.
 
 ## CLI map

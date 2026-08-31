@@ -9,19 +9,22 @@ AI Intelligence Radar
 └── YYYY
     └── YYYY-MM
         └── YYYY-MM-DD · AI Intelligence Brief
-            ├── dossier [package-id]
+            ├── main report
             │   └── natural subreports
-            └── dossier [package-id]
+            └── main report
 ```
 
 ## Page responsibilities
 
 - **Year:** index of month nodes.
 - **Month:** index of daily Brief nodes.
-- **Daily Brief:** source status, research navigation, unresolved/failures; no second macro rewrite.
-- **Dossier:** coherent package inventory and links to natural subreports.
-- **Subreport:** concrete trigger, verified change, technical/product/business detail, primary evidence,
+- **Daily Brief:** source status, research navigation and failures; no second macro rewrite.
+- **Main report:** self-contained deep research for one dynamically grouped package.
+- **Subreport:** an optional independent evidence chain or technical/product/business investigation,
   conflicts, and unknowns.
+
+A Phase 3 Lead may withhold a fully inspected package when it has no material reader value. Its
+intake/evidence remain local artifacts; the publisher does not create an empty Wiki node.
 
 Every child page receives deterministic back-navigation. Agent prose remains natural; only the
 system-owned package IDs, manifest paths, and internal URI schemes are strictly validated.
@@ -37,7 +40,7 @@ tree.
 
 ## Stale-node policy
 
-The publisher may remove a stale dossier/subreport only when all conditions hold:
+The publisher may remove a stale main-report/subreport only when all conditions hold:
 
 1. the node key exists in the same run's `publish_manifest.json`;
 2. the new validated artifact set no longer contains that key;

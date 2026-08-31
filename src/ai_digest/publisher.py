@@ -8,8 +8,9 @@ import time
 from pathlib import Path
 from typing import Any, cast
 
+from .artifacts import load_artifact_layout
 from .config import LarkConfig, resolve_binary
-from .models import PublishManifest, PublishNode, ResearchArtifactManifest
+from .models import PublishManifest, PublishNode, ResearchPackage
 from .store import parse_jsonl_text
 from .utils import atomic_write_json, atomic_write_text
 
@@ -217,7 +218,7 @@ class LarkCLI:
 
 
 class LarkPublisher:
-    NAVIGATION_VERSION = 1
+    NAVIGATION_VERSION = 2
 
     def __init__(self, config: LarkConfig):
         self.config = config
@@ -294,17 +295,16 @@ class LarkPublisher:
                     raise LarkError(
                         f"unsafe research report mapping: {bundle_id} -> {report_path}"
                     )
-                is_v3 = str(report_path) == f"{bundle_id}/dossier.md"
-                if not is_v3 and str(report_path) != f"{bundle_id}/report.md":
-                    raise LarkError(
-                        f"unsafe research report mapping: {bundle_id} -> {report_path}"
+                package_root = run_dir / "03_research" / str(bundle_id)
+                try:
+                    layout = load_artifact_layout(
+                        package_root,
+                        str(bundle_id),
+                        str(report_path),
                     )
-                source = (
-                    run_dir
-                    / "03_research"
-                    / str(bundle_id)
-                    / ("dossier.md" if is_v3 else "report.md")
-                )
+                except (ValueError, TypeError) as error:
+                    raise LarkError(str(error)) from error
+                source = layout.main_path
                 if source.is_symlink() or not source.is_file():
                     raise LarkError(f"research report is not a regular file: {bundle_id}")
                 content = source.read_text(encoding="utf-8")
@@ -312,29 +312,21 @@ class LarkPublisher:
                 manifest_key = f"report:{bundle_id}"
                 node = manifest.nodes.get(manifest_key)
                 if node is None:
-                    node = self.cli.ensure_node(
-                        f"{title} [{bundle_id}]", day_node.node_token
+                    node_title = (
+                        title
+                        if layout.kind == "main_report_v1"
+                        else f"{title} [{bundle_id}]"
                     )
+                    node = self.cli.ensure_node(node_title, day_node.node_token)
                     node.key = bundle_id
-                if is_v3:
+                if layout.subreports:
                     subreport_urls: dict[str, str] = {}
                     subreport_labels: dict[str, str] = {}
-                    artifact = json.loads(
-                        (source.parent / "research_manifest.json").read_text(encoding="utf-8")
-                    )
-                    for subreport in artifact.get("subreports", []):
-                        relative = (
-                            subreport.get("path") if isinstance(subreport, dict) else subreport
-                        )
-                        if not re.fullmatch(
-                            r"subreports/[a-z0-9][a-z0-9_-]{0,79}\.md", str(relative)
-                        ):
-                            raise LarkError(f"unsafe subreport path: {relative}")
-                        child_source = source.parent / str(relative)
-                        if child_source.is_symlink() or not child_source.is_file():
-                            raise LarkError(f"missing subreport: {relative}")
+                    for subreport in layout.subreports:
+                        relative = subreport.path
+                        child_source = package_root / relative
                         child_content = child_source.read_text(encoding="utf-8")
-                        child_slug = Path(str(relative)).stem
+                        child_slug = subreport.slug
                         child_key = f"subreport:{bundle_id}:{child_slug}"
                         child = manifest.nodes.get(child_key)
                         if child is None:
@@ -346,7 +338,7 @@ class LarkPublisher:
                         child_content = _page_breadcrumb(
                             [
                                 ("当日日报", day_node.url),
-                                ("研究档案", node.url),
+                                ("主报告", node.url),
                             ]
                         ) + child_content
                         child_hash = hashlib.sha256(child_content.encode()).hexdigest()
@@ -358,7 +350,9 @@ class LarkPublisher:
                         expected_content_keys.add(child_key)
                         subreport_urls[child_slug] = child.url or ""
                         subreport_labels[child_slug] = child.title
-                    content = _rewrite_subreport_links(content, str(bundle_id), subreport_urls)
+                    content = _rewrite_subreport_links(
+                        content, str(bundle_id), subreport_urls
+                    )
                     content = _append_subreport_index(
                         content,
                         subreport_urls,
@@ -419,6 +413,7 @@ class LarkPublisher:
                     (run_dir / "03_research" / "failures.json").read_text(encoding="utf-8")
                 )
                 watch_count = int(preflight["watch_count"])
+                not_published_count = int(preflight["not_published_count"])
                 source_health = json.loads(
                     (run_dir / "01_phase1" / "source_health.json").read_text(
                         encoding="utf-8"
@@ -437,7 +432,8 @@ class LarkPublisher:
                 message = (
                     f"## AI Intelligence Radar · {date}\n\n"
                     f"状态：**{status}**  \n"
-                    f"研究报告：{len(successes)}，失败：{len(failures)}，Watch：{watch_count}  \n"
+                    f"研究报告：{len(successes)}，核查后未发布：{not_published_count}，"
+                    f"失败：{len(failures)}，Watch：{watch_count}  \n"
                     f"停用来源：{', '.join(disabled) if disabled else '无'}  \n"
                     f"异常来源：{', '.join(source_issues) if source_issues else '无'}  \n"
                     f"[打开今日 Brief]({day_node.url})"
@@ -554,50 +550,55 @@ def validate_publish_inputs(run_dir: Path, status: str) -> dict[str, Any]:
 
     brief = _read_regular_text(run_dir / "04_brief" / "daily_brief.md")
     watch = parse_jsonl_text(_read_regular_text(run_dir / "04_brief" / "watch.jsonl"))
+    not_published_path = run_dir / "03_research" / "not_published.json"
+    not_published = (
+        _read_regular_json(not_published_path) if not_published_path.exists() else []
+    )
+    if not isinstance(not_published, list):
+        raise LarkError("not_published.json must be an array")
     known_reports: set[str] = set()
     preflight_subreports: dict[str, dict[str, str]] = {}
     content_keys = {"year", "month", "day"}
     subreport_count = 0
+    expected_units: dict[str, set[str]] = {}
+    packages_path = run_dir / "02_routing" / "packages.json"
+    if packages_path.is_file() and (run_dir / "02_routing" / "phase2_manifest.json").is_file():
+        packages = [
+            ResearchPackage.model_validate(row)
+            for row in json.loads(_read_regular_text(packages_path))
+        ]
+        expected_units = {
+            package.package_id: set(package.unit_ids) for package in packages
+        }
     for package_id_value, report_path_value in successes.items():
         package_id = str(package_id_value)
         report_path = str(report_path_value)
         if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", package_id):
             raise LarkError(f"unsafe research report id: {package_id}")
-        is_v3 = report_path == f"{package_id}/dossier.md"
-        if not is_v3 and report_path != f"{package_id}/report.md":
-            raise LarkError(f"unsafe research report mapping: {package_id} -> {report_path}")
-        report_name = "dossier.md" if is_v3 else "report.md"
-        report = _read_regular_text(
-            run_dir / "03_research" / package_id / report_name
-        )
+        if expected_units and package_id not in expected_units:
+            raise LarkError(f"research report references an unknown package: {package_id}")
+        package_root = run_dir / "03_research" / package_id
+        try:
+            layout = load_artifact_layout(
+                package_root,
+                package_id,
+                report_path,
+                expected_unit_ids=expected_units.get(package_id),
+            )
+        except (ValueError, TypeError) as error:
+            raise LarkError(str(error)) from error
+        report = _read_regular_text(layout.main_path)
         known_reports.add(package_id)
         content_keys.add(f"report:{package_id}")
-        if not is_v3:
-            _assert_no_internal_links(report)
-            continue
-        artifact_value = _read_regular_json(
-            run_dir / "03_research" / package_id / "research_manifest.json"
-        )
-        artifact = ResearchArtifactManifest.model_validate(artifact_value)
-        if artifact.package_id != package_id or artifact.dossier != "dossier.md":
-            raise LarkError(f"research manifest mismatch: {package_id}")
         seen_slugs: set[str] = set()
         package_subreports: dict[str, str] = {}
-        for subreport in artifact.subreports:
-            if isinstance(subreport, str):
-                relative = subreport
-                slug = Path(subreport).stem
-            else:
-                relative = subreport.path
-                slug = subreport.slug
-            if relative != f"subreports/{slug}.md" or not re.fullmatch(
-                r"[a-z0-9][a-z0-9_-]{0,79}", slug
-            ):
-                raise LarkError(f"unsafe subreport path: {package_id}/{relative}")
+        for subreport in layout.subreports:
+            relative = subreport.path
+            slug = subreport.slug
             if slug in seen_slugs:
                 raise LarkError(f"duplicate subreport slug: {package_id}/{slug}")
             seen_slugs.add(slug)
-            _read_regular_text(run_dir / "03_research" / package_id / relative)
+            _read_regular_text(package_root / relative)
             package_subreports[slug] = f"https://preflight.invalid/{package_id}/{slug}"
             content_keys.add(f"subreport:{package_id}:{slug}")
             subreport_count += 1
@@ -632,6 +633,7 @@ def validate_publish_inputs(run_dir: Path, status: str) -> dict[str, Any]:
         "subreport_count": subreport_count,
         "failure_count": len(failures),
         "watch_count": len(watch),
+        "not_published_count": len(not_published),
         "content_keys": sorted(content_keys),
         "artifact_hash": _publish_artifact_hash(run_dir, status),
     }
@@ -729,21 +731,13 @@ def _publish_artifact_hash(run_dir: Path, status: str) -> str:
     if successes_path.exists():
         successes = json.loads(successes_path.read_text(encoding="utf-8"))
         for bundle_id, report_path in sorted(successes.items()):
-            if str(report_path) == f"{bundle_id}/report.md":
-                relative_paths.append(Path("03_research") / str(bundle_id) / "report.md")
-            elif str(report_path) == f"{bundle_id}/dossier.md":
-                package_root = Path("03_research") / str(bundle_id)
-                relative_paths.extend(
-                    [package_root / "dossier.md", package_root / "research_manifest.json"]
-                )
-                manifest_path = run_dir / package_root / "research_manifest.json"
-                if manifest_path.exists():
-                    artifact = json.loads(manifest_path.read_text(encoding="utf-8"))
-                    relative_paths.extend(
-                        package_root
-                        / str(value.get("path") if isinstance(value, dict) else value)
-                        for value in artifact.get("subreports", [])
-                    )
+            package_root = run_dir / "03_research" / str(bundle_id)
+            layout = load_artifact_layout(
+                package_root,
+                str(bundle_id),
+                str(report_path),
+            )
+            relative_paths.extend(path.relative_to(run_dir) for path in layout.files())
     for relative in relative_paths:
         path = run_dir / relative
         hasher.update(relative.as_posix().encode())
@@ -793,7 +787,7 @@ def _rewrite_subreport_links(
         url = subreport_urls[slug]
         content = content.replace(f"subreport://{package_id}/{slug}", url)
     if f"subreport://{package_id}/" in content:
-        raise LarkError(f"dossier references an unknown subreport in {package_id}")
+        raise LarkError(f"main report references an unknown subreport in {package_id}")
     return content
 
 
