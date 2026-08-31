@@ -239,7 +239,7 @@ class V3Phases:
                 continue
             result = CodexResult(exit_code=0, thread_id=thread_id)
             repair_part_summaries: list[dict[str, Any]] = []
-            if partial is None or not partial[0]:
+            if (partial is None or not partial[0]) and not checkpoint_committed:
                 result = await run_phase2_turn(
                     self.runner,
                     workspace=batch_root,
