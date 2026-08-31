@@ -37,65 +37,73 @@ CATALOG_SHARD_MAX_BYTES = 256 * 1024
 PHASE2_PROMPT_VERSION = "2026-08-31.5"
 PHASE2_WORKING_MAP_MAX_BYTES = 64 * 1024
 
-SUMMARY_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["summaries", "working_map"],
-    "properties": {
-        "summaries": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["unit_id", "summary_zh", "group_id"],
-                "properties": {
-                    "unit_id": {"type": "string"},
-                    "summary_zh": {"type": "string"},
-                    "group_id": {
-                        "type": "string",
-                        "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+def summary_schema(unit_ids: set[str]) -> dict[str, Any]:
+    allowed = sorted(unit_ids)
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["summaries", "working_map"],
+        "properties": {
+            "summaries": {
+                "type": "array",
+                "minItems": len(allowed),
+                "maxItems": len(allowed),
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["unit_id", "summary_zh", "group_id"],
+                    "properties": {
+                        "unit_id": {"type": "string", "enum": allowed},
+                        "summary_zh": {"type": "string"},
+                        "group_id": {
+                            "type": "string",
+                            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+                        },
                     },
                 },
             },
+            "working_map": {"type": "string"},
         },
-        "working_map": {"type": "string"},
-    },
-}
+    }
 
-PACKAGE_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["packages"],
-    "properties": {
-        "packages": {
-            "type": "array",
-            "maxItems": PACKAGE_MAX_COUNT,
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": [
-                    "package_id",
-                    "label_zh",
-                    "scope_note_zh",
-                    "group_ids",
-                ],
-                "properties": {
-                    "package_id": {
-                        "type": "string",
-                        "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
-                    },
-                    "label_zh": {"type": "string"},
-                    "scope_note_zh": {"type": "string"},
-                    "group_ids": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 1,
+
+def package_schema(group_ids: set[str]) -> dict[str, Any]:
+    allowed = sorted(group_ids)
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["packages"],
+        "properties": {
+            "packages": {
+                "type": "array",
+                "maxItems": PACKAGE_MAX_COUNT,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "package_id",
+                        "label_zh",
+                        "scope_note_zh",
+                        "group_ids",
+                    ],
+                    "properties": {
+                        "package_id": {
+                            "type": "string",
+                            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+                        },
+                        "label_zh": {"type": "string"},
+                        "scope_note_zh": {"type": "string"},
+                        "group_ids": {
+                            "type": "array",
+                            "items": {"type": "string", "enum": allowed},
+                            "minItems": 1,
+                            "uniqueItems": True,
+                        },
                     },
                 },
             },
         },
-    },
-}
+    }
 
 
 class V3Phases:
@@ -182,15 +190,18 @@ class V3Phases:
         for number, batch in enumerate(batches, start=1):
             batch_root = work_root / "batches" / f"batch-{number:04d}"
             batch_root.mkdir(parents=True, exist_ok=True)
+            expected_batch_ids = {unit.unit_id for unit in batch}
             atomic_write_jsonl(
                 batch_root / "units.jsonl",
                 (unit.model_dump(mode="json") for unit in batch),
             )
             atomic_write_text(batch_root / "interests.md", interests)
             atomic_write_text(batch_root / "working_map.md", working_map)
-            atomic_write_json(batch_root / "summary.schema.json", SUMMARY_SCHEMA)
+            atomic_write_json(
+                batch_root / "summary.schema.json",
+                summary_schema(expected_batch_ids),
+            )
             atomic_write_text(batch_root / "AGENTS.md", phase2_agents_md())
-            expected_batch_ids = {unit.unit_id for unit in batch}
             input_hash = phase2_batch_input_hash(
                 batch,
                 interests,
@@ -274,15 +285,17 @@ class V3Phases:
                 for part_number, repair_batch in enumerate(repair_batches, start=1):
                     part_root = repair_root / f"part-{part_number:04d}"
                     part_root.mkdir(parents=True, exist_ok=True)
+                    part_ids = {unit.unit_id for unit in repair_batch}
                     atomic_write_jsonl(
                         part_root / "units.jsonl",
                         (unit.model_dump(mode="json") for unit in repair_batch),
                     )
                     atomic_write_text(part_root / "interests.md", interests)
                     atomic_write_text(part_root / "working_map.md", repair_map)
-                    atomic_write_json(part_root / "summary.schema.json", SUMMARY_SCHEMA)
+                    atomic_write_json(
+                        part_root / "summary.schema.json", summary_schema(part_ids)
+                    )
                     atomic_write_text(part_root / "AGENTS.md", phase2_agents_md())
-                    part_ids = {unit.unit_id for unit in repair_batch}
                     part_hash = phase2_batch_input_hash(
                         repair_batch,
                         interests,
@@ -391,7 +404,10 @@ class V3Phases:
             )
             atomic_write_text(finalizer / "working_map.md", working_map)
             atomic_write_text(finalizer / "interests.md", interests)
-            atomic_write_json(finalizer / "packages.schema.json", PACKAGE_SCHEMA)
+            atomic_write_json(
+                finalizer / "packages.schema.json",
+                package_schema({value.group_id for value in phase2_summaries}),
+            )
             atomic_write_text(finalizer / "AGENTS.md", phase2_agents_md())
             finalizer_hash = phase2_finalizer_input_hash(
                 phase2_summaries,
