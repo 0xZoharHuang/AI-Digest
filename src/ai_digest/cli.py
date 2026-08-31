@@ -220,15 +220,22 @@ async def async_main(args: argparse.Namespace) -> int:
         return 0
     if args.command == "maintenance":
         count = 0
+        actions: list[str] = []
         if args.classify_existing_article_bootstrap:
             await phase1.initialize()
-            count += await phase1.state.classify_pending_article_bootstrap(datetime.now(UTC))
+            classified = await phase1.state.classify_pending_article_bootstrap(datetime.now(UTC))
+            count += classified
+            actions.append(f"classified {classified} article bootstrap observation(s)")
         if args.prune_x:
-            count += await phase1.prune_expired_x_content()
+            pruned = await phase1.prune_expired_x_content()
+            count += pruned
+            actions.append(f"pruned {pruned} expired X observation(s)")
         if args.delete_x_post:
             for post_id in args.delete_x_post:
-                count += await phase1.delete_x_post_content(str(post_id))
-        console.print(f"pruned {count} expired X item(s) and content blob(s)")
+                deleted = await phase1.delete_x_post_content(str(post_id))
+                count += deleted
+                actions.append(f"deleted {deleted} observation(s) for X Post {post_id}")
+        console.print("; ".join(actions) if actions else f"processed {count} maintenance item(s)")
         return 0
     if args.command == "status":
         manifest = json.loads((args.run_dir / "00_run_manifest.json").read_text())
