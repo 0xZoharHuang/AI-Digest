@@ -619,6 +619,8 @@ def test_reader_prompts_preserve_scan_then_drill_down_semantics():
     assert "多个彼此独立的事件" in phase3_agents_md()
     assert "subreport 仍不设最低数量" in phase3_agents_md()
     assert "不可能预先熟悉每个细分领域" in phase3_agents_md()
+    assert "不是一条 unit、一个来源或一则新闻" in phase3_agents_md()
+    assert "多篇论文、多个仓库和帖子" in phase3_agents_md()
     assert "今天新看到”不等于研究对象今天一定发生了变化" in phase3_agents_md()
     assert "source_health 描述采集器运行状态" in phase4_agents_md()
     assert "不得写“今日没有新增信息" in phase4_agents_md()
