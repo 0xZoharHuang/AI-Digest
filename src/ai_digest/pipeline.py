@@ -10,6 +10,7 @@ import stat
 from contextlib import closing, suppress
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from .agent_phases import AgentPhases
@@ -26,8 +27,8 @@ from .models import (
     RunStatus,
 )
 from .phase1 import Phase1Runner
-from .publisher import LarkPublisher
-from .store import FileStore, StateDB, load_jsonl
+from .publisher import LarkPublisher, validate_publish_inputs
+from .store import FileStore, StateDB, load_jsonl, parse_jsonl_text
 from .utils import atomic_write_json, atomic_write_text
 
 
@@ -340,7 +341,11 @@ def publish_existing_run(runtime: RuntimeConfig, run_dir: Path) -> PublishManife
         raise
 
 
-def recover_and_publish(runtime: RuntimeConfig) -> list[Path]:
+def recover_and_publish(
+    runtime: RuntimeConfig,
+    *,
+    publish_mode: Literal["live", "preflight"] = "live",
+) -> list[Path]:
     published: list[Path] = []
     completed_root = runtime.shared_runtime_root / "completed"
     pending_root = runtime.shared_runtime_root / "publish_pending"
@@ -367,13 +372,23 @@ def recover_and_publish(runtime: RuntimeConfig) -> list[Path]:
                     job_dir / "recovery_error.json",
                     {"error": detail},
                 )
-                _publish_import_failure(runtime, job_dir.name, detail)
+                _publish_import_failure(
+                    runtime,
+                    job_dir.name,
+                    detail,
+                    notify=publish_mode == "live",
+                )
             finally:
                 destination = _quarantine_destination(failed_root, job_dir.name, "import")
                 job_dir.replace(destination)
             continue
         try:
-            LarkPublisher(runtime.lark).publish(run_dir, manifest.status.value.upper())
+            if publish_mode == "live":
+                LarkPublisher(runtime.lark).publish(
+                    run_dir, manifest.status.value.upper()
+                )
+            else:
+                validate_publish_inputs(run_dir, manifest.status.value.upper())
             manifest.phases["phase5"] = RunStatus.SUCCESS
             manifest.status = _overall_status(manifest)
             atomic_write_json(
@@ -504,7 +519,13 @@ def _update_run_state(
         connection.commit()
 
 
-def _publish_import_failure(runtime: RuntimeConfig, run_id: str, detail: str) -> None:
+def _publish_import_failure(
+    runtime: RuntimeConfig,
+    run_id: str,
+    detail: str,
+    *,
+    notify: bool = True,
+) -> None:
     """Best-effort user-visible alert built only from main-user-owned files."""
 
     try:
@@ -535,8 +556,9 @@ def _publish_import_failure(runtime: RuntimeConfig, run_id: str, detail: str) ->
         atomic_write_text(brief / "watch.jsonl", "")
         _write_pipeline_failure(run_dir, f"Runner output was rejected: {detail}")
         _update_run_state(runtime, run_id, RunStatus.FAILED.value, "failed")
-        with suppress(Exception):
-            LarkPublisher(runtime.lark).publish(run_dir, "FAILED")
+        if notify:
+            with suppress(Exception):
+                LarkPublisher(runtime.lark).publish(run_dir, "FAILED")
     except Exception:
         return
 
@@ -562,15 +584,10 @@ def _import_routing(job: Path, run: Path) -> None:
         units_content = _safe_read(source, Path("units.jsonl"), 50_000_000)
         annotations_content = _safe_read(source, Path("annotations.jsonl"), 20_000_000)
         packages_content = _safe_read(source, Path("packages.json"), 5_000_000)
-        units = [
-            ObservationUnit.model_validate(json.loads(line))
-            for line in units_content.splitlines()
-            if line
-        ]
+        units = [ObservationUnit.model_validate(row) for row in parse_jsonl_text(units_content)]
         annotations = [
-            Phase2Annotation.model_validate(json.loads(line))
-            for line in annotations_content.splitlines()
-            if line
+            Phase2Annotation.model_validate(row)
+            for row in parse_jsonl_text(annotations_content)
         ]
         packages = [ResearchPackage.model_validate(row) for row in json.loads(packages_content)]
         expected_units = {unit.unit_id for unit in units}
@@ -603,9 +620,10 @@ def _import_routing(job: Path, run: Path) -> None:
     bundles_raw = json.loads(_safe_read(source, Path("bundles.json"), 2_000_000))
     bundles = [Bundle.model_validate(row) for row in bundles_raw]
     assignments = [
-        Assignment.model_validate(json.loads(line))
-        for line in _safe_read(source, Path("assignments.jsonl"), 10_000_000).splitlines()
-        if line
+        Assignment.model_validate(row)
+        for row in parse_jsonl_text(
+            _safe_read(source, Path("assignments.jsonl"), 10_000_000)
+        )
     ]
     failure_phase = None
     failure_content = _safe_optional_read(job, Path("worker_failure.json"), 100_000)
@@ -720,9 +738,7 @@ def _import_brief(job: Path, run: Path) -> None:
             if name.endswith(".json"):
                 atomic_write_json(target / name, json.loads(content))
             else:
-                for line in content.splitlines():
-                    if line:
-                        json.loads(line)
+                parse_jsonl_text(content)
                 atomic_write_text(target / name, content)
     _safe_read(source, Path("PHASE4_COMPLETE"), 100)
     atomic_write_text(target / "PHASE4_COMPLETE", "complete\n")

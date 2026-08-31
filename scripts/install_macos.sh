@@ -155,7 +155,8 @@ if [[ -f "$runtime_dir/state.db" ]]; then
   chmod 600 "$state_backup"
 fi
 "$shared_app/.venv/bin/python" -m ai_digest.cli maintenance \
-  --classify-existing-article-bootstrap
+  --classify-existing-article-bootstrap \
+  --repair-completed-handoff-ledger
 
 install -m 600 "$tick_tmp" "$tick_target"
 install -m 600 "$recover_tmp" "$recover_target"

@@ -214,6 +214,43 @@ async def test_local_completion_atomically_delivers_sealed_run(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_completed_handoff_ledger_repair_is_narrow_and_idempotent(tmp_path):
+    state = StateDB(tmp_path / "state.db")
+    await state.init()
+    now = datetime.now(UTC)
+    completed = SourceItem(
+        item_id="hn:historical-complete",
+        item_type="hn_story",
+        source="hackernews",
+        surface="new",
+        handoff_at=now,
+        first_observed_at=now,
+    )
+    still_sealed = completed.model_copy(update={"item_id": "hn:still-sealed"})
+    await state.put_items([completed, still_sealed])
+    await state.record_run("run-historical", "2026-08-30", 1, "success", tmp_path / "one")
+    await state.seal_run("run-historical", "success", [completed.item_id])
+    await state.record_run("run-waiting", "2026-08-31", 1, "success", tmp_path / "two")
+    await state.seal_run("run-waiting", "success", [still_sealed.item_id])
+    async with aiosqlite.connect(state.path) as db:
+        await db.execute(
+            "UPDATE runs SET handoff_state = 'published' WHERE run_id = 'run-historical'"
+        )
+        await db.commit()
+
+    assert await state.repair_completed_handoff_ledger() == 1
+    assert await state.repair_completed_handoff_ledger() == 0
+    async with aiosqlite.connect(state.path) as db:
+        cursor = await db.execute(
+            "SELECT item_id, delivered_run_id FROM source_items ORDER BY item_id"
+        )
+        assert await cursor.fetchall() == [
+            ("hn:historical-complete", "run-historical"),
+            ("hn:still-sealed", None),
+        ]
+
+
+@pytest.mark.asyncio
 async def test_daily_run_gate_allows_failed_and_skipped_retries(tmp_path):
     state = StateDB(tmp_path / "state.db")
     await state.init()

@@ -187,6 +187,41 @@ def test_research_manifest_records_missing_without_triggering_repair(tmp_path):
     assert manifest.missing_unit_ids == ["u_b"]
 
 
+def test_research_manifest_allows_attached_supporting_evidence(tmp_path):
+    package = ResearchPackage(
+        package_id="package",
+        label="Package",
+        investigate_unit_ids=["u_primary"],
+        supporting_unit_ids=["u_support"],
+    )
+    (tmp_path / "subreports").mkdir()
+    (tmp_path / "dossier.md").write_text("# Dossier\n", encoding="utf-8")
+    (tmp_path / "subreports" / "detail.md").write_text("# Detail\n", encoding="utf-8")
+    (tmp_path / "research_manifest.json").write_text(
+        json.dumps(
+            {
+                "package_id": "package",
+                "dossier": "dossier.md",
+                "subreports": [
+                    {
+                        "slug": "detail",
+                        "path": "subreports/detail.md",
+                        "unit_ids": ["u_primary", "u_support"],
+                    }
+                ],
+                "primary_unit_ids": ["u_primary"],
+                "unresolved_unit_ids": [],
+                "missing_unit_ids": [],
+                "status": "success",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = validate_research_manifest(tmp_path, package)
+    assert manifest.missing_unit_ids == []
+
+
 @pytest.mark.asyncio
 async def test_phase2_uses_one_resumed_thread_and_writes_v3_artifacts(tmp_path):
     run = tmp_path / "runs" / "2026-08-31" / "attempt-0001"

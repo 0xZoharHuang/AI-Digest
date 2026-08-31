@@ -36,9 +36,11 @@ Using user identity once:
 4. Verify user and bot auth with `lark-cli auth status --verify`.
 
 The checked-in default uses user identity for the private personal Wiki and bot identity for the
-direct-message reminder. Publication creates year, month, day and report child nodes, reads its
-local manifest before every write, and marks the reminder sent only after Lark returns a real
-`message_id` and `chat_id`.
+direct-message reminder. Publication creates year, month, day, dossier and subreport nodes. Year
+and month nodes are written as navigation indexes; day, dossier and subreport pages receive
+deterministic breadcrumbs. The publisher validates the complete local tree before its first Lark
+write, removes only stale report/subreport nodes recorded in that run's own manifest, and marks the
+reminder sent only after Lark returns a real `message_id` and `chat_id`.
 
 ## 3. Install the main-user runner
 
@@ -92,14 +94,20 @@ no-op, while a `running` record older than 18 minutes may be retried before the 
 
 ```bash
 uv run ai-digest doctor
-AI_DIGEST_RUNTIME_ROOT=/tmp/ai-digest-smoke uv run ai-digest collect --source arxiv --source huggingface
-AI_DIGEST_RUNTIME_ROOT=/tmp/ai-digest-smoke uv run ai-digest phase1
-uv run ai-digest pipeline                 # no publish
-uv run ai-digest publish /path/to/test-run
+uv run ai-digest automation-smoke
 ```
 
-Before cutover, verify all three List surfaces, a non-empty For You pass, every non-X adapter, one
-complete Chinese annotate/package/research/Brief run, Wiki readback and a bot DM with a real message
-ID. Run a 24-hour shadow pilot and review source receipts, partial failures, disposition distribution,
-package count,
-Codex usage, provider credit usage and Lark status before switching from V1.
+The automation smoke reads seven representative observations from the production ledger but writes
+only to a new isolated owner runtime and queue. It runs the real Phase 1 seal, Codex worker,
+completed-job import, reconcile, publish preflight and an in-memory Wiki tree/DM transport. It
+requires at least one research package and verifies exact coverage, `DONE=complete`, zero Phase 3
+missing units, `jobs -> completed -> archived`, navigable non-empty Wiki pages and zero live Lark
+calls. Separate generated owner and worker TOML files prevent either process from falling through to
+the production queue. The fixture deliberately carries literal U+2028/U+2029 characters across the
+JSONL handoff.
+
+The smoke validates orchestration, not live collector coverage. Before cutover, separately verify all
+three List surfaces, a non-empty For You pass, every non-X adapter, and the exact LaunchAgent
+`QueueDirectories` triggers. For a deliberate live publication acceptance, also verify Wiki readback
+and a bot DM with a real message ID. Review source receipts, partial failures, disposition
+distribution, package count, Codex usage, provider credit usage and Lark status before switching.

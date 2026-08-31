@@ -890,6 +890,7 @@ def validate_research_manifest(
     if manifest.package_id != package.package_id or manifest.dossier != "dossier.md":
         raise RuntimeError("research manifest package/dossier mismatch")
     expected = set(package.investigate_unit_ids)
+    allowed_evidence = expected | set(package.supporting_unit_ids)
     assigned = set(manifest.primary_unit_ids)
     manifest.missing_unit_ids = sorted(expected - assigned)
     if not assigned <= expected or not set(manifest.unresolved_unit_ids) <= expected:
@@ -908,7 +909,7 @@ def validate_research_manifest(
             r"[a-z0-9][a-z0-9_-]{0,79}", slug
         ):
             raise RuntimeError(f"unsafe subreport path: {relative_path}")
-        if not set(unit_ids) <= expected:
+        if not set(unit_ids) <= allowed_evidence:
             raise RuntimeError(f"subreport {slug} contains unknown unit ids")
         source = workspace / relative_path
         if source.is_symlink() or not source.is_file() or not source.read_text(encoding="utf-8").strip():

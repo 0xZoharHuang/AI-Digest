@@ -27,6 +27,11 @@ from .pipeline import (
     run_local_pipeline,
     should_skip_late,
 )
+from .smoke import (
+    prepare_automation_smoke,
+    run_automation_smoke,
+    verify_automation_smoke,
+)
 from .x_provider import TwitterApiIOKeyStore
 
 console = Console()
@@ -41,6 +46,7 @@ _KEEP_AWAKE_COMMANDS = {
     "pipeline",
     "tick",
     "agent-worker",
+    "automation-smoke",
     "x-login",
 }
 
@@ -100,13 +106,23 @@ def parser() -> argparse.ArgumentParser:
         ],
         default="daily",
     )
+    tick.add_argument(
+        "--publish-mode",
+        choices=["live", "preflight"],
+        default="live",
+        help="Use preflight only for an isolated automation smoke runtime.",
+    )
     commands.add_parser("agent-worker")
+    smoke = commands.add_parser("automation-smoke")
+    smoke.add_argument("--stage", choices=["full", "prepare", "verify"], default="full")
+    smoke.add_argument("--smoke-root", type=Path)
     commands.add_parser("x-login")
     commands.add_parser("x-provider-set-key")
     maintenance = commands.add_parser("maintenance")
     maintenance.add_argument("--prune-x", action="store_true")
     maintenance.add_argument("--delete-x-post", action="append")
     maintenance.add_argument("--classify-existing-article-bootstrap", action="store_true")
+    maintenance.add_argument("--repair-completed-handoff-ledger", action="store_true")
     return root
 
 
@@ -153,7 +169,7 @@ async def async_main(args: argparse.Namespace) -> int:
         console.print(f"{manifest.status.value}: {run_dir}")
         return 0 if manifest.status.value != "failed" else 1
     if args.command == "tick":
-        recovered = recover_and_publish(runtime)
+        recovered = recover_and_publish(runtime, publish_mode=args.publish_mode)
         if recovered:
             console.print(f"Recovered/published {len(recovered)} run(s)")
         replayed = await enqueue_pending_agent_jobs(runtime)
@@ -209,6 +225,23 @@ async def async_main(args: argparse.Namespace) -> int:
         completed = await run_agent_worker(runtime)
         console.print(f"completed {len(completed)} job(s)")
         return 0
+    if args.command == "automation-smoke":
+        if args.stage == "prepare":
+            receipt = await prepare_automation_smoke(
+                runtime,
+                smoke_root=args.smoke_root,
+            )
+        elif args.stage == "verify":
+            if args.smoke_root is None:
+                raise ValueError("automation-smoke --stage verify requires --smoke-root")
+            receipt = verify_automation_smoke(runtime, args.smoke_root)
+        else:
+            receipt = await run_automation_smoke(
+                runtime,
+                smoke_root=args.smoke_root,
+            )
+        console.print_json(data=receipt)
+        return 0
     if args.command == "x-login":
         collector = next(row for row in phase1.collectors() if row.source == "x_for_you")
         await collector.interactive_login()
@@ -221,6 +254,11 @@ async def async_main(args: argparse.Namespace) -> int:
     if args.command == "maintenance":
         count = 0
         actions: list[str] = []
+        if args.repair_completed_handoff_ledger:
+            await phase1.initialize()
+            repaired = await phase1.state.repair_completed_handoff_ledger()
+            count += repaired
+            actions.append(f"repaired {repaired} completed handoff observation(s)")
         if args.classify_existing_article_bootstrap:
             await phase1.initialize()
             classified = await phase1.state.classify_pending_article_bootstrap(datetime.now(UTC))

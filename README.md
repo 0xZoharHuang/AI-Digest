@@ -72,6 +72,7 @@ uv run ai-digest tick --event incremental
 uv run ai-digest tick --event papers
 uv run ai-digest tick --event recover
 uv run ai-digest agent-worker
+uv run ai-digest automation-smoke     # isolated queue + real Codex + publish preflight
 ```
 
 `phase1` writes `PHASE1_COMPLETE` only after all enabled collectors reach `success`, `partial`, or
@@ -87,6 +88,10 @@ uv run pytest --cov=ai_digest
 
 The core state and Phase 1 modules are coverage-gated at 85%. Live adapters have fixture tests and
 must additionally pass `doctor` and a no-publish smoke run before launchd is installed.
+
+`automation-smoke` uses a separate owner runtime and queue, exercises the sealed handoff,
+real Codex worker, import/reconcile and publish preflight, and never calls Lark. Its fixture includes
+literal U+2028/U+2029 separators to guard the JSONL queue boundary that failed on 2026-08-31.
 
 ## Security
 

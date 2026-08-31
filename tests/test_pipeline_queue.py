@@ -136,8 +136,8 @@ async def test_v3_import_preserves_dossier_and_nested_subreport(tmp_path):
         "entity_key": "item:a",
         "item_ids": ["a"],
         "sources": ["x_list"],
-        "summary": "A",
-        "projection": {},
+        "summary": "A\u2028B\u2029C",
+        "projection": {"text": "A\u2028B\u2029C"},
     }
     annotation = {
         "unit_id": "u_a",
@@ -154,8 +154,10 @@ async def test_v3_import_preserves_dossier_and_nested_subreport(tmp_path):
         "investigate_unit_ids": ["u_a"],
         "supporting_unit_ids": [],
     }
-    (routing / "units.jsonl").write_text(json.dumps(unit) + "\n")
-    (routing / "annotations.jsonl").write_text(json.dumps(annotation) + "\n")
+    (routing / "units.jsonl").write_text(json.dumps(unit, ensure_ascii=False) + "\n")
+    (routing / "annotations.jsonl").write_text(
+        json.dumps(annotation, ensure_ascii=False) + "\n"
+    )
     (routing / "packages.json").write_text(json.dumps([package]))
     (routing / "PHASE2_COMPLETE").write_text("complete\n")
     (research / "package" / "dossier.md").write_text("# Dossier\n")
@@ -188,6 +190,7 @@ async def test_v3_import_preserves_dossier_and_nested_subreport(tmp_path):
     assert import_agent_job(runtime, job) == run_dir
     assert (run_dir / "03_research/package/dossier.md").exists()
     assert (run_dir / "03_research/package/subreports/detail.md").exists()
+    assert "\u2028" in (run_dir / "02_routing/units.jsonl").read_text()
 
 
 @pytest.mark.asyncio
@@ -215,6 +218,20 @@ async def test_recovery_quarantines_bad_job_and_publishes_next(tmp_path, monkeyp
     assert published == [bad_run, valid_run]
     assert (runtime.shared_runtime_root / "archived" / valid_id).exists()
     assert any(path.name.startswith(bad_id) for path in (runtime.shared_runtime_root / "failed").iterdir())
+
+
+@pytest.mark.asyncio
+async def test_recovery_preflight_archives_without_calling_lark(tmp_path, monkeypatch):
+    runtime, _state, run_dir, run_id = await _sealed_run(tmp_path, "preflight")
+    job = runtime.shared_runtime_root / "completed" / run_id
+    _write_job_outputs(job)
+
+    def forbidden_publish(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("preflight must not call Lark")
+
+    monkeypatch.setattr("ai_digest.pipeline.LarkPublisher.publish", forbidden_publish)
+    assert recover_and_publish(runtime, publish_mode="preflight") == [run_dir]
+    assert (runtime.shared_runtime_root / "archived" / run_id).is_dir()
 
 
 async def _sealed_run(tmp_path, suffix: str, attempt: int = 1):  # type: ignore[no-untyped-def]

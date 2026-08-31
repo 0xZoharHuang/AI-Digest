@@ -60,6 +60,7 @@ omit = [
     "*/doctor.py",
     "*/pipeline.py",
     "*/publisher.py",
+    "*/smoke.py",
     "*/x_provider.py",
 ]
 

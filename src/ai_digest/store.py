@@ -539,6 +539,46 @@ class StateDB:
             await db.commit()
         return True
 
+    async def repair_completed_handoff_ledger(self) -> int:
+        """Backfill delivered ids for runs that already crossed the queue boundary.
+
+        Older releases could advance a run to a terminal handoff state without updating
+        every reserved source item. Those rows are neither pending nor truthfully marked
+        delivered. The repair is intentionally narrow and idempotent: only items still
+        reserved by a run whose durable handoff state proves delivery are updated.
+        """
+
+        delivered_states = (
+            "queued",
+            "agent_complete",
+            "publish_pending",
+            "local_complete",
+            "published",
+        )
+        placeholders = ",".join("?" for _ in delivered_states)
+        async with aiosqlite.connect(self.path, timeout=30) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute(
+                f"""
+                UPDATE source_items
+                SET delivered_run_id = sealed_run_id
+                WHERE delivered_run_id IS NULL
+                  AND sealed_run_id IS NOT NULL
+                  AND EXISTS (
+                      SELECT 1
+                      FROM runs
+                      JOIN run_items
+                        ON run_items.run_id = runs.run_id
+                       AND run_items.item_id = source_items.item_id
+                      WHERE runs.run_id = source_items.sealed_run_id
+                        AND runs.handoff_state IN ({placeholders})
+                  )
+                """,
+                delivered_states,
+            )
+            await db.commit()
+            return int(cursor.rowcount)
+
     async def get_cursor(self, source: str) -> str | None:
         async with aiosqlite.connect(self.path, timeout=30) as db:
             cursor = await db.execute("SELECT value FROM cursors WHERE source = ?", (source,))
@@ -923,17 +963,19 @@ def source_group(item: SourceItem) -> str:
     return "articles"
 
 
-def load_jsonl(path: Path) -> list[dict[str, object]]:
-    if not path.exists():
-        return []
+def parse_jsonl_text(content: str) -> list[dict[str, object]]:
+    """Parse JSONL using only the format's literal LF record delimiter."""
+
     # JSON strings may legally contain U+2028/U+2029 when ensure_ascii=False. str.splitlines()
     # treats those code points as record separators and corrupts otherwise valid JSONL. JSONL
     # records are separated only by the literal LF byte written by atomic_write_jsonl().
-    return [
-        json.loads(line)
-        for line in path.read_text(encoding="utf-8").split("\n")
-        if line
-    ]
+    return [json.loads(line) for line in content.split("\n") if line]
+
+
+def load_jsonl(path: Path) -> list[dict[str, object]]:
+    if not path.exists():
+        return []
+    return parse_jsonl_text(path.read_text(encoding="utf-8"))
 
 
 def x_expiry(observed_at: datetime, retention_days: int) -> datetime:
