@@ -34,7 +34,7 @@ PHASE2_REPAIR_MAX_BYTES = 64 * 1024
 PACKAGE_MAX_COUNT = 15
 CATALOG_SHARD_MAX_UNITS = 160
 CATALOG_SHARD_MAX_BYTES = 256 * 1024
-PHASE2_PROMPT_VERSION = "2026-09-01.1"
+PHASE2_PROMPT_VERSION = "2026-09-01.2"
 PHASE2_WORKING_MAP_MAX_BYTES = 64 * 1024
 
 def summary_schema(unit_ids: set[str]) -> dict[str, Any]:
@@ -734,19 +734,13 @@ def build_observation_units(items: dict[str, SourceItem]) -> list[ObservationUni
         rows = sorted(groups[key], key=lambda item: (item.ready_at, item.item_id))
         unit_id = "u_" + hashlib.sha256(key.encode()).hexdigest()[:20]
         projection_rows = [compact_item_projection(item) for item in rows]
-        title = next(
-            (
-                str(value)
-                for item in reversed(rows)
-                for value in (
-                    item.payload.get("title"),
-                    item.payload.get("text"),
-                    item.payload.get("description"),
-                )
-                if value
-            ),
-            key,
-        )
+        candidates = [
+            value
+            for item in rows
+            for value in observation_summary_candidates(item)
+            if value.strip()
+        ]
+        title = max(candidates, key=lambda value: (len(value), value)) if candidates else key
         occurred = [item.occurred_at for item in rows if item.occurred_at is not None]
         units.append(
             ObservationUnit(
@@ -775,6 +769,28 @@ def observation_entity_key(item: SourceItem) -> str:
     if item.source == "hackernews":
         return f"hackernews:{payload.get('story_id')}"
     return item.entity_key or f"item:{item.item_id}"
+
+
+def observation_summary_candidates(item: SourceItem) -> list[str]:
+    payload = item.payload
+    values = [
+        str(value)
+        for value in (
+            payload.get("title"),
+            payload.get("text"),
+            payload.get("description"),
+            payload.get("quoted_text"),
+        )
+        if value
+    ]
+    references = payload.get("references")
+    if isinstance(references, list):
+        values.extend(
+            str(reference["text"])
+            for reference in references
+            if isinstance(reference, dict) and reference.get("text")
+        )
+    return values
 
 
 def compact_item_projection(item: SourceItem) -> dict[str, Any]:
@@ -1557,6 +1573,9 @@ def phase2_agents_md() -> str:
 - 不输出重要性、investigate/supporting/discard、研究问题或宏观趋势。
 - 每条摘要使用准确简体中文，说明材料实际表达了什么，不评价它是否值得研究；同时赋予一个
   动态 group_id。语义相近材料复用已有 group_id，确有新类别时再创建。
+- 一个 unit 可能包含同一 conversation 的多条 observation、回复、引用和 reference。摘要必须综合
+  其中全部可用文本，说明主要主张、事件或分歧；只要任一 observation/reference 有实质正文，就不得
+  把 unit 概括成“仅链接”“仅帖子 ID”或类似空壳描述。
 - interests.md 只帮助理解读者，绝不能决定某条是否输出或怎样评价它。无关、闲聊、市场、语境很短或
   其他领域材料也必须逐条摘要，并按照它实际谈论的对象、领域或事件自然分组。不能因为材料偏离兴趣、
   看似低信号或上下文较少，就把不同主题放进 outside/other/low-signal 一类总桶；是否值得研究或发布
@@ -1584,7 +1603,9 @@ def phase2_finalize_prompt() -> str:
 读取 summaries.jsonl、working_map.md 和 interests.md，把出现过的全部 group_ids 合并为 1–15 个
 动态 packages。每个 group_id 必须且只能出现一次；不要重新逐条筛 unit，不得删除、降级或复制
 任何 group，也不得提出研究问题或判断重要性。标签和 scope 只解释为什么这些 group 适合交给
-同一个 Phase 3 Lead。返回 packages.schema.json 要求的 JSON。"""
+同一个 Phase 3 Lead。不要因为多个 group 都偏离读者兴趣、内容较短或想少建 package，就合并本来
+边界明显不同的领域；在不超过 15 个的前提下，语义一致性和 Lead 的认知负载优先于 package 数更少。
+返回 packages.schema.json 要求的 JSON。"""
 
 
 def phase3_agents_md() -> str:

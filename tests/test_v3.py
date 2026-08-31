@@ -25,6 +25,7 @@ from ai_digest.v3 import (
     materialize_research_packages,
     package_schema,
     phase2_agents_md,
+    phase2_finalize_prompt,
     phase3_agents_md,
     phase4_agents_md,
     read_summary_output,
@@ -105,6 +106,29 @@ def test_observation_units_mechanically_merge_cross_source_entities():
         ("arxiv", "huggingface"),
         ("x_for_you", "x_list"),
     }
+
+
+def test_observation_unit_summary_surfaces_reference_text_over_link_only():
+    now = datetime(2026, 8, 31, tzinfo=UTC)
+    item = SourceItem(
+        item_id="x_list:1",
+        item_type="x_post",
+        source="x_list",
+        surface="public_lists",
+        ready_at=now,
+        payload={
+            "post_id": "1",
+            "text": "https://t.co/example",
+            "references": [
+                {
+                    "type": "quoted",
+                    "text": "Agent 生成的代码进入系统后，团队失去了所有权与意图模型。",
+                }
+            ],
+        },
+    )
+    unit = build_observation_units({item.item_id: item})[0]
+    assert unit.summary.startswith("Agent 生成的代码进入系统后")
 
 
 def test_unit_batches_are_bounded_without_loss():
@@ -618,6 +642,9 @@ def test_reader_prompts_preserve_scan_then_drill_down_semantics():
     assert "low_signal_misc" not in phase2_agents_md()
     assert "不得为凑齐行数" in phase2_agents_md()
     assert "可供文件 checkpoint 独立恢复的完整地图" in phase2_agents_md()
+    assert "全部可用文本" in phase2_agents_md()
+    assert "仅链接”" in phase2_agents_md()
+    assert "认知负载优先于 package 数更少" in phase2_finalize_prompt()
     assert "多个彼此独立的事件" in phase3_agents_md()
     assert "subreport 仍不设最低数量" in phase3_agents_md()
     assert "不可能预先熟悉每个细分领域" in phase3_agents_md()
