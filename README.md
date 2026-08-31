@@ -1,183 +1,264 @@
-# AI Daily Digest
+# AI Intelligence Radar
 
-自动爬取 X (Twitter) 上的 AI 相关内容，用 Agent 进行深度研究，生成结构化报告同步到 Notion。
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-3776AB.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![macOS](https://img.shields.io/badge/production-macOS-000000.svg)](docs/setup.md)
 
-## 核心流程
+A local-first daily research pipeline for frontier AI, agents, robotics, and Physical AI.
 
+AI Intelligence Radar watches independent source surfaces, preserves replayable observations, asks
+Codex agents to investigate the day's concrete changes, and publishes a private, navigable Lark
+Wiki. It is designed for people who want to stay sensitive to a field without manually checking six
+different feeds every day.
+
+```text
+X / GitHub / papers / media / HN
+                │
+                ▼
+       durable observations
+                │
+                ▼
+ one serial annotation + packaging thread
+                │
+                ▼
+       parallel research leads
+                │
+                ▼
+ Chinese dossiers + subreports + daily Brief
+                │
+                ▼
+      private Lark Wiki + self-DM
 ```
-Playwright爬取 → LLM筛选(Haiku) → Agent研究(Sonnet) → Notion/Markdown输出
+
+> **Project status:** v0.3 is production-used on macOS under one local user account. The data model,
+> queue recovery, no-publish E2E smoke, and Lark publisher are tested. Source coverage remains
+> platform-specific: “complete increment”, “bounded discovery”, and “sampled surface” are not treated
+> as interchangeable promises.
+
+## Why this project exists
+
+Most digests optimize for summarization. This project optimizes for **durable observation and
+traceable research**:
+
+- A source adapter records what the platform actually exposed, not what an editorial layer guessed
+  was important.
+- A daily run drains every ready, undelivered observation; late arrivals survive outages.
+- Phase 2 annotates every observation unit exactly once before it creates research packages.
+- Phase 3 checks the concrete change, primary evidence, conflicts, and unknowns.
+- Phase 4 is a reading map. It does not compress the day into a forced grand narrative.
+- Phase 5 is deterministic code: validate files, update the Wiki tree, then send one idempotent DM.
+
+## What gets published
+
+```text
+AI Intelligence Radar
+└── 2026                         # navigable year index
+    └── 2026-08                  # navigable month index
+        └── 2026-08-31 · Brief   # daily reading entry point
+            ├── Research dossier A
+            │   ├── Subreport A1
+            │   └── Subreport A2
+            └── Research dossier B
 ```
 
-## 功能特性
+Year and month nodes are real index pages, not empty containers. The publisher adds deterministic
+breadcrumbs, verifies every dossier/subreport link before the first external write, and only removes
+stale content nodes that are recorded in the same run's publish manifest.
 
-- **数据采集**: Playwright 爬取 For You + Following Feed（Cookie 登录态）
-- **智能筛选**: Claude Haiku 判断内容是否与 AI/ML 相关（~$0.04/批次）
-- **深度研究**: Claude Sonnet Agent 抓取链接、联网搜索、生成深度分析（~$0.48/条）
-- **完整汇总**: 深度研究报告 + 相关但未深研内容列表 + 统计概览
-- **报告输出**: 按主题聚类，同步到 Notion + 本地 Markdown
-- **断点续传**: 支持从中断处恢复
+## Pipeline
 
-## 快速开始
+| Phase | First-principles job | Main artifacts |
+|---|---|---|
+| 1 — Observe | Save platform-native increments, revisions, receipts, and health without editorial ranking | source JSONL, raw blobs, fetch manifests, `index.json` |
+| 2 — Route | Mechanically form exact units; one serial Codex thread annotates all units and creates 0–15 dynamic packages | `units.jsonl`, `annotations.jsonl`, `working_map.md`, `packages.json` |
+| 3 — Research | One lead per package verifies what changed and writes natural Simplified-Chinese research | `dossier.md`, `subreports/*.md`, `research_manifest.json` |
+| 4 — Navigate | Build a reader-facing Brief that links to research and exposes failures/unknowns | `daily_brief.md`, quality and source-health files |
+| 5 — Publish | Validate the tree, update Lark idempotently, and send one self-DM | `publish_manifest.json` |
+
+The detailed contracts are in [Architecture and data contracts](docs/architecture.md).
+
+## Sources and coverage semantics
+
+| Source | Access path | Coverage mode | Offline recovery |
+|---|---|---|---|
+| Public X Lists | TwitterAPI.io List timeline | complete configured-list increment | `sinceTime` cursor + overlap |
+| X For You | opted-in Playwright session | sampled surface | cannot reconstruct missed recommendations |
+| GitHub | Trending + bounded Search + tracked repos | bounded discovery | multi-day queries + immutable snapshots |
+| arXiv | official multi-category RSS | complete current announcement feed while online | submitted-date API is a bounded supplement, not announcement replay |
+| Hugging Face Papers | official dated API | bounded attention surface | dated page backlog |
+| Hacker News | official Firebase IDs | complete incremental ID scan | bounded `maxitem` chunks |
+| Media | RSS/Atom, sitemap, then index adapters | bounded publisher surface | conditional requests + retained feed/index history |
+
+Configured media include OpenAI, NVIDIA, Hugging Face, Physical Intelligence, Anthropic, DeepMind,
+Figure, 1X, Skild, a16z, IEEE Spectrum Robotics, and The Robot Report. See
+[Source contracts](docs/sources.md) for exact cursor, revision, and limitation semantics.
+
+## Requirements
+
+- macOS for the production LaunchAgent and Keychain path
+- Python 3.12+
+- [`uv`](https://docs.astral.sh/uv/)
+- Node.js 20+ and npm
+- GitHub CLI (`gh`) for authenticated GitHub collection
+- a current ChatGPT/Codex CLI login
+- a Lark Wiki plus user/bot authorization for publishing
+- optional: TwitterAPI.io credits and an explicitly opted-in personal X browser session
+
+Linux can run much of the library and test suite, but the production scheduler, Keychain storage,
+Playwright login handoff, and acceptance evidence are currently macOS-first. Windows support is not
+part of v0.3.
+
+## Quick start
 
 ```bash
-# 1. 克隆并安装
 git clone https://github.com/0xZoharHuang/AI-Digest.git
 cd AI-Digest
-pip install -e .
-playwright install chromium
 
-# 2. 登录 Twitter（首次需要手动登录保存 Cookie）
-python scripts/setup_twitter_login.py
+uv sync --extra dev
+npm ci --ignore-scripts
+uv run playwright install chromium
 
-# 3. 测试运行（限制 3 条，跳过 Notion）
-python scripts/run_daily.py --limit 3 --skip-notion
+cp config/runtime.example.toml config/runtime.toml
+cp config/sources.example.toml config/sources.toml
+cp config/interests.example.md config/interests.md
+
+uv run ai-digest doctor
 ```
 
-## 安装
+Configure only the sources you intend to use. Local configuration, browser cookies, runtime data,
+logs, and credentials are ignored by Git.
+
+Useful first runs:
 
 ```bash
-# 克隆项目
-git clone https://github.com/0xZoharHuang/AI-Digest.git
-cd AI-Digest
+# Read-only source checks
+uv run ai-digest collect --source arxiv --source huggingface
 
-# 安装依赖
-pip install -e .
+# Local pipeline; does not publish
+uv run ai-digest pipeline
 
-# 或使用 uv（推荐）
-uv pip install -e .
+# Isolated owner runtime + real Codex worker + publish preflight; never calls Lark
+uv run ai-digest automation-smoke
 ```
 
-## 配置
+For X List and browser setup, Lark authorization, and current-user installation, follow
+[Setup and rollout](docs/setup.md).
 
-### 1. Twitter 登录（Playwright Cookie）
+## Production on macOS
 
-系统使用 Playwright 浏览器自动化，需要先手动登录一次保存 Cookie：
+The installer is intentionally two-step:
 
 ```bash
-python scripts/setup_twitter_login.py
+./scripts/install_macos.sh          # dry-run only
+./scripts/install_macos.sh --apply  # immutable install; schedules still disabled
+
+uv run ai-digest doctor
+uv run ai-digest automation-smoke
+
+./scripts/install_macos.sh --cutover
 ```
 
-这会打开浏览器让你登录 Twitter，登录成功后 Cookie 保存在 `config/twitter_cookies.json`（已加入 .gitignore）。
+Cutover loads three current-user LaunchAgents:
 
-**爬取配置** 在 `config/twitter_accounts.json`：
+- `com.ai-digest.tick`: calendar collection plus login/wake catch-up;
+- `com.ai-digest.agent-runner`: watches `jobs/` and runs Phases 2–4;
+- `com.ai-digest.recover`: watches `completed/`, runs every 15 minutes, promotes due agent retries,
+  retries Lark publication, and starts a missing daily run after 07:00.
 
-```json
-{
-    "for_you_limit": 50,
-    "following_limit": 50,
-    "delay": {
-        "min_seconds": 1.0,
-        "max_seconds": 3.0
-    }
-}
+No second macOS account is required. The worker reuses the current user's file-backed Codex login
+without copying it into a job workspace.
+
+## Failure and recovery model
+
+```text
+sealed Phase 1
+    │
+    ▼
+jobs ── Codex transient failure ──► retry_wait ── due ──► jobs
+    │
+    └── success / terminal result ─► completed
+                                      │
+                                      ├── Lark failure ─► publish_pending
+                                      │                     │
+                                      │                     └── due retry
+                                      └── success ────────► archived
 ```
 
-**配置说明**：
-- `for_you_limit` / `following_limit`: 每个 Feed 爬取的推文数量
-- `delay`: 滚动间隔（秒）
+- Queue moves are atomic directory renames.
+- Source cursors advance only after their durable batch is committed.
+- Phase 2 batch and Phase 3 package checkpoints survive process interruption.
+- Codex non-zero exits receive bounded retry without classifying Agent prose.
+- Lark retries preserve the same artifact hash and DM idempotency key.
+- `tick`, worker, and recovery each use a non-blocking process lock.
+- `RunAtLoad` repairs missed laptop schedules after login/wake.
+- Immutable application snapshots retain the active build plus two rollback builds.
 
-**重要**: 建议使用专用小号，避免主力账号被封风险。
+The operational runbook is in [Operations and recovery](docs/operations.md).
 
-### 2. Notion 配置（可选）
+## Commands
 
 ```bash
-cp config/notion_config.example.json config/notion_config.json
+uv run ai-digest doctor
+uv run ai-digest collect [--source NAME] [--verbose]
+uv run ai-digest phase1
+uv run ai-digest route RUN_DIR
+uv run ai-digest research RUN_DIR
+uv run ai-digest brief RUN_DIR
+uv run ai-digest publish RUN_DIR
+uv run ai-digest pipeline [--publish]
+uv run ai-digest tick --event {daily,incremental,papers,x-list,x-for-you,github,recover}
+uv run ai-digest agent-worker
+uv run ai-digest automation-smoke [--stage full|prepare|verify]
+uv run ai-digest maintenance --prune-x
 ```
 
-编辑 `config/notion_config.json`：
+See [CLI and configuration](docs/configuration.md) for command behavior and configuration fields.
 
-```json
-{
-    "token": "your_notion_integration_token",
-    "database_id": "your_database_id"
-}
-```
+## Security and privacy
 
-获取 Notion token：https://www.notion.so/my-integrations
+- External posts, pages, repositories, and papers are untrusted evidence, never instructions.
+- Agent calls use explicit read-only/workspace-write permission profiles.
+- Codex home, SSH files, login Keychains, repository source, and unrelated user files are denied to
+  research workspaces.
+- TwitterAPI.io keys stay in Keychain; personal X cookies stay in an ignored file.
+- Arbitrary metadata fetches reject private, loopback, link-local, and cloud-metadata destinations.
+- Raw source text is local by default; publishing targets a private Wiki.
 
-### 3. Claude 认证
+Please read [SECURITY.md](SECURITY.md) before running personal browser collection or reporting a
+vulnerability.
 
-项目使用 Claude Agent SDK，支持两种认证方式：
-
-**方式 A: OAuth（推荐）**
-```bash
-# 首次运行会自动弹出浏览器登录
-python scripts/run_daily.py
-```
-
-**方式 B: API Key**
-```bash
-export ANTHROPIC_API_KEY="your_key"
-```
-
-## 使用
-
-### 基本使用
+## Verification
 
 ```bash
-# 完整运行
-python scripts/run_daily.py
-
-# 限制研究数量（测试用）
-python scripts/run_daily.py --limit 3
-
-# 跳过 Notion 同步
-python scripts/run_daily.py --skip-notion
-
-# 从断点恢复
-python scripts/run_daily.py --resume
+uv run ruff check src/ai_digest tests scripts
+uv run mypy src/ai_digest
+uv run pytest --cov=ai_digest
+npm ci --ignore-scripts --dry-run
 ```
 
-### 输出位置
+The coverage gate is 85% for the core state/Phase 1 modules. Live source checks, installed-snapshot
+doctor, a real no-publish automation smoke, and LaunchAgent queue traversal are separate evidence
+levels; a unit test alone is not production sign-off. See [Verification guide](docs/verification.md).
 
-- **Markdown**: `data/reports/YYYY-MM-DD.md`
-- **Notion**: 自动创建到配置的 Database
-- **历史记录**: `data/history.db` (SQLite)
+## Documentation
 
-## 成本估算
+- [Documentation index](docs/README.md)
+- [Architecture and data contracts](docs/architecture.md)
+- [Source contracts](docs/sources.md)
+- [CLI and configuration](docs/configuration.md)
+- [Setup and rollout](docs/setup.md)
+- [Operations and recovery](docs/operations.md)
+- [Verification guide](docs/verification.md)
+- [Wiki information architecture](docs/wiki.md)
+- [Security policy](SECURITY.md)
+- [Contributing](CONTRIBUTING.md)
+- [Changelog](CHANGELOG.md)
 
-| 阶段 | 模型 | 单价估算 |
-|------|------|---------|
-| 筛选 | Claude Haiku | ~$0.04/批次（15条） |
-| 研究 | Claude Sonnet | ~$0.48/条 |
+## Legacy implementation
 
-**示例**：爬取 400 条 → 筛选出 50 条有价值 → 深研 50 条
-- 筛选成本：~$0.12 (3 批次)
-- 研究成本：~$24 (50 条)
-- **总计**：~$25/天
-
-## 项目结构
-
-```
-ai-digest/
-├── src/
-│   ├── crawler/      # Twitter 数据采集 (Playwright)
-│   ├── filter/       # LLM 筛选 (Claude Haiku)
-│   ├── agent/        # 深度研究 (Claude Sonnet)
-│   ├── integrator/   # 报告聚合
-│   ├── output/       # Notion + Markdown 输出
-│   └── storage/      # SQLite 存储 + 进度追踪
-├── scripts/
-│   ├── run_daily.py          # 主运行脚本
-│   └── setup_twitter_login.py # Twitter 登录设置
-├── config/           # 配置文件
-└── data/             # 数据目录
-```
-
-## 技术栈
-
-- **爬虫**: Playwright（浏览器自动化）
-- **LLM**: Claude Agent SDK（Haiku 筛选 + Sonnet 研究）
-- **存储**: SQLite
-- **输出**: Notion API + Markdown
-
-## 注意事项
-
-1. **封号风险**: Playwright 模拟浏览器行为，有一定封号风险。建议使用专用小号。
-2. **成本控制**: 可通过 `--limit` 参数控制深度研究数量。
-3. **断点续传**: 每条研究完成后自动保存进度，中断后可用 `--resume` 恢复。
-4. **Cookie 过期**: 如果爬取失败，重新运行 `setup_twitter_login.py` 刷新 Cookie。
+The earlier Claude/Notion/OpenClaw implementation is preserved at the annotated Git tag
+`legacy-v1`. v0.3 does not keep both architectures alive in the same production tree.
 
 ## License
 
-MIT
+[MIT](LICENSE) © 2026 Zohar Huang.

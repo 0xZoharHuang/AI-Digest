@@ -1,61 +1,41 @@
-# Python
+# Python / build
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Virtual environments
 .venv/
-venv/
-ENV/
-env/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
-# IDE
+# Node runtimes pinned by package-lock.json
+node_modules/
+
+# Local configuration and credentials
+.env
+.env.local
+config/local.toml
+config/runtime.toml
+config/sources.toml
+config/interests.md
+config/*.json
+!config/*.example.json
+.mcp.json
+.claude/
+accounts.db
+
+# Runtime truth is local, never source controlled
+runtime/
+var/
+data/
+logs/
+
+# Editors / macOS
+.DS_Store
 .idea/
 .vscode/
 *.swp
 *.swo
-.DS_Store
-
-# Config (sensitive)
-config/twitter_accounts.json
-config/notion_config.json
-config/*.json
-!config/*.example.json
-
-# Data
-data/history.db
-data/temp/
-data/media/
-data/account_health.json
-logs/
-
-# twscrape database (contains credentials)
-accounts.db
-
-# Environment
-.env
-.env.local
-
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-data/reports/
-.mcp.json

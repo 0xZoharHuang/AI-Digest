@@ -1,0 +1,196 @@
+[x_list]
+enabled = false
+required = false
+provider = "twitterapi_io"
+url = "https://api.twitterapi.io/twitter/list/tweets"
+list_ids = ["1585430245762441216", "1353454915088052225", "226428000"]
+poll_hours = [1, 7, 13, 19]
+include_replies = true
+include_reposts = true
+initial_lookback_hours = 24
+cursor_overlap_seconds = 300
+max_pages_per_list = 500
+
+[x_for_you]
+enabled = false
+required = false
+personal_browser_risk_acknowledged = false
+cookie_file = "config/twitter_cookies.json"
+limit = 150
+scroll_rounds = 45
+refresh_rounds = 3
+consecutive_empty = 3
+delay_min_seconds = 2.0
+delay_max_seconds = 5.0
+max_consecutive_failures = 2
+cooldown_hours = 6
+hours = [7, 20]
+
+[github]
+enabled = true
+per_query = 100
+# GitHub Search permits 30 authenticated requests/minute. Keep two requests in reserve.
+search_request_budget = 28
+candidate_processing_limit = 1500
+created_within_days = 365
+recent_created_within_days = 45
+pushed_within_days = 45
+early_stars = "1..499"
+emerging_stars = "500..5000"
+crossing_stars = [500, 5000]
+growth_6h_min_stars = 25
+growth_24h_min_stars = 75
+growth_7d_min_stars = 250
+growth_event_cooldown_hours = 24
+# Recheck a bounded, least-recently-checked slice of prior early-lane repos via core API.
+early_watch_days = 365
+early_watch_rechecks_per_poll = 20
+queries = [
+  "topic:robotics",
+  "topic:robot-learning",
+  "topic:embodied-ai",
+  "\"vision language action\" in:name,description,readme",
+  "topic:humanoid-robotics",
+  "topic:world-model",
+  "topic:reinforcement-learning",
+  "topic:ai-agent",
+  "topic:agent-framework",
+  "topic:coding-agent",
+  "topic:computer-use",
+  "topic:mcp",
+  "topic:multi-agent"
+]
+
+[arxiv]
+enabled = true
+allow_empty = true
+categories = ["cs.RO", "cs.AI", "cs.LG", "cs.CV", "cs.CL", "stat.ML"]
+rss_url = "https://rss.arxiv.org/rss/{categories}"
+api_url = "https://export.arxiv.org/api/query"
+max_backfill_dates_per_poll = 3
+api_page_size = 500
+api_max_pages = 4
+
+[huggingface]
+enabled = true
+url = "https://huggingface.co/api/daily_papers"
+page_size = 100
+max_pages = 50
+max_backfill_dates_per_poll = 3
+limit = 100
+
+[hackernews]
+enabled = true
+max_incremental_ids = 20000
+item_concurrency = 20
+surfaces = ["new", "top", "show"]
+new_limit = 500
+top_limit = 500
+show_limit = 200
+
+[[articles]]
+id = "openai-news"
+role = "primary"
+kind = "rss"
+url = "https://openai.com/news/rss.xml"
+max_entries = 30
+allowed_domains = ["openai.com"]
+
+[[articles]]
+id = "nvidia-technical-blog"
+role = "primary"
+kind = "rss"
+url = "https://developer.nvidia.com/blog/feed/"
+max_entries = 30
+allowed_domains = ["developer.nvidia.com"]
+
+[[articles]]
+id = "huggingface-blog"
+role = "primary"
+kind = "rss"
+url = "https://huggingface.co/blog/feed.xml"
+max_entries = 30
+allowed_domains = ["huggingface.co"]
+
+[[articles]]
+id = "robot-report"
+role = "editorial"
+kind = "rss"
+url = "https://www.therobotreport.com/feed/"
+max_entries = 30
+allowed_domains = ["therobotreport.com", "www.therobotreport.com"]
+
+[[articles]]
+id = "ieee-spectrum-robotics"
+role = "editorial"
+kind = "rss"
+url = "https://spectrum.ieee.org/feeds/topic/robotics.rss"
+max_entries = 30
+allowed_domains = ["spectrum.ieee.org"]
+
+[[articles]]
+id = "physical-intelligence"
+role = "primary"
+kind = "sitemap"
+url = "https://www.pi.website/sitemap.xml"
+max_entries = 20
+path_contains = "/blog/"
+allowed_domains = [
+  "pi.website", "www.pi.website",
+  "physicalintelligence.company", "www.physicalintelligence.company"
+]
+
+[[articles]]
+id = "anthropic"
+role = "primary"
+kind = "sitemap"
+url = "https://www.anthropic.com/sitemap.xml"
+max_entries = 20
+path_contains = "/research/,/engineering/,/news/"
+allowed_domains = ["anthropic.com", "www.anthropic.com"]
+
+[[articles]]
+id = "google-deepmind"
+role = "primary"
+kind = "sitemap"
+url = "https://deepmind.google/sitemap.xml"
+max_entries = 20
+path_contains = "/discover/blog/,/research/"
+allowed_domains = ["deepmind.google"]
+
+[[articles]]
+id = "figure"
+role = "primary"
+kind = "index"
+url = "https://www.figure.ai/news"
+max_entries = 20
+path_contains = "/news/"
+allowed_domains = ["figure.ai", "www.figure.ai"]
+
+[[articles]]
+id = "1x"
+role = "primary"
+kind = "index"
+url = "https://www.1x.tech/discover"
+max_entries = 20
+path_contains = "/discover/"
+allowed_domains = ["1x.tech", "www.1x.tech"]
+
+[[articles]]
+id = "skild-ai"
+role = "primary"
+kind = "index"
+url = "https://www.skild.ai/blogs"
+max_entries = 20
+path_contains = "/blogs/"
+allowed_domains = ["skild.ai", "www.skild.ai"]
+
+[[articles]]
+id = "a16z"
+role = "editorial"
+kind = "index"
+url = "https://a16z.com/news-content/"
+max_entries = 50
+link_selector = "a[href][class*='--post-title-hover']"
+content_selector = ".js-article-content"
+allowed_domains = ["a16z.com", "www.a16z.com"]

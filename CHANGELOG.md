@@ -1,0 +1,36 @@
+# Changelog
+
+This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and uses semantic
+versioning for public releases.
+
+## [Unreleased]
+
+### Added
+
+- Open-source documentation index, operations/source/verification/Wiki guides, contribution policy,
+  issue templates, and CI configuration.
+
+## [0.3.0] — 2026-08-31
+
+### Added
+
+- Observation-led Phase 1 with ready-time delivery, revisions, fetch receipts, source health, and
+  platform-specific cursor semantics.
+- V3 serial annotation and dynamic research packaging.
+- Independent package research leads producing Simplified-Chinese dossiers and natural subreports.
+- Reader-navigation Brief and hierarchical private Lark Wiki with idempotent self-DM.
+- Isolated real-Codex automation smoke and in-memory Wiki publisher verification.
+- Current-user immutable macOS installation with tick, worker, and recovery LaunchAgents.
+- Wake/login catch-up, Codex retry queue, Lark publish backoff, process locks, and app-snapshot
+  retention.
+
+### Changed
+
+- Replaced the legacy Claude/Notion/OpenClaw production path; that implementation remains available at
+  tag `legacy-v1`.
+
+### Security
+
+- Added explicit Codex filesystem permission profiles and denied Codex home, SSH, login Keychains,
+  repository source, and unrelated user files from Agent workspaces.
+- Kept X List API keys in Keychain and personal X browser cookies in ignored local configuration.
