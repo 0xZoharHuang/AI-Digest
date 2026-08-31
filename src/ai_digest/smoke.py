@@ -158,10 +158,7 @@ async def run_automation_smoke(
         completed = await run_agent_worker(worker_runtime)
         if completed:
             break
-        requeued = requeue_due_agent_jobs(
-            worker_runtime,
-            datetime.now(UTC) + timedelta(days=366),
-        )
+        requeued = promote_smoke_agent_retries(worker_runtime)
         if not requeued:
             break
     receipt["worker_attempt_count"] = worker_attempt_count
@@ -172,6 +169,20 @@ async def run_automation_smoke(
     if recovered != [Path(str(receipt["run_dir"]))]:
         raise RuntimeError(f"recovery did not import the expected smoke job: {recovered}")
     return verify_automation_smoke(source_runtime, root)
+
+
+def promote_smoke_agent_retries(runtime: RuntimeConfig) -> list[Path]:
+    retry_root = runtime.shared_runtime_root / "retry_wait"
+    for job_dir in retry_root.iterdir() if retry_root.is_dir() else ():
+        metadata_path = job_dir / "worker_retry.json"
+        if job_dir.is_symlink() or not job_dir.is_dir() or not metadata_path.is_file():
+            continue
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if not isinstance(metadata, dict):
+            continue
+        metadata["next_retry_at"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+        atomic_write_json(metadata_path, metadata)
+    return requeue_due_agent_jobs(runtime)
 
 
 def verify_automation_smoke(source_runtime: RuntimeConfig, smoke_root: Path) -> dict[str, Any]:
