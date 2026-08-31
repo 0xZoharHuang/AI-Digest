@@ -34,7 +34,7 @@ PHASE2_REPAIR_MAX_BYTES = 64 * 1024
 PACKAGE_MAX_COUNT = 15
 CATALOG_SHARD_MAX_UNITS = 160
 CATALOG_SHARD_MAX_BYTES = 256 * 1024
-PHASE2_PROMPT_VERSION = "2026-08-31.4"
+PHASE2_PROMPT_VERSION = "2026-08-31.5"
 PHASE2_WORKING_MAP_MAX_BYTES = 64 * 1024
 
 SUMMARY_SCHEMA: dict[str, Any] = {
@@ -1544,9 +1544,10 @@ def phase2_agents_md() -> str:
 - 不输出重要性、investigate/supporting/discard、研究问题或宏观趋势。
 - 每条摘要使用准确简体中文，说明材料实际表达了什么，不评价它是否值得研究；同时赋予一个
   动态 group_id。语义相近材料复用已有 group_id，确有新类别时再创建。
-- interests.md 只帮助理解读者和命名分组，绝不能决定某条是否输出。无关、闲聊、市场、低信号或
-  其他领域材料也必须逐条摘要，可归入 outside_reader_scope、low_signal_misc 等自然 group；
-  是否值得发布完全由 Phase 3 决定。
+- interests.md 只帮助理解读者，绝不能决定某条是否输出或怎样评价它。无关、闲聊、市场、语境很短或
+  其他领域材料也必须逐条摘要，并按照它实际谈论的对象、领域或事件自然分组。不能因为材料偏离兴趣、
+  看似低信号或上下文较少，就把不同主题放进 outside/other/low-signal 一类总桶；是否值得研究或发布
+  完全由 Phase 3 决定。
 - working_map 是你跨批次维护的简短当天 group 地图；记录 group_id 的语义，可随新材料修正名称
   和边界，但不要抄录原文。
 - 最终分包覆盖全部 summaries，每个 unit 恰好属于一个 package，最多 15 个。

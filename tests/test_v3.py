@@ -23,6 +23,7 @@ from ai_digest.v3 import (
     adopt_thread_id,
     build_observation_units,
     materialize_research_packages,
+    phase2_agents_md,
     phase3_agents_md,
     phase4_agents_md,
     read_summary_output,
@@ -610,6 +611,9 @@ def test_phase2_thread_identity_must_not_change():
 
 
 def test_reader_prompts_preserve_scan_then_drill_down_semantics():
+    assert "不能因为材料偏离兴趣" in phase2_agents_md()
+    assert "outside_reader_scope" not in phase2_agents_md()
+    assert "low_signal_misc" not in phase2_agents_md()
     assert "多个彼此独立的事件" in phase3_agents_md()
     assert "subreport 仍不设最低数量" in phase3_agents_md()
     assert "不可能预先熟悉每个细分领域" in phase3_agents_md()
