@@ -66,6 +66,18 @@ class FakeLark:
         self.deleted.append(node.node_token)
 
 
+class FailOnceDMLark(FakeLark):
+    def __init__(self):
+        super().__init__()
+        self.dm_attempts = 0
+
+    def send_dm(self, markdown: str, idempotency_key: str) -> dict[str, str]:
+        self.dm_attempts += 1
+        if self.dm_attempts == 1:
+            raise LarkError("offline", retryable=True)
+        return super().send_dm(markdown, idempotency_key)
+
+
 def test_lark_publisher_builds_tree_rewrites_links_and_is_idempotent(tmp_path):
     run_dir = tmp_path / "runs" / "2026-08-30" / "attempt-0001"
     report = run_dir / "03_research" / "b1" / "report.md"
@@ -215,3 +227,34 @@ def test_publish_preflight_parses_unicode_jsonl_and_prevents_partial_writes(tmp_
     with pytest.raises(LarkError, match="missing report links"):
         publisher.publish(run_dir, "SUCCESS")
     assert fake.nodes == {}
+
+
+def test_dm_retry_does_not_rewrite_unchanged_wiki_pages(tmp_path):
+    run_dir = tmp_path / "runs" / "2026-08-31" / "attempt-0001"
+    report = run_dir / "03_research" / "b1" / "report.md"
+    report.parent.mkdir(parents=True)
+    (run_dir / "00_run_manifest.json").write_text(json.dumps({"run_id": "run-dm-retry"}))
+    report.write_text("# Report\n\nBody")
+    (run_dir / "03_research" / "successes.json").write_text(
+        json.dumps({"b1": "b1/report.md"})
+    )
+    (run_dir / "03_research" / "failures.json").write_text("[]")
+    health = run_dir / "01_phase1" / "source_health.json"
+    health.parent.mkdir(parents=True)
+    health.write_text("{}")
+    brief = run_dir / "04_brief" / "daily_brief.md"
+    brief.parent.mkdir(parents=True)
+    brief.write_text("# Brief\n\n[Report](report://b1)")
+    (run_dir / "04_brief" / "watch.jsonl").write_text("")
+
+    publisher = LarkPublisher(LarkConfig(space_id="space", receiver_open_id="user"))
+    fake = FailOnceDMLark()
+    publisher.cli = fake  # type: ignore[assignment]
+    with pytest.raises(LarkError, match="offline"):
+        publisher.publish(run_dir, "SUCCESS")
+    writes_after_failure = len(fake.writes)
+
+    result = publisher.publish(run_dir, "SUCCESS")
+    assert result.status == "success"
+    assert fake.dm_attempts == 2
+    assert len(fake.writes) == writes_after_failure

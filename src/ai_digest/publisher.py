@@ -267,12 +267,20 @@ class LarkPublisher:
         date = run_dir.parent.name
         year, month, _ = date.split("-")
         try:
-            year_node = self.cli.ensure_node(year)
+            year_node = _restore_node_state(
+                self.cli.ensure_node(year), manifest.nodes.get("year")
+            )
             manifest.nodes["year"] = year_node
-            month_node = self.cli.ensure_node(f"{year}-{month}", year_node.node_token)
+            month_node = _restore_node_state(
+                self.cli.ensure_node(f"{year}-{month}", year_node.node_token),
+                manifest.nodes.get("month"),
+            )
             manifest.nodes["month"] = month_node
-            day_node = self.cli.ensure_node(
-                f"{date} · AI Intelligence Brief", month_node.node_token
+            day_node = _restore_node_state(
+                self.cli.ensure_node(
+                    f"{date} · AI Intelligence Brief", month_node.node_token
+                ),
+                manifest.nodes.get("day"),
             )
             manifest.nodes["day"] = day_node
 
@@ -382,12 +390,13 @@ class LarkPublisher:
                 [(year, year_node.url), (f"{year}-{month}", month_node.url)]
             ) + brief
             brief_hash = hashlib.sha256(brief.encode()).hexdigest()
-            self.cli.write_markdown(
-                day_node,
-                brief,
-                publish_root,
-                required_substrings=[url for url in report_urls.values() if url],
-            )
+            if day_node.content_hash != brief_hash or day_node.status != "written":
+                self.cli.write_markdown(
+                    day_node,
+                    brief,
+                    publish_root,
+                    required_substrings=[url for url in report_urls.values() if url],
+                )
             day_node.content_hash = brief_hash
             day_node.status = "written"
             manifest.nodes["day"] = day_node
@@ -444,10 +453,14 @@ class LarkPublisher:
                 manifest.dm_chat_id = chat_id
             manifest.artifact_hash = artifact_hash
             manifest.navigation_version = self.NAVIGATION_VERSION
+            manifest.errors = []
             manifest.status = "success"
         except Exception as error:
             manifest.status = "failed"
-            manifest.errors.append(f"{type(error).__name__}: {error}")
+            message = f"{type(error).__name__}: {error}"
+            if not manifest.errors or manifest.errors[-1] != message:
+                manifest.errors.append(message)
+            manifest.errors = manifest.errors[-20:]
             atomic_write_json(manifest_path, manifest.model_dump(mode="json"))
             raise
         atomic_write_json(manifest_path, manifest.model_dump(mode="json"))
@@ -492,23 +505,26 @@ class LarkPublisher:
             "日报",
             day_children,
         )
-        self.cli.write_markdown(
-            year_node,
-            year_content,
-            publish_root,
-            required_substrings=[month_node.url] if month_node.url else [],
-        )
-        self.cli.write_markdown(
-            month_node,
-            month_content,
-            publish_root,
-            required_substrings=[day_node.url] if day_node.url else [],
-        )
         for node, content, key in (
             (year_node, year_content, "year"),
             (month_node, month_content, "month"),
         ):
-            node.content_hash = hashlib.sha256(content.encode()).hexdigest()
+            digest = hashlib.sha256(content.encode()).hexdigest()
+            if node.content_hash != digest or node.status != "written":
+                required = (
+                    [month_node.url]
+                    if key == "year" and month_node.url
+                    else [day_node.url]
+                    if key == "month" and day_node.url
+                    else []
+                )
+                self.cli.write_markdown(
+                    node,
+                    content,
+                    publish_root,
+                    required_substrings=required,
+                )
+            node.content_hash = digest
             node.status = "written"
             manifest.nodes[key] = node
 
@@ -643,6 +659,17 @@ def _assert_no_internal_links(content: str) -> None:
 def _page_breadcrumb(links: list[tuple[str, str | None]]) -> str:
     values = [f"[{label}]({url})" for label, url in links if url]
     return f"> 导航：{' / '.join(values)}\n\n" if values else ""
+
+
+def _restore_node_state(node: PublishNode, cached: PublishNode | None) -> PublishNode:
+    if (
+        cached is not None
+        and cached.node_token == node.node_token
+        and cached.obj_token == node.obj_token
+    ):
+        node.content_hash = cached.content_hash
+        node.status = cached.status
+    return node
 
 
 def _navigation_children(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import fcntl
 import json
 import os
 import re
@@ -8,12 +9,12 @@ import shutil
 import sqlite3
 import stat
 from contextlib import closing, suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
-from zoneinfo import ZoneInfo
 
 from .agent_phases import AgentPhases
+from .codex_runner import RetryableCodexError
 from .config import RuntimeConfig, SourcesConfig, load_interests
 from .models import (
     Assignment,
@@ -30,6 +31,19 @@ from .phase1 import Phase1Runner
 from .publisher import LarkPublisher, validate_publish_inputs
 from .store import FileStore, StateDB, load_jsonl, parse_jsonl_text
 from .utils import atomic_write_json, atomic_write_text
+
+AGENT_RETRY_DELAYS = (
+    timedelta(minutes=10),
+    timedelta(hours=1),
+    timedelta(hours=6),
+    timedelta(hours=24),
+)
+PUBLISH_RETRY_DELAYS = (
+    timedelta(minutes=5),
+    timedelta(minutes=30),
+    timedelta(hours=2),
+    timedelta(hours=6),
+)
 
 
 async def run_local_pipeline(
@@ -144,16 +158,34 @@ async def enqueue_pending_agent_jobs(runtime: RuntimeConfig) -> list[Path]:
 
 
 async def run_agent_worker(runtime: RuntimeConfig) -> list[Path]:
+    lock = _acquire_worker_lock(runtime.shared_runtime_root)
+    if lock is None:
+        return []
+    try:
+        return await _run_agent_worker_unlocked(runtime)
+    finally:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        os.close(lock)
+
+
+async def _run_agent_worker_unlocked(runtime: RuntimeConfig) -> list[Path]:
     queue = runtime.shared_runtime_root / "jobs"
     completed_root = runtime.shared_runtime_root / "completed"
     failed_root = runtime.shared_runtime_root / "failed"
+    retry_root = runtime.shared_runtime_root / "retry_wait"
     queue.mkdir(parents=True, exist_ok=True)
     completed_root.mkdir(parents=True, exist_ok=True)
     failed_root.mkdir(parents=True, exist_ok=True)
+    retry_root.mkdir(parents=True, exist_ok=True)
     completed = []
     phases = AgentPhases(runtime)
     for job_dir in sorted(queue.iterdir()):
         if job_dir.is_symlink() or not job_dir.is_dir() or not (job_dir / "READY").exists():
+            continue
+        if not (job_dir / "DONE").exists() and _finish_interrupted_retry_move(
+            job_dir,
+            retry_root,
+        ):
             continue
         if not (job_dir / "DONE").exists():
             active_phase = "phase2"
@@ -166,6 +198,13 @@ async def run_agent_worker(runtime: RuntimeConfig) -> list[Path]:
                 atomic_write_text(job_dir / "DONE", "complete\n")
             except Exception as error:
                 detail = f"{type(error).__name__}: {error}"
+                if isinstance(error, RetryableCodexError) and _defer_agent_job(
+                    job_dir,
+                    retry_root,
+                    active_phase,
+                    error,
+                ):
+                    continue
                 atomic_write_json(
                     job_dir / "worker_failure.json",
                     {"phase": active_phase, "error": detail},
@@ -188,6 +227,134 @@ async def run_agent_worker(runtime: RuntimeConfig) -> list[Path]:
         _fsync_directory(completed_root)
         completed.append(destination)
     return completed
+
+
+def _finish_interrupted_retry_move(job_dir: Path, retry_root: Path) -> bool:
+    metadata_path = job_dir / "worker_retry.json"
+    if not metadata_path.exists():
+        return False
+    try:
+        metadata = json.loads(_safe_read(job_dir, Path("worker_retry.json"), 100_000))
+        retry_at = datetime.fromisoformat(str(metadata["next_retry_at"])).astimezone(UTC)
+    except Exception:
+        return False
+    if retry_at <= datetime.now(UTC):
+        return False
+    destination = retry_root / job_dir.name
+    if destination.exists():
+        return False
+    source_root = job_dir.parent
+    job_dir.replace(destination)
+    _fsync_directory(retry_root)
+    _fsync_directory(source_root)
+    return True
+
+
+def _acquire_worker_lock(shared_root: Path) -> int | None:
+    shared_root.mkdir(parents=True, exist_ok=True)
+    return _acquire_process_lock(shared_root / "agent-worker.lock")
+
+
+def _acquire_process_lock(path: Path) -> int | None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(descriptor)
+        return None
+    return descriptor
+
+
+def requeue_due_agent_jobs(
+    runtime: RuntimeConfig,
+    now: datetime | None = None,
+) -> list[Path]:
+    """Move due transient agent failures back to the watched jobs directory."""
+
+    moment = (now or datetime.now(UTC)).astimezone(UTC)
+    retry_root = runtime.shared_runtime_root / "retry_wait"
+    jobs_root = runtime.shared_runtime_root / "jobs"
+    failed_root = runtime.shared_runtime_root / "failed"
+    for path in (retry_root, jobs_root, failed_root):
+        path.mkdir(parents=True, exist_ok=True)
+    requeued: list[Path] = []
+    for job_dir in sorted(retry_root.iterdir()):
+        if job_dir.is_symlink() or not job_dir.is_dir():
+            continue
+        try:
+            metadata = json.loads(_safe_read(job_dir, Path("worker_retry.json"), 100_000))
+            retry_at = datetime.fromisoformat(str(metadata["next_retry_at"])).astimezone(UTC)
+            if retry_at > moment:
+                continue
+            destination = jobs_root / job_dir.name
+            if destination.exists():
+                raise RuntimeError("a visible jobs entry already exists")
+            job_dir.replace(destination)
+            _fsync_directory(jobs_root)
+            _fsync_directory(retry_root)
+            requeued.append(destination)
+        except Exception as error:
+            with suppress(Exception):
+                atomic_write_json(
+                    job_dir / "retry_requeue_error.json",
+                    {"error": f"{type(error).__name__}: {error}"},
+                )
+            destination = _quarantine_destination(failed_root, job_dir.name, "retry")
+            job_dir.replace(destination)
+    return requeued
+
+
+def _defer_agent_job(
+    job_dir: Path,
+    retry_root: Path,
+    phase: str,
+    error: RetryableCodexError,
+) -> bool:
+    metadata_path = job_dir / "worker_retry.json"
+    metadata: dict[str, object] = {}
+    if metadata_path.exists():
+        try:
+            value = json.loads(_safe_read(job_dir, Path("worker_retry.json"), 100_000))
+            if isinstance(value, dict):
+                metadata = value
+        except Exception:
+            return False
+    attempt = _next_retry_attempt(metadata)
+    if attempt > len(AGENT_RETRY_DELAYS):
+        return False
+    now = datetime.now(UTC)
+    history_value = metadata.get("history")
+    history = list(history_value) if isinstance(history_value, list) else []
+    history.append(
+        {
+            "attempt": attempt,
+            "at": now.isoformat(),
+            "phase": phase,
+            "error_class": error.error_class,
+            "error": str(error)[-4000:],
+        }
+    )
+    atomic_write_json(
+        metadata_path,
+        {
+            "attempt": attempt,
+            "next_retry_at": (now + AGENT_RETRY_DELAYS[attempt - 1]).isoformat(),
+            "history": history[-20:],
+        },
+    )
+    try:
+        _make_group_writable(job_dir)
+    except Exception:
+        return False
+    destination = retry_root / job_dir.name
+    if destination.exists():
+        return False
+    source_root = job_dir.parent
+    job_dir.replace(destination)
+    _fsync_directory(retry_root)
+    _fsync_directory(source_root)
+    return True
 
 
 def import_agent_job(runtime: RuntimeConfig, job_dir: Path) -> Path:
@@ -345,7 +512,29 @@ def recover_and_publish(
     runtime: RuntimeConfig,
     *,
     publish_mode: Literal["live", "preflight"] = "live",
+    now: datetime | None = None,
 ) -> list[Path]:
+    lock = _acquire_process_lock(runtime.runtime_root / "recovery.lock")
+    if lock is None:
+        return []
+    try:
+        return _recover_and_publish_unlocked(
+            runtime,
+            publish_mode=publish_mode,
+            now=now,
+        )
+    finally:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        os.close(lock)
+
+
+def _recover_and_publish_unlocked(
+    runtime: RuntimeConfig,
+    *,
+    publish_mode: Literal["live", "preflight"],
+    now: datetime | None,
+) -> list[Path]:
+    moment = (now or datetime.now(UTC)).astimezone(UTC)
     published: list[Path] = []
     completed_root = runtime.shared_runtime_root / "completed"
     pending_root = runtime.shared_runtime_root / "publish_pending"
@@ -361,6 +550,8 @@ def recover_and_publish(
     ]
     for job_dir in jobs:
         if not (job_dir / "DONE").exists():
+            continue
+        if job_dir.parent == pending_root and not _publish_retry_due(job_dir, moment):
             continue
         try:
             run_dir = import_agent_job(runtime, job_dir)
@@ -401,6 +592,7 @@ def recover_and_publish(
                 destination = _quarantine_destination(archived_root, job_dir.name, "recovered")
             job_dir.replace(destination)
         except Exception as error:
+            _record_publish_retry(job_dir, error, moment)
             manifest.phases["phase5"] = RunStatus.FAILED
             manifest.errors.append(f"Phase 5: {type(error).__name__}: {error}")
             manifest.status = _overall_status(manifest)
@@ -415,6 +607,60 @@ def recover_and_publish(
                 job_dir.replace(destination)
             continue
     return published
+
+
+def _publish_retry_due(job_dir: Path, now: datetime) -> bool:
+    path = job_dir / "publish_retry.json"
+    if not path.exists():
+        return True
+    try:
+        value = json.loads(_safe_read(job_dir, Path("publish_retry.json"), 100_000))
+        retry_at = datetime.fromisoformat(str(value["next_retry_at"])).astimezone(UTC)
+    except Exception:
+        return True
+    return retry_at <= now
+
+
+def _next_retry_attempt(value: dict[str, object]) -> int:
+    try:
+        return max(0, int(str(value.get("attempt", 0)))) + 1
+    except ValueError:
+        return 1
+
+
+def _record_publish_retry(job_dir: Path, error: Exception, now: datetime) -> None:
+    path = job_dir / "publish_retry.json"
+    value: dict[str, object] = {}
+    if path.exists():
+        with suppress(Exception):
+            loaded = json.loads(_safe_read(job_dir, Path("publish_retry.json"), 100_000))
+            if isinstance(loaded, dict):
+                value = loaded
+    attempt = _next_retry_attempt(value)
+    retryable = bool(getattr(error, "retryable", False))
+    delay = (
+        PUBLISH_RETRY_DELAYS[min(attempt - 1, len(PUBLISH_RETRY_DELAYS) - 1)]
+        if retryable
+        else PUBLISH_RETRY_DELAYS[-1]
+    )
+    history_value = value.get("history")
+    history = list(history_value) if isinstance(history_value, list) else []
+    history.append(
+        {
+            "attempt": attempt,
+            "at": now.isoformat(),
+            "retryable": retryable,
+            "error": f"{type(error).__name__}: {error}"[-4000:],
+        }
+    )
+    atomic_write_json(
+        path,
+        {
+            "attempt": attempt,
+            "next_retry_at": (now + delay).isoformat(),
+            "history": history[-20:],
+        },
+    )
 
 
 def _make_group_writable(path: Path) -> None:
@@ -488,7 +734,14 @@ def _fsync_directory(path: Path) -> None:
 
 
 def _find_job(shared_root: Path, job_name: str) -> Path | None:
-    for name in ("jobs", "completed", "publish_pending", "archived", "failed"):
+    for name in (
+        "jobs",
+        "retry_wait",
+        "completed",
+        "publish_pending",
+        "archived",
+        "failed",
+    ):
         candidate = shared_root / name / job_name
         if candidate.exists():
             if candidate.is_symlink() or not candidate.is_dir():
@@ -916,13 +1169,6 @@ def _copy_bootstrap_index(runtime: RuntimeConfig, staging: Path) -> None:
         staging / "bootstrap_index.jsonl",
         "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows),
     )
-
-
-def should_skip_late(runtime: RuntimeConfig, now: datetime | None = None) -> bool:
-    local = (now or datetime.now(UTC)).astimezone(ZoneInfo(runtime.timezone))
-    hour, minute = (int(value) for value in runtime.late_start_cutoff.split(":", 1))
-    cutoff = local.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    return local > cutoff
 
 
 def _overall_status(manifest: RunManifest) -> RunStatus:

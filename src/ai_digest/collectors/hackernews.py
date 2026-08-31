@@ -37,6 +37,8 @@ class HackerNewsCollector(Collector):
         previous_text = await self.state.get_cursor(cursor_key)
         previous = int(previous_text) if previous_text and previous_text.isdigit() else None
         max_item: int | None = None
+        committed_cursor: int | None = None
+        backlog_remaining = 0
 
         try:
             max_url = f"{self.base}/maxitem.json"
@@ -46,7 +48,7 @@ class HackerNewsCollector(Collector):
             max_blob = self.store.write_blob(max_response.text, ".json")
             max_manifest.blob_refs = [max_blob]
             max_manifest.cursor_before = previous_text
-            max_manifest.cursor_after = str(max_item)
+            max_manifest.cursor_after = previous_text
             manifests.append(
                 finish_manifest(max_manifest, response=max_response, fetched_count=1, parsed_count=1)
             )
@@ -72,14 +74,15 @@ class HackerNewsCollector(Collector):
 
             if previous is None:
                 scan_ids = list(surface_ids["new"])
+                committed_cursor = max_item
             else:
-                gap = max(0, max_item - previous)
-                max_scan = int(self.config.get("max_incremental_ids", 20_000))
-                if gap > max_scan:
-                    raise RuntimeError(
-                        f"HN incremental gap {gap} exceeds safe cap {max_scan}; cursor retained"
-                    )
-                scan_ids = list(range(previous + 1, max_item + 1))
+                max_scan = max(1, int(self.config.get("max_incremental_ids", 20_000)))
+                scan_ids, committed_cursor, backlog_remaining = bounded_incremental_scan(
+                    previous,
+                    max_item,
+                    max_scan,
+                )
+            max_manifest.cursor_after = str(committed_cursor)
 
             surfaces_by_id: dict[int, list[str]] = {}
             for surface, values in surface_ids.items():
@@ -156,14 +159,14 @@ class HackerNewsCollector(Collector):
         for manifest in manifests:
             self.store.write_fetch_manifest(manifest)
         inserted = await self.state.put_items(items)
-        complete = max_item is not None and not errors
-        if complete:
-            await self.state.set_cursor(cursor_key, str(max_item))
+        complete_chunk = committed_cursor is not None and not errors
+        if complete_chunk:
+            await self.state.set_cursor(cursor_key, str(committed_cursor))
         status = (
             HealthStatus.SUCCESS
-            if complete
+            if complete_chunk and backlog_remaining == 0
             else HealthStatus.PARTIAL
-            if items
+            if complete_chunk or items
             else HealthStatus.FAILED
         )
         result = CollectorResult(
@@ -183,11 +186,34 @@ class HackerNewsCollector(Collector):
         result.health.surfaces = {
             "incremental": {
                 "cursor_before": previous,
-                "cursor_after": max_item if complete else previous,
+                "cursor_after": committed_cursor if complete_chunk else previous,
                 "candidate_count": fetched,
+                "upstream_maxitem": max_item,
+                "backlog_remaining": backlog_remaining,
+                "pagination_end": (
+                    "caught_up" if backlog_remaining == 0 else "bounded_backlog_chunk"
+                ),
             }
         }
-        result.health.raw_receipts_complete = complete
-        if complete and not items:
+        result.health.raw_receipts_complete = complete_chunk
+        if complete_chunk and backlog_remaining:
+            result.health.warnings.append(
+                f"HN backlog remains: {backlog_remaining} item ids; cursor advanced by one bounded chunk"
+            )
+        if complete_chunk and backlog_remaining == 0 and not items:
             result.health.quiet_reason = "maxitem cursor confirmed no new HN items"
         return result
+
+
+def bounded_incremental_scan(
+    previous: int,
+    upstream_max: int,
+    limit: int,
+) -> tuple[list[int], int, int]:
+    size = max(1, limit)
+    cursor_after = max(previous, min(upstream_max, previous + size))
+    return (
+        list(range(previous + 1, cursor_after + 1)),
+        cursor_after,
+        max(0, upstream_max - cursor_after),
+    )

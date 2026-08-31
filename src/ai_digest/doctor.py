@@ -11,6 +11,8 @@ from typing import Any
 from .config import REPO_ROOT, RuntimeConfig, SourcesConfig, resolve_binary
 from .x_provider import TwitterApiIOKeyStore
 
+MIN_RUNTIME_FREE_BYTES = 5 * 1024**3
+
 
 def run_doctor(runtime: RuntimeConfig, sources: SourcesConfig) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
@@ -20,6 +22,12 @@ def run_doctor(runtime: RuntimeConfig, sources: SourcesConfig) -> dict[str, Any]
 
     add("python", True, __import__("sys").version.split()[0])
     add("runtime_root", _writable(runtime.runtime_root), str(runtime.runtime_root))
+    free_bytes = shutil.disk_usage(runtime.runtime_root).free
+    add(
+        "runtime_disk_free",
+        free_bytes >= MIN_RUNTIME_FREE_BYTES,
+        f"{free_bytes / 1024**3:.1f} GiB free (minimum 5.0 GiB)",
+    )
     codex = resolve_binary(runtime.codex.binary)
     lark = resolve_binary(runtime.lark.binary)
     add("codex_cli", Path(codex).exists(), codex)

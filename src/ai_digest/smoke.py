@@ -168,7 +168,7 @@ def verify_automation_smoke(source_runtime: RuntimeConfig, smoke_root: Path) -> 
 
     active = [
         str(path)
-        for name in ("staging", "jobs", "completed", "publish_pending")
+        for name in ("staging", "jobs", "retry_wait", "completed", "publish_pending")
         for path in (smoke_runtime.shared_runtime_root / name).glob(f"{run_id}*")
     ]
     if active:
@@ -315,7 +315,6 @@ def runtime_toml(runtime: RuntimeConfig) -> str:
 runtime_root = {q(str(runtime.runtime_root))}
 shared_runtime_root = {q(str(runtime.shared_runtime_root))}
 daily_hour = {runtime.daily_hour}
-late_start_cutoff = {q(runtime.late_start_cutoff)}
 window_hours = {runtime.window_hours}
 article_preview_chars = {runtime.article_preview_chars}
 x_text_retention_days = {runtime.x_text_retention_days}

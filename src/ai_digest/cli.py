@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import fcntl
 import getpass
 import json
 import os
@@ -23,9 +24,9 @@ from .pipeline import (
     enqueue_pending_agent_jobs,
     publish_existing_run,
     recover_and_publish,
+    requeue_due_agent_jobs,
     run_agent_worker,
     run_local_pipeline,
-    should_skip_late,
 )
 from .smoke import (
     prepare_automation_smoke,
@@ -74,6 +75,24 @@ def _keep_awake(enabled: bool) -> Iterator[None]:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=2)
+
+
+@contextmanager
+def _exclusive_tick_lock(runtime_root: Path) -> Iterator[bool]:
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(runtime_root / "tick.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    acquired = False
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+        except BlockingIOError:
+            pass
+        yield acquired
+    finally:
+        if acquired:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -169,33 +188,39 @@ async def async_main(args: argparse.Namespace) -> int:
         console.print(f"{manifest.status.value}: {run_dir}")
         return 0 if manifest.status.value != "failed" else 1
     if args.command == "tick":
+        requeued = requeue_due_agent_jobs(runtime)
+        if requeued:
+            console.print(f"Requeued {len(requeued)} transient agent job(s)")
         recovered = recover_and_publish(runtime, publish_mode=args.publish_mode)
         if recovered:
             console.print(f"Recovered/published {len(recovered)} run(s)")
         replayed = await enqueue_pending_agent_jobs(runtime)
         if replayed:
             console.print(f"Queued/replayed {len(replayed)} sealed run(s)")
-        if args.event == "daily" and should_skip_late(runtime):
-            skipped = await phase1.record_skipped_asleep()
-            console.print(
-                f"skipped_asleep: daily start is later than configured cutoff"
-                f"{f' ({skipped})' if skipped else ''}"
-            )
-            return 0
         if args.event == "recover":
+            local_now = datetime.now(UTC).astimezone(ZoneInfo(runtime.timezone))
+            if local_now.hour >= runtime.daily_hour:
+                await phase1.initialize()
+                local_date = local_now.date().isoformat()
+                if not await phase1.state.has_daily_run_in_progress_or_done(local_date):
+                    manifest, run_dir = await phase1.run_daily()
+                    if manifest.status.value != "failed":
+                        await enqueue_agent_job(runtime, run_dir)
+                    console.print(f"catch-up {manifest.status.value}: {run_dir}")
+                    return 0 if manifest.status.value != "failed" else 1
             return 0
         if args.event == "x-list":
             results = await phase1.collect_only({"x_list"})
             console.print_json(data=[row.health.model_dump(mode="json") for row in results])
-            return 0
+            return 0 if all(row.health.status.value != "failed" for row in results) else 1
         if args.event == "x-for-you":
             results = await phase1.collect_only({"x_for_you"})
             console.print_json(data=[row.health.model_dump(mode="json") for row in results])
-            return 0
+            return 0 if all(row.health.status.value != "failed" for row in results) else 1
         if args.event == "github":
             results = await phase1.collect_only({"github"})
             console.print_json(data=[row.health.model_dump(mode="json") for row in results])
-            return 0
+            return 0 if all(row.health.status.value != "failed" for row in results) else 1
         if args.event == "incremental":
             results = []
             for source in ("x_list", "github", "hackernews"):
@@ -220,7 +245,7 @@ async def async_main(args: argparse.Namespace) -> int:
             if manifest.status.value != "failed":
                 await enqueue_agent_job(runtime, run_dir)
         console.print(f"{manifest.status.value}: {run_dir}")
-        return 0
+        return 0 if manifest.status.value != "failed" else 1
     if args.command == "agent-worker":
         completed = await run_agent_worker(runtime)
         console.print(f"completed {len(completed)} job(s)")
@@ -285,6 +310,13 @@ async def async_main(args: argparse.Namespace) -> int:
 def main() -> None:
     args = parser().parse_args()
     with _keep_awake(args.command in _KEEP_AWAKE_COMMANDS):
+        if args.command == "tick":
+            runtime = load_runtime_config(args.runtime_config)
+            with _exclusive_tick_lock(runtime.runtime_root) as acquired:
+                if not acquired:
+                    console.print("no-op: another tick process holds the runtime lock")
+                    raise SystemExit(0)
+                raise SystemExit(asyncio.run(async_main(args)))
         raise SystemExit(asyncio.run(async_main(args)))
 
 

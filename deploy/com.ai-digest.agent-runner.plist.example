@@ -18,6 +18,7 @@
   </dict>
   <key>QueueDirectories</key>
   <array><string>__SHARED__/jobs</string></array>
+  <key>RunAtLoad</key><true/>
   <key>ThrottleInterval</key><integer>60</integer>
   <key>StandardOutPath</key><string>__SHARED__/logs/agent-runner.log</string>
   <key>StandardErrorPath</key><string>__SHARED__/logs/agent-runner.error.log</string>

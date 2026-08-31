@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import subprocess
-from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from ai_digest.cli import _exclusive_tick_lock
 from ai_digest.codex_runner import _permission_profile, classify_codex_error
-from ai_digest.config import RuntimeConfig
 from ai_digest.models import SourceItem
-from ai_digest.pipeline import should_skip_late
 from ai_digest.store import source_group
 
 
@@ -20,10 +18,13 @@ def test_error_classification():
     assert classify_codex_error("boom") == "process_error"
 
 
-def test_late_start_cutoff():
-    runtime = RuntimeConfig(late_start_cutoff="07:20")
-    assert should_skip_late(runtime, datetime(2026, 8, 30, 0, 30, tzinfo=UTC))
-    assert not should_skip_late(runtime, datetime(2026, 8, 29, 23, 10, tzinfo=UTC))
+def test_tick_runtime_lock_is_nonblocking_and_reusable(tmp_path):
+    with _exclusive_tick_lock(tmp_path) as first:
+        assert first is True
+        with _exclusive_tick_lock(tmp_path) as second:
+            assert second is False
+    with _exclusive_tick_lock(tmp_path) as third:
+        assert third is True
 
 
 def test_source_file_partition():

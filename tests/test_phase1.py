@@ -157,17 +157,3 @@ def test_one_failed_source_with_other_items_is_partial():
     )
     item = SourceItem(item_id="github:1", item_type="repo", source="github", surface="search")
     assert Phase1Runner._phase_status([result], [item]) == RunStatus.PARTIAL
-
-
-@pytest.mark.asyncio
-async def test_skipped_asleep_is_recorded_once(tmp_path):
-    runner = Phase1Runner(
-        RuntimeConfig(runtime_root=tmp_path, shared_runtime_root=tmp_path / "shared"),
-        SourcesConfig(),
-    )
-    now = datetime(2026, 8, 30, 2, 0, tzinfo=UTC)
-    run_dir = await runner.record_skipped_asleep(now)
-    assert run_dir is not None
-    manifest = json.loads((run_dir / "00_run_manifest.json").read_text())
-    assert manifest["status"] == "skipped_asleep"
-    assert await runner.record_skipped_asleep(now) is None

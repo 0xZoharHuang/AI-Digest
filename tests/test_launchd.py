@@ -10,11 +10,14 @@ ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / "deploy"
 EXPECTED_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 TICK_SCRIPT = runpy.run_path(str(ROOT / "scripts" / "launchd_tick.py"))
+PRUNE_SCRIPT = runpy.run_path(str(ROOT / "scripts" / "prune_app_snapshots.py"))
 STALE_AFTER_SECONDS = TICK_SCRIPT["STALE_AFTER_SECONDS"]
 event_for_hour = TICK_SCRIPT["event_for_hour"]
 events_for_hour = TICK_SCRIPT["events_for_hour"]
 events_for_time = TICK_SCRIPT["events_for_time"]
+catch_up_events = TICK_SCRIPT["catch_up_events"]
 remove_stale_staging = TICK_SCRIPT["remove_stale_staging"]
+snapshots_to_remove = PRUNE_SCRIPT["snapshots_to_remove"]
 
 
 def _plist(name: str) -> dict:
@@ -28,10 +31,14 @@ def test_launchd_triggers_keep_collection_and_recovery_separate():
     runner = _plist("com.ai-digest.agent-runner.plist.example")
 
     assert "StartCalendarInterval" in tick
+    assert tick["RunAtLoad"] is True
     assert "QueueDirectories" not in tick
     assert recover["QueueDirectories"] == ["__SHARED__/completed"]
+    assert recover["RunAtLoad"] is True
+    assert recover["StartInterval"] == 900
     assert recover["ProgramArguments"][-3:] == ["tick", "--event", "recover"]
     assert runner["QueueDirectories"] == ["__SHARED__/jobs"]
+    assert runner["RunAtLoad"] is True
     assert "UserName" not in runner
     assert runner["EnvironmentVariables"]["HOME"] == "__HOME__"
     assert tick["EnvironmentVariables"]["PATH"] == EXPECTED_PATH
@@ -49,9 +56,17 @@ def test_calendar_event_mapping():
     assert events_for_hour(13) == ["incremental"]
     assert events_for_time(13, 30) == ["papers"]
     assert events_for_hour(19) == ["incremental", "papers"]
+    assert events_for_hour(3) == ["recover"]
+    assert catch_up_events(11, 0, daily_done=False) == ["daily"]
+    assert catch_up_events(15, 0, daily_done=True) == ["incremental", "papers"]
+    assert catch_up_events(21, 0, daily_done=True) == [
+        "incremental",
+        "papers",
+        "x-for-you",
+    ]
 
 
-def test_daily_calendar_has_bounded_crash_retries_before_cutoff():
+def test_daily_calendar_has_early_crash_retries():
     tick = _plist("com.ai-digest.tick.plist.example")
     times = {
         (entry["Hour"], entry["Minute"])
@@ -86,7 +101,7 @@ def test_stale_staging_cleanup_is_bounded(tmp_path):
 
 def test_installer_creates_every_queue_and_preserves_executables():
     installer = (ROOT / "scripts" / "install_macos.sh").read_text(encoding="utf-8")
-    assert "staging jobs completed publish_pending archived failed logs" in installer
+    assert "staging jobs retry_wait completed publish_pending archived failed logs" in installer
     assert "chmod -R u=rwX,go=" in installer
     assert "uv sync --no-editable" in installer
     assert '"$shared_app/node_modules/.bin/codex"' in installer
@@ -102,3 +117,18 @@ def test_installer_creates_every_queue_and_preserves_executables():
     assert "sudo " not in installer
     assert "--cutover" in installer
     assert "--rollback" in installer
+    assert "prune_app_snapshots.py" in installer
+
+
+def test_app_snapshot_retention_keeps_active_and_two_rollbacks(tmp_path):
+    root = tmp_path / "apps"
+    root.mkdir()
+    snapshots = []
+    for index in range(5):
+        path = root / f"app-{'a' * 12}-{20260827 + index}T010203Z"
+        path.mkdir()
+        os.utime(path, (100 + index, 100 + index))
+        snapshots.append(path)
+    active = snapshots[1]
+
+    assert snapshots_to_remove(root, active, 3) == [snapshots[2], snapshots[0]]

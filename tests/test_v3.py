@@ -296,3 +296,109 @@ async def test_phase2_uses_one_resumed_thread_and_writes_v3_artifacts(tmp_path):
     assert (run / "02_routing" / "units.jsonl").exists()
     assert (run / "02_routing" / "annotations.jsonl").exists()
     assert (run / "02_routing" / "packages.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_phase2_repairs_partial_checkpoint_without_a_thread_id(tmp_path):
+    run = tmp_path / "runs" / "2026-08-31" / "attempt-0001"
+    phase1 = run / "01_phase1"
+    phase1.mkdir(parents=True)
+    now = datetime(2026, 8, 31, tzinfo=UTC)
+    items = {
+        f"x_list:{value}": SourceItem(
+            item_id=f"x_list:{value}",
+            item_type="x_post",
+            source="x_list",
+            surface="public_lists",
+            ready_at=now,
+            payload={"post_id": value, "text": f"robot update {value}"},
+        )
+        for value in ("1", "2")
+    }
+    (phase1 / "x_list.jsonl").write_text(
+        "".join(item.model_dump_json() + "\n" for item in items.values())
+    )
+    (phase1 / "PHASE1_COMPLETE").write_text("complete\n")
+    units = build_observation_units(items)
+    batch = run / "02_routing" / "batches" / "batch-0001"
+    batch.mkdir(parents=True)
+    first = units[0]
+    (batch / "annotation_output.json").write_text(
+        json.dumps(
+            {
+                "annotations": [
+                    {
+                        "unit_id": first.unit_id,
+                        "disposition": "investigate",
+                        "summary_zh": "已有 checkpoint",
+                        "reason": "需要研究",
+                        "entities": [],
+                        "relation_hints": [],
+                        "duplicate_of": None,
+                    }
+                ],
+                "working_map": "# Partial",
+            }
+        )
+    )
+
+    class RepairRunner:
+        repair_resume: str | None | object = object()
+
+        async def run(self, **kwargs):  # type: ignore[no-untyped-def]
+            workspace = kwargs["workspace"]
+            output = kwargs["output_file"]
+            if workspace.name == "repair":
+                self.repair_resume = kwargs.get("resume_thread_id")
+                missing = json.loads((workspace / "units.jsonl").read_text())
+                output.write_text(
+                    json.dumps(
+                        {
+                            "annotations": [
+                                {
+                                    "unit_id": missing["unit_id"],
+                                    "disposition": "investigate",
+                                    "summary_zh": "恢复缺失标注",
+                                    "reason": "需要研究",
+                                    "entities": [],
+                                    "relation_hints": [],
+                                    "duplicate_of": None,
+                                }
+                            ],
+                            "working_map": "# Repaired",
+                        }
+                    )
+                )
+                return CodexResult(exit_code=0, thread_id="repair-thread")
+            assert workspace.name == "planner"
+            annotations = [
+                json.loads(line)
+                for line in (workspace / "annotations.jsonl").read_text().splitlines()
+            ]
+            output.write_text(
+                json.dumps(
+                    {
+                        "packages": [
+                            {
+                                "package_id": "robotics",
+                                "label": "Robotics",
+                                "investigate_unit_ids": [
+                                    value["unit_id"] for value in annotations
+                                ],
+                                "supporting_unit_ids": [],
+                            }
+                        ],
+                        "unassigned_supporting_unit_ids": [],
+                    }
+                )
+            )
+            return CodexResult(exit_code=0, thread_id="planner-thread")
+
+    runner = RepairRunner()
+    routing = await V3Phases(
+        RuntimeConfig(runtime_root=tmp_path, shared_runtime_root=tmp_path / "queue"),
+        runner,  # type: ignore[arg-type]
+    ).route(run)
+    assert runner.repair_resume is None
+    assert len(routing.assignments) == 2
+    assert (run / "02_routing" / "PHASE2_COMPLETE").exists()

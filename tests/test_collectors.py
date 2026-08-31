@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
+import httpx
 import pytest
 
 from ai_digest.collectors.articles import ArticleCollector
-from ai_digest.collectors.arxiv import ArxivCollector
+from ai_digest.collectors.arxiv import ArxivCollector, dates_to_backfill
+from ai_digest.collectors.hackernews import HackerNewsCollector, bounded_incremental_scan
+from ai_digest.collectors.huggingface import HuggingFaceCollector, dates_to_fetch
 from ai_digest.collectors.x_for_you import XForYouCollector, _post_id
 from ai_digest.models import FetchManifest, SourceItem, TimeBasis
 from ai_digest.store import FileStore, StateDB
@@ -58,6 +61,111 @@ def test_arxiv_withdrawal_without_version_is_a_distinct_tombstone(store_state):
     assert item.change == "withdrawn"
     assert item.content_status.value == "tombstone"
     assert item.time_basis == TimeBasis.UPDATED
+
+
+def test_offline_source_backlogs_are_bounded_without_skipping_ranges():
+    scan, cursor, backlog = bounded_incremental_scan(100, 45_100, 20_000)
+    assert (scan[0], scan[-1], cursor, backlog) == (101, 20_100, 20_100, 25_000)
+    _, cursor, backlog = bounded_incremental_scan(cursor, 45_100, 20_000)
+    assert (cursor, backlog) == (40_100, 5_000)
+    _, cursor, backlog = bounded_incremental_scan(cursor, 45_100, 20_000)
+    assert (cursor, backlog) == (45_100, 0)
+
+    assert dates_to_fetch("2026-08-28", date(2026, 8, 31), 2) == [
+        date(2026, 8, 29),
+        date(2026, 8, 30),
+    ]
+    assert dates_to_backfill("2026-08-27", date(2026, 8, 31), 3) == [
+        date(2026, 8, 28),
+        date(2026, 8, 29),
+        date(2026, 8, 30),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_hn_failed_chunk_retains_cursor(store_state, monkeypatch):
+    store, state = store_state
+    await state.init()
+    await state.set_cursor("hackernews:maxitem", "100")
+
+    class FakeClient:
+        def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+            pass
+
+        async def request(self, method, url, **kwargs):  # type: ignore[no-untyped-def]
+            request = httpx.Request(method, url)
+            if url.endswith("maxitem.json"):
+                return httpx.Response(200, json=103, request=request)
+            if url.endswith("stories.json"):
+                return httpx.Response(200, json=[], request=request)
+            item_id = int(url.split("/")[-1].split(".")[0])
+            if item_id == 102:
+                raise RuntimeError("offline")
+            return httpx.Response(
+                200,
+                json={
+                    "id": item_id,
+                    "type": "story",
+                    "time": 1_788_000_000,
+                    "title": f"Story {item_id}",
+                },
+                request=request,
+            )
+
+        async def close(self):  # type: ignore[no-untyped-def]
+            pass
+
+    monkeypatch.setattr("ai_digest.collectors.hackernews.SafeHTTPClient", FakeClient)
+    result = await HackerNewsCollector(
+        {"max_incremental_ids": 20_000}, store, state
+    ).collect(datetime(2026, 8, 31, tzinfo=UTC))
+    assert result.health.status.value == "partial"
+    assert await state.get_cursor("hackernews:maxitem") == "100"
+
+
+@pytest.mark.asyncio
+async def test_hf_pagination_cap_and_failed_commit_do_not_advance_date_cursor(
+    store_state, monkeypatch
+):
+    store, state = store_state
+    await state.init()
+    await state.set_cursor("huggingface:last_success_date", "2026-08-29")
+
+    class FullPageClient:
+        def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+            pass
+
+        async def request(self, method, url, **kwargs):  # type: ignore[no-untyped-def]
+            return httpx.Response(
+                200,
+                json=[{"paper": {"id": "2608.1", "title": "Paper"}}],
+                request=httpx.Request(method, url),
+            )
+
+        async def close(self):  # type: ignore[no-untyped-def]
+            pass
+
+    monkeypatch.setattr("ai_digest.collectors.huggingface.SafeHTTPClient", FullPageClient)
+    result = await HuggingFaceCollector(
+        {"page_size": 1, "max_pages": 1}, store, state
+    ).collect(datetime(2026, 8, 30, tzinfo=UTC))
+    assert result.health.status.value == "failed"
+    assert await state.get_cursor("huggingface:last_success_date") == "2026-08-29"
+
+    class EmptyPageClient(FullPageClient):
+        async def request(self, method, url, **kwargs):  # type: ignore[no-untyped-def]
+            return httpx.Response(200, json=[], request=httpx.Request(method, url))
+
+    async def fail_put(items):  # type: ignore[no-untyped-def]
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr("ai_digest.collectors.huggingface.SafeHTTPClient", EmptyPageClient)
+    monkeypatch.setattr(state, "put_items", fail_put)
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await HuggingFaceCollector({}, store, state).collect(
+            datetime(2026, 8, 30, tzinfo=UTC)
+        )
+    assert await state.get_cursor("huggingface:last_success_date") == "2026-08-29"
 
 
 def test_article_discovery_parsers_are_source_specific(store_state):

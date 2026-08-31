@@ -66,12 +66,17 @@ enabled = true
 allow_empty = true
 categories = ["cs.RO", "cs.AI", "cs.LG", "cs.CV", "cs.CL", "stat.ML"]
 rss_url = "https://rss.arxiv.org/rss/{categories}"
+api_url = "https://export.arxiv.org/api/query"
+max_backfill_dates_per_poll = 3
+api_page_size = 500
+api_max_pages = 4
 
 [huggingface]
 enabled = true
 url = "https://huggingface.co/api/daily_papers"
 page_size = 100
 max_pages = 50
+max_backfill_dates_per_poll = 3
 limit = 100
 
 [hackernews]

@@ -119,6 +119,10 @@ class Phase1Runner:
         for result in results:
             health = result.health
             health.coverage_mode = coverage.get(result.source, CoverageMode.BOUNDED_DISCOVERY)
+            if result.source == "arxiv" and (
+                health.surfaces.get("submission_date_backfill", {}).get("requested_dates")
+            ):
+                health.coverage_mode = CoverageMode.BOUNDED_DISCOVERY
             health.duplicate_count = max(0, health.parsed_count - health.new_count)
             occurred = sorted(
                 item.occurred_at for item in result.items if item.occurred_at is not None
@@ -229,29 +233,6 @@ class Phase1Runner:
             await self.state.record_run(run_id, date, attempt, RunStatus.FAILED.value, run_dir)
             raise
         return manifest, run_dir
-
-    async def record_skipped_asleep(self, now: datetime | None = None) -> Path | None:
-        await self.initialize()
-        local_now = (now or datetime.now(UTC)).astimezone(ZoneInfo(self.runtime.timezone))
-        date = local_now.date().isoformat()
-        if await self.state.has_run_for_date(date):
-            return None
-        attempt, run_dir = self.store.next_attempt_dir(date)
-        run_id = f"{date}-a{attempt:04d}-{uuid.uuid4().hex[:8]}"
-        end = local_now.astimezone(UTC)
-        manifest = RunManifest(
-            run_id=run_id,
-            date=date,
-            attempt=attempt,
-            timezone=self.runtime.timezone,
-            window_start=end - timedelta(hours=self.runtime.window_hours),
-            window_end=end,
-            status=RunStatus.SKIPPED_ASLEEP,
-            phases={"phase1": RunStatus.SKIPPED_ASLEEP},
-        )
-        atomic_write_json(run_dir / "00_run_manifest.json", manifest.model_dump(mode="json"))
-        await self.state.record_run(run_id, date, attempt, RunStatus.SKIPPED_ASLEEP.value, run_dir)
-        return run_dir
 
     async def _apply_empty_sanity(self, results: list[CollectorResult]) -> None:
         allow_empty = {

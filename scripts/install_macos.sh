@@ -34,6 +34,9 @@ if [[ "$mode" == "--cutover" ]]; then
   launchctl bootstrap "$launch_domain" "$tick_target"
   launchctl bootstrap "$launch_domain" "$recover_target"
   launchctl bootstrap "$launch_domain" "$runner_target"
+  active_app=$(plutil -extract WorkingDirectory raw -o - "$tick_target")
+  "$active_app/.venv/bin/python" "$active_app/scripts/prune_app_snapshots.py" \
+    --app-root "$runtime_dir/apps" --active "$active_app" --keep 3
   echo "Cut over to V3 user LaunchAgents. Legacy plists are archived in $legacy_dir"
   exit 0
 fi
@@ -103,7 +106,7 @@ git -C "$project_dir" diff --quiet
 git -C "$project_dir" diff --cached --quiet
 mkdir -p "$runtime_dir/logs" "$app_root" "$launch_agents"
 install -d -m 700 "$queue_dir"
-for queue_name in staging jobs completed publish_pending archived failed logs; do
+for queue_name in staging jobs retry_wait completed publish_pending archived failed logs; do
   install -d -m 700 "$queue_dir/$queue_name"
 done
 install -d -m 700 "$app_staging"

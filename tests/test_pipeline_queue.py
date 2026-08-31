@@ -3,19 +3,22 @@ from __future__ import annotations
 import json
 import os
 import stat
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+from ai_digest.codex_runner import CodexResult, RetryableCodexError
 from ai_digest.config import RuntimeConfig
 from ai_digest.models import RunManifest, RunStatus
 from ai_digest.pipeline import (
     enqueue_agent_job,
     import_agent_job,
     recover_and_publish,
+    requeue_due_agent_jobs,
     run_agent_worker,
 )
+from ai_digest.publisher import LarkError
 from ai_digest.store import StateDB
 
 
@@ -90,6 +93,69 @@ async def test_worker_recovers_done_before_move_and_rejects_symlinks(tmp_path):
     assert not done.exists()
     assert any(path.name.startswith(unsafe.name) for path in (runtime.shared_runtime_root / "failed").iterdir())
     assert stat.S_IMODE(outside.stat().st_mode) == original_mode
+
+
+@pytest.mark.asyncio
+async def test_transient_worker_failure_is_deferred_and_requeued_when_due(
+    tmp_path, monkeypatch
+):
+    runtime = RuntimeConfig(
+        runtime_root=tmp_path / "runtime", shared_runtime_root=tmp_path / "shared"
+    )
+    job = runtime.shared_runtime_root / "jobs" / "2026-08-31-a0001-network"
+    job.mkdir(parents=True)
+    (job / "READY").write_text("ready\n")
+    (job / "checkpoint.txt").write_text("preserve me\n")
+
+    async def fail_route(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise RetryableCodexError(
+            "phase2",
+            CodexResult(exit_code=1, error_class="network", error="offline"),
+        )
+
+    monkeypatch.setattr("ai_digest.pipeline.AgentPhases.route", fail_route)
+    assert await run_agent_worker(runtime) == []
+    deferred = runtime.shared_runtime_root / "retry_wait" / job.name
+    assert deferred.is_dir()
+    assert not (deferred / "DONE").exists()
+    assert (deferred / "checkpoint.txt").read_text() == "preserve me\n"
+    metadata = json.loads((deferred / "worker_retry.json").read_text())
+    retry_at = datetime.fromisoformat(metadata["next_retry_at"])
+    assert metadata["attempt"] == 1
+    assert requeue_due_agent_jobs(runtime, retry_at - timedelta(seconds=1)) == []
+    assert requeue_due_agent_jobs(runtime, retry_at + timedelta(seconds=1)) == [
+        runtime.shared_runtime_root / "jobs" / job.name
+    ]
+
+
+@pytest.mark.asyncio
+async def test_worker_finishes_retry_move_interrupted_after_metadata_write(
+    tmp_path, monkeypatch
+):
+    runtime = RuntimeConfig(
+        runtime_root=tmp_path / "runtime", shared_runtime_root=tmp_path / "shared"
+    )
+    job = runtime.shared_runtime_root / "jobs" / "2026-08-31-a0001-retry-crash"
+    job.mkdir(parents=True)
+    (job / "READY").write_text("ready\n")
+    (job / "worker_retry.json").write_text(
+        json.dumps(
+            {
+                "attempt": 1,
+                "next_retry_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                "history": [],
+            }
+        )
+    )
+
+    async def forbidden_route(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("a not-yet-due retry must not run")
+
+    monkeypatch.setattr("ai_digest.pipeline.AgentPhases.route", forbidden_route)
+    assert await run_agent_worker(runtime) == []
+    deferred = runtime.shared_runtime_root / "retry_wait" / job.name
+    assert deferred.is_dir()
+    assert json.loads((deferred / "worker_retry.json").read_text())["attempt"] == 1
 
 
 @pytest.mark.asyncio
@@ -231,6 +297,33 @@ async def test_recovery_preflight_archives_without_calling_lark(tmp_path, monkey
 
     monkeypatch.setattr("ai_digest.pipeline.LarkPublisher.publish", forbidden_publish)
     assert recover_and_publish(runtime, publish_mode="preflight") == [run_dir]
+    assert (runtime.shared_runtime_root / "archived" / run_id).is_dir()
+
+
+@pytest.mark.asyncio
+async def test_publish_pending_uses_backoff_then_recovers(tmp_path, monkeypatch):
+    runtime, _state, run_dir, run_id = await _sealed_run(tmp_path, "publish-retry")
+    job = runtime.shared_runtime_root / "completed" / run_id
+    _write_job_outputs(job)
+    calls = 0
+
+    def flaky_publish(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise LarkError("offline", retryable=True)
+        return None
+
+    monkeypatch.setattr("ai_digest.pipeline.LarkPublisher.publish", flaky_publish)
+    started = datetime(2026, 8, 31, tzinfo=UTC)
+    assert recover_and_publish(runtime, now=started) == []
+    pending = runtime.shared_runtime_root / "publish_pending" / run_id
+    assert pending.is_dir()
+    assert calls == 1
+    assert recover_and_publish(runtime, now=started + timedelta(minutes=4)) == []
+    assert calls == 1
+    assert recover_and_publish(runtime, now=started + timedelta(minutes=6)) == [run_dir]
+    assert calls == 2
     assert (runtime.shared_runtime_root / "archived" / run_id).is_dir()
 
 

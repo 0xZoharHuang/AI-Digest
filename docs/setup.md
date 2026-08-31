@@ -75,20 +75,37 @@ separate cutover step:
 Cutover unloads the two legacy LaunchAgents, archives their exact plist files, and bootstraps three
 V3 user LaunchAgents:
 
-- `com.ai-digest.tick` is calendar-only and performs scheduled collection.
-- `com.ai-digest.recover` watches `completed/` and only runs `tick --event recover`; it never starts
-  a second collection.
-- `com.ai-digest.agent-runner` watches `jobs/` and runs Phase 2–4 with the custom Codex sandbox.
+- `com.ai-digest.tick` runs at login and calendar slots, performing due collection or catch-up.
+- `com.ai-digest.recover` watches `completed/`, runs at login and every 15 minutes, promotes due
+  transient agent retries, retries Lark publication, and starts the daily catch-up only when no
+  current daily run exists.
+- `com.ai-digest.agent-runner` runs at login, watches `jobs/`, and runs Phase 2–4 with the custom
+  Codex sandbox.
 
-The installer creates `staging/`, `jobs/`, `completed/`, `publish_pending/`, `archived/`, `failed/`
-and `logs/` below the current user's runtime directory. Roll back the schedules and restore the
-latest archived V1 plist files with `./scripts/install_macos.sh --rollback`.
+The installer creates `staging/`, `jobs/`, `retry_wait/`, `completed/`, `publish_pending/`,
+`archived/`, `failed/` and `logs/` below the current user's runtime directory. Roll back the
+schedules and restore the latest archived V1 plist files with
+`./scripts/install_macos.sh --rollback`.
+After a successful cutover, immutable application snapshots are pruned to the active build plus two
+local rollback builds; source evidence, runs, blobs, state backups and Wiki data are never part of
+that pruning boundary. `doctor` fails readiness when the runtime volume has less than 5 GiB free.
 
 The calendar job polls X Lists, GitHub and HN at 01:00/13:00/19:00, prefetches dated arXiv/HF
 papers at 13:30 (with a 19:00 retry), runs the complete daily collection
 (including Lists and For You) at 07:00, and performs a second For You pass at 20:00.
-The 07:10 and 07:19 entries are crash-recovery retries: an active/sealed/queued/completed run is a
-no-op, while a `running` record older than 18 minutes may be retried before the 07:20 cutoff.
+The 07:10 and 07:19 entries are early crash-recovery checks. A delayed wake or login after 07:00
+starts the daily run whenever no active/completed run exists; there is no late-start discard.
+Transient Codex failures move the intact checkpoint to `retry_wait/` with bounded backoff, and
+publication failures remain in `publish_pending/` with bounded retries. At most one tick, worker and
+publisher recovery process may own their respective runtime locks.
+
+No local process can observe a source while the Mac is powered off. After login/wake, X Lists resume
+from their provider cursor, HN drains its `maxitem` gap in bounded chunks, HF replays dated pages,
+GitHub's configured multi-day search windows rediscover candidates, and RSS/sitemaps expose whatever
+the publisher still retains. X For You is inherently a fresh sampled surface and cannot reconstruct
+missed recommendations. arXiv RSS is the exact daily announcement surface; its submitted-date API
+backfill is explicitly a bounded supplement for new papers, not a reconstruction of missed
+replacement, withdrawal or cross-list announcements.
 
 ## 4. Acceptance sequence
 

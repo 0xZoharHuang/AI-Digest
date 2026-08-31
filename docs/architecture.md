@@ -30,6 +30,7 @@ runs/<date>/attempt-0001/
   04_brief/daily_brief.md
   05_publish/publish_manifest.json
 state.db
+queue/{staging,jobs,retry_wait,completed,publish_pending,archived,failed}/
 ```
 
 Files remain the canonical evidence and agent handoff. SQLite contains rebuildable cursor, revision,
@@ -59,10 +60,13 @@ not masquerade as today's news.
 - GitHub is bounded discovery over configured queries, Trending and tracked repositories. It emits
   lane entry, star crossing/growth, release and material metadata events; it is not a claim of global
   GitHub completeness.
-- arXiv consumes the complete configured multi-category daily feed. Hugging Face Daily Papers is a
-  dated, paginated attention/enrichment surface. They remain separate observations until unitization.
-- Hacker News scans item IDs from the durable `maxitem` cursor. New/top/show are attention surfaces
-  on one story identity, not three story records.
+- arXiv consumes the complete configured multi-category daily feed while the machine is online. A
+  submitted-date API query is a bounded offline supplement, not an exact replay of missed announce,
+  replace, withdraw or cross-list events. Hugging Face Daily Papers is a dated, paginated surface
+  with bounded missed-date replay. They remain separate observations until unitization.
+- Hacker News scans item IDs from the durable `maxitem` cursor, advancing a bounded backlog chunk
+  only after the whole chunk is durable. New/top/show are attention surfaces on one story identity,
+  not three story records.
 - Media adapters retain raw discovery/body responses, normalize canonical URLs, recurse sitemap
   indexes and emit content-hash revisions. Extraction failures preserve metadata for Phase 3.
 
@@ -109,6 +113,13 @@ automatic patch agent. Existing research still publishes.
 The collector seals Phase 1 locally, copies all referenced blobs plus compact bootstrap/history
 indexes into staging, and atomically renames the job into the queue. The worker writes Phase 2-4
 artifacts; recovery validates and imports either V3 artifacts or legacy V2 reports before publishing.
+Transient non-zero Codex exits preserve the job and checkpoints in `retry_wait` with bounded
+backoff. Lark failures remain in `publish_pending`; the recovery heartbeat retries only after their
+due time. Process locks make tick, worker and publisher recovery single-owner operations.
+
+The publisher validates all local files and internal links before its first external write. Year and
+month nodes are materialized navigation indexes; day, dossier and subreport pages contain deterministic
+back-navigation. Only stale content nodes recorded in the same run's publish manifest may be removed.
 
 Every Codex call denies the user's Codex data, SSH directory and login Keychains while granting only
 the current phase workspace. Installation performs a consistent SQLite backup, idempotent schema

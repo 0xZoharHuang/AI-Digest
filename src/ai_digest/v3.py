@@ -7,7 +7,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from .codex_runner import CodexResult, CodexRunner
+from .codex_runner import CodexResult, CodexRunner, RetryableCodexError
 from .config import RuntimeConfig, load_interests
 from .models import (
     Assignment,
@@ -126,6 +126,16 @@ class V3Phases:
             root / "unit_items.json",
             {unit.unit_id: unit.item_ids for unit in units},
         )
+        if (root / "PHASE2_COMPLETE").exists() and (root / "annotations.jsonl").exists():
+            try:
+                cached_annotations = load_annotations(root)
+                cached_packages = load_packages(root)
+                validate_annotation_coverage(units, cached_annotations)
+                validate_packages(cached_packages, cached_annotations)
+            except Exception:
+                pass
+            else:
+                return routing_from_v3(cached_packages, cached_annotations, units)
         interests = load_interests(interests_path)
         batches = unit_batches(units)
         annotations: list[Phase2Annotation] = []
@@ -146,12 +156,12 @@ class V3Phases:
             atomic_write_text(batch_root / "AGENTS.md", phase2_agents_md())
             output = batch_root / "annotation_output.json"
             expected_batch_ids = {unit.unit_id for unit in batch}
+            checkpoint = _read_json(batch_root / "codex.json", {})
+            thread_id = checkpoint.get("thread_id") or thread_id
             cached = read_annotation_output(output, expected_batch_ids)
             if cached is not None:
                 batch_annotations, working_map = cached
                 annotations.extend(batch_annotations)
-                checkpoint = _read_json(batch_root / "codex.json", {})
-                thread_id = checkpoint.get("thread_id") or thread_id
                 summaries.append({**checkpoint, "batch": number, "reused": True})
                 continue
             partial = read_annotation_subset(output, expected_batch_ids)
@@ -170,7 +180,7 @@ class V3Phases:
                 thread_id = result.thread_id or thread_id
                 partial = read_annotation_subset(output, expected_batch_ids)
             parsed = read_annotation_output(output, expected_batch_ids)
-            if parsed is None and thread_id and partial is not None:
+            if parsed is None and partial is not None:
                 partial_annotations, partial_map = partial
                 completed_ids = {value.unit_id for value in partial_annotations}
                 missing_ids = expected_batch_ids - completed_ids
@@ -217,13 +227,14 @@ class V3Phases:
                         },
                     )
                     parsed = read_annotation_output(output, expected_batch_ids)
-            if parsed is None:
-                raise RuntimeError(f"Phase 2 batch {number} did not cover its units exactly")
-            batch_annotations, working_map = parsed
-            annotations.extend(batch_annotations)
             summary = codex_summary(result)
             summary["batch"] = number
             atomic_write_json(batch_root / "codex.json", summary)
+            if parsed is None:
+                _raise_if_retryable("Phase 2 annotation", result)
+                raise RuntimeError(f"Phase 2 batch {number} did not cover its units exactly")
+            batch_annotations, working_map = parsed
+            annotations.extend(batch_annotations)
             summaries.append(summary)
             atomic_write_text(root / "working_map.md", working_map)
             atomic_write_jsonl(
@@ -267,6 +278,7 @@ class V3Phases:
             atomic_write_json(planner / "packages.schema.json", PACKAGE_SCHEMA)
             atomic_write_text(planner / "AGENTS.md", phase2_planner_agents_md())
             output = planner / "packages_output.json"
+            planner_checkpoint = _read_json(planner / "codex.json", {})
             result = await self.runner.run(
                 workspace=planner,
                 prompt=phase2_planner_prompt(),
@@ -275,13 +287,14 @@ class V3Phases:
                 sandbox="read-only",
                 output_file=output,
                 output_schema=planner / "packages.schema.json",
-                resume_thread_id=thread_id,
+                resume_thread_id=planner_checkpoint.get("thread_id") or thread_id,
             )
+            planner_summary = codex_summary(result)
+            atomic_write_json(planner / "codex.json", planner_summary)
+            _raise_if_retryable("Phase 2 package planner", result)
             packages = read_and_validate_packages(output, annotations)
             packages = split_oversize_packages(packages, {u.unit_id: u for u in units})
             validate_packages(packages, annotations)
-            planner_summary = codex_summary(result)
-            atomic_write_json(planner / "codex.json", planner_summary)
 
         atomic_write_json(
             root / "packages.json",
@@ -348,6 +361,7 @@ class V3Phases:
                         successes[package.package_id] = f"{package.package_id}/dossier.md"
                         quality.append(cached_manifest.model_dump(mode="json"))
                         return
+                checkpoint = _read_json(workspace / "codex.json", {})
                 result = await self.runner.run(
                     workspace=workspace,
                     prompt=phase3_prompt(package),
@@ -357,6 +371,7 @@ class V3Phases:
                     web_search=True,
                     agents=True,
                     subagent_threads=self.runtime.codex.subagent_threads,
+                    resume_thread_id=checkpoint.get("thread_id"),
                 )
                 dossier = workspace / "dossier.md"
                 manifest_path = workspace / "research_manifest.json"
@@ -376,6 +391,7 @@ class V3Phases:
                         resume_thread_id=result.thread_id,
                     )
                     result = followup
+                atomic_write_json(workspace / "codex.json", codex_summary(result))
                 if not result.success or not dossier.exists() or not manifest_path.exists():
                     failures.append(
                         {
@@ -384,6 +400,7 @@ class V3Phases:
                             "error_class": result.error_class,
                             "error": result.error or "required research artifacts are missing",
                             "thread_id": result.thread_id,
+                            "retryable": not result.success,
                         }
                     )
                     return
@@ -402,7 +419,6 @@ class V3Phases:
                     return
                 successes[package.package_id] = f"{package.package_id}/dossier.md"
                 quality.append(manifest.model_dump(mode="json"))
-                atomic_write_json(workspace / "codex.json", codex_summary(result))
 
         await __import__("asyncio").gather(*(run_package(package) for package in packages))
         missing = [row for row in quality if row.get("missing_unit_ids")]
@@ -417,6 +433,18 @@ class V3Phases:
             },
         )
         atomic_write_text(root / "PHASE3_COMPLETE", "v3 complete\n")
+        retryable = [row for row in failures if row.get("retryable") is True]
+        if retryable:
+            first = retryable[0]
+            raise RetryableCodexError(
+                "Phase 3 package research",
+                CodexResult(
+                    exit_code=1,
+                    thread_id=str(first.get("thread_id") or "") or None,
+                    error_class=str(first.get("error_class")),
+                    error=str(first.get("error") or "retryable package failure"),
+                ),
+            )
         return successes
 
     async def brief(
@@ -1085,6 +1113,11 @@ def codex_summary(result: CodexResult) -> dict[str, Any]:
         "error_class": result.error_class,
         "error": result.error,
     }
+
+
+def _raise_if_retryable(phase: str, result: CodexResult) -> None:
+    if not result.success:
+        raise RetryableCodexError(phase, result)
 
 
 def _read_json(path: Path, default: Any) -> Any:

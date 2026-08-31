@@ -10,6 +10,19 @@ from typing import Any
 from .config import resolve_binary
 
 CODEX_EVENT_STREAM_LIMIT_BYTES = 16 * 1024 * 1024
+RETRYABLE_CODEX_ERROR_CLASSES = {
+    "authentication",
+    "idle_timeout",
+    "network",
+    "quota",
+}
+
+
+class RetryableCodexError(RuntimeError):
+    def __init__(self, phase: str, result: CodexResult):
+        self.error_class = result.error_class or "process_error"
+        detail = result.error or f"Codex exited with {result.exit_code}"
+        super().__init__(f"{phase}: {self.error_class}: {detail}")
 
 
 @dataclass
