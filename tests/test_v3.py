@@ -616,6 +616,8 @@ def test_reader_prompts_preserve_scan_then_drill_down_semantics():
     assert "不能因为材料偏离兴趣" in phase2_agents_md()
     assert "outside_reader_scope" not in phase2_agents_md()
     assert "low_signal_misc" not in phase2_agents_md()
+    assert "不得为凑齐行数" in phase2_agents_md()
+    assert "可供文件 checkpoint 独立恢复的完整地图" in phase2_agents_md()
     assert "多个彼此独立的事件" in phase3_agents_md()
     assert "subreport 仍不设最低数量" in phase3_agents_md()
     assert "不可能预先熟悉每个细分领域" in phase3_agents_md()
@@ -629,7 +631,8 @@ def test_reader_prompts_preserve_scan_then_drill_down_semantics():
 
 def test_phase2_schemas_constrain_only_system_owned_ids():
     summaries = summary_schema({"u_b", "u_a"})["properties"]["summaries"]
-    assert summaries["minItems"] == summaries["maxItems"] == 2
+    assert "minItems" not in summaries
+    assert "maxItems" not in summaries
     assert summaries["items"]["properties"]["unit_id"]["enum"] == ["u_a", "u_b"]
 
     groups = package_schema({"group_b", "group_a"})["properties"]["packages"]
