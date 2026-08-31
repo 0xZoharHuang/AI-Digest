@@ -127,7 +127,12 @@ def test_summary_output_is_recoverable_without_accepting_partial(tmp_path):
         json.dumps(
             {
                 "summaries": [
-                    {"unit_id": "u_a", "summary_zh": "A", "group_id": "group_a"}
+                    {"unit_id": "u_a", "summary_zh": "A", "group_id": "group_a"},
+                    {
+                        "unit_id": "u_truncated_unknown",
+                        "summary_zh": "应在 partial 恢复时忽略",
+                        "group_id": "group_a",
+                    },
                 ],
                 "working_map": "# map",
             }

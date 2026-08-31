@@ -212,10 +212,19 @@ class V3Phases:
                 and bool(thread_id)
             )
             cached = read_summary_output(output, expected_batch_ids) if cache_valid else None
+            partial = (
+                read_summary_subset(output, expected_batch_ids)
+                if input_matches and thread_id
+                else None
+            )
             checkpoint_committed = bool(
                 checkpoint.get("thread_id") and checkpoint.get("input_hash")
             )
-            if (checkpoint_committed and cached is None) or (
+            if (
+                checkpoint_committed
+                and cached is None
+                and (partial is None or phase2_has_later_checkpoint(work_root, number))
+            ) or (
                 not checkpoint_committed
                 and phase2_has_later_checkpoint(work_root, number)
             ):
@@ -226,11 +235,6 @@ class V3Phases:
                 phase2_summaries.extend(batch_summaries)
                 codex_batches.append({**checkpoint, "batch": number, "reused": True})
                 continue
-            partial = (
-                read_summary_subset(output, expected_batch_ids)
-                if input_matches and thread_id
-                else None
-            )
             result = CodexResult(exit_code=0, thread_id=thread_id)
             if partial is None or not partial[0]:
                 result = await run_phase2_turn(
@@ -808,12 +812,10 @@ def read_summary_subset(
         working_map = raw_working_map.strip()
     except Exception:
         return None
+    values = [value for value in values if value.unit_id in allowed]
     actual = [value.unit_id for value in values]
-    if (
-        len(actual) != len(set(actual))
-        or not set(actual) <= allowed
-        or not working_map
-        or len(working_map.encode()) > PHASE2_WORKING_MAP_MAX_BYTES
+    if len(actual) != len(set(actual)) or not working_map or (
+        len(working_map.encode()) > PHASE2_WORKING_MAP_MAX_BYTES
     ):
         return None
     if any(not value.summary_zh.strip() for value in values):
