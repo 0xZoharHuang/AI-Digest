@@ -13,7 +13,7 @@ from playwright.async_api import Page, async_playwright
 from ..config import REPO_ROOT
 from ..models import CollectorResult, ContentStatus, HealthStatus, SourceItem, TimeBasis
 from ..store import x_expiry
-from ..utils import atomic_write_json
+from ..utils import atomic_write_json, json_dumps, sha256_text
 from .base import (
     Collector,
     SafeHTTPClient,
@@ -140,7 +140,7 @@ class XForYouCollector(Collector):
             )
         else:
             await self._record_failure(now)
-        return CollectorResult(
+        result = CollectorResult(
             source=self.source,
             items=items,
             manifests=[manifest],
@@ -148,6 +148,22 @@ class XForYouCollector(Collector):
                 self.source, started, status, len(extracted), len(items), len(inserted), errors
             ),
         )
+        result.health.surfaces = {
+            "for_you": {
+                "coverage_mode": "sampled_surface",
+                "limit": int(self.config.get("limit", 150)),
+                "observed_count": len(extracted),
+                "new_count": len(inserted),
+                "duplicate_count": max(0, len(extracted) - len(inserted)),
+                "termination": (
+                    "limit_reached"
+                    if len(extracted) >= int(self.config.get("limit", 150))
+                    else "feed_exhausted"
+                ),
+            }
+        }
+        result.health.raw_receipts_complete = status == HealthStatus.SUCCESS
+        return result
 
     async def _select_for_you(self, page: Page) -> None:
         selected = await page.evaluate(
@@ -204,7 +220,10 @@ class XForYouCollector(Collector):
                     extracted.append(row)
                     seen.add(post_id)
                 if len(extracted) >= limit:
-                    return extracted[:limit]
+                    output = extracted[:limit]
+                    for rank, row in enumerate(output, start=1):
+                        row["observed_rank"] = rank
+                    return output
                 consecutive_empty = consecutive_empty + 1 if len(extracted) == before else 0
                 if consecutive_empty >= consecutive_empty_limit:
                     break
@@ -219,6 +238,8 @@ class XForYouCollector(Collector):
             await page.reload(wait_until="domcontentloaded")
             await page.wait_for_selector('article[data-testid="tweet"]', timeout=15_000)
             await self._select_for_you(page)
+        for rank, row in enumerate(extracted[:limit], start=1):
+            row["observed_rank"] = rank
         return extracted[:limit]
 
     async def _detect_challenge(self, page: Page) -> bool:
@@ -259,6 +280,15 @@ class XForYouCollector(Collector):
         if row.get("datetime"):
             occurred = datetime.fromisoformat(str(row["datetime"]).replace("Z", "+00:00"))
         post_id = str(row["post_id"])
+        content_hash = sha256_text(
+            json_dumps(
+                {
+                    "text": row.get("text", ""),
+                    "quote": row.get("quote", ""),
+                    "links": row.get("links", []),
+                }
+            )
+        )
         return SourceItem(
             item_id=f"x_for_you:{post_id}",
             item_type="x_post",
@@ -267,6 +297,9 @@ class XForYouCollector(Collector):
             occurred_at=occurred,
             first_observed_at=now,
             handoff_at=now,
+            ready_at=now,
+            entity_key=f"x:{post_id}",
+            content_hash=content_hash,
             time_basis=TimeBasis.OBSERVED,
             content_status=ContentStatus.FULL,
             raw_refs=[blob_ref],
@@ -280,6 +313,8 @@ class XForYouCollector(Collector):
                 "links": row.get("links", []),
                 "media_urls": row.get("media", []),
                 "metrics": row.get("metrics", {}),
+                "observed_rank": row.get("observed_rank"),
+                "observed_at": now.isoformat(),
                 "link_metadata": row.get("link_metadata", []),
                 "url": f"https://x.com{row.get('status', f'/i/status/{post_id}')}",
             },

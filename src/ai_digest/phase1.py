@@ -21,6 +21,7 @@ from .collectors import (
 from .config import RuntimeConfig, SourcesConfig
 from .models import (
     CollectorResult,
+    CoverageMode,
     HealthStatus,
     RunManifest,
     RunStatus,
@@ -100,8 +101,31 @@ class Phase1Runner:
                 )
             else:
                 normalized.append(result)
+        self._enrich_source_receipts(normalized)
         await self._apply_empty_sanity(normalized)
         return normalized
+
+    @staticmethod
+    def _enrich_source_receipts(results: list[CollectorResult]) -> None:
+        coverage = {
+            "x_list": CoverageMode.COMPLETE_INCREMENT,
+            "x_for_you": CoverageMode.SAMPLED_SURFACE,
+            "github": CoverageMode.BOUNDED_DISCOVERY,
+            "arxiv": CoverageMode.COMPLETE_INCREMENT,
+            "huggingface": CoverageMode.BOUNDED_DISCOVERY,
+            "hackernews": CoverageMode.COMPLETE_INCREMENT,
+            "articles": CoverageMode.BOUNDED_DISCOVERY,
+        }
+        for result in results:
+            health = result.health
+            health.coverage_mode = coverage.get(result.source, CoverageMode.BOUNDED_DISCOVERY)
+            health.duplicate_count = max(0, health.parsed_count - health.new_count)
+            occurred = sorted(
+                item.occurred_at for item in result.items if item.occurred_at is not None
+            )
+            if occurred:
+                health.oldest_occurred_at = occurred[0]
+                health.newest_occurred_at = occurred[-1]
 
     async def run_daily(self, now: datetime | None = None) -> tuple[RunManifest, Path]:
         await self.initialize()
@@ -171,6 +195,18 @@ class Phase1Runner:
             "window_end": window_end.isoformat(),
             "total_items": len(pending),
             "files": {name: len(grouped.get(name, [])) for name in filenames},
+            "observation_kinds": dict(
+                sorted(
+                    {
+                        kind: sum(
+                            1
+                            for item in pending
+                            if item.observation_kind.value == kind
+                        )
+                        for kind in {item.observation_kind.value for item in pending}
+                    }.items()
+                )
+            ),
             "item_ids": [item.item_id for item in pending],
         }
         atomic_write_json(phase_dir / "index.json", index)
@@ -231,6 +267,7 @@ class Phase1Runner:
                 and baseline
                 and baseline > 0
                 and not allow_empty.get(result.source, False)
+                and not health.quiet_reason
             ):
                 health.status = HealthStatus.FAILED
                 health.errors.append(

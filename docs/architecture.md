@@ -1,106 +1,115 @@
 # Architecture and data contracts
 
+## Reader-first pipeline
+
+```text
+platform observations -> sealed source JSONL -> exact observation units
+  -> one serial Phase 2 Codex thread -> 0-15 research packages
+  -> package research leads -> Chinese dossiers/subreports
+  -> navigation brief -> private Lark Wiki + self-DM
+```
+
+Phase 1 maximizes durable observation coverage. Phase 2 annotates and dispatches without browsing or
+research. Phase 3 verifies concrete changes and explains them faithfully; it does not have to invent
+a unified thesis. Phase 4 is a reading index, not a second research or decision layer.
+
 ## Runtime truth
 
-The runtime root defaults to `~/Library/Application Support/ai-digest`:
+The default runtime root is `~/Library/Application Support/ai-digest`:
 
 ```text
 store/
   blobs/<sha256>
   fetches/<source>/<date>/<fetch-id>/manifest.json
   revisions/<source>/<item-id>/<revision>.json
-  revisions/github_snapshots/<repo-id>/<timestamp>-<snapshot-id>.json
 runs/<date>/attempt-0001/
   00_run_manifest.json
   01_phase1/{x_list,x_for_you,github,papers,articles,hackernews}.jsonl
-  02_routing/{bundles.json,assignments.jsonl}
-  03_research/<bundle-id>/report.md
+  02_routing/{units.jsonl,annotations.jsonl,working_map.md,packages.json}
+  03_research/<package-id>/{dossier.md,subreports/,research_manifest.json}
   04_brief/daily_brief.md
   05_publish/publish_manifest.json
 state.db
 ```
 
-Files are canonical. SQLite stores cursors, delivery state and rebuildable indexes.
+Files remain the canonical evidence and agent handoff. SQLite contains rebuildable cursor, revision,
+ready/delivery, snapshot and run indexes.
 
-GitHub candidate polls run at 01:00, 07:00, 13:00 and 19:00 local time. A delta is `null`
-until an observation exists at or before the full 6h/24h/7d horizon; the first observation is
-never presented as growth. Recently observed early-lane repositories are rotated through direct
-core-API checks so crossing 500 stars cannot disappear between search lanes.
+## Observation time and delivery
 
-## SourceItem
+Every `SourceItem` separates:
 
-All six JSONL files use a thin common envelope and a typed, source-specific payload:
+- `occurred_at`: source publication/event time;
+- `updated_at`: source revision time;
+- `first_observed_at`: first local observation;
+- `ready_at`: time the durable observation became eligible for delivery;
+- `observation_kind`: `live_increment`, `late_arrival`, `content_revision`, or
+  `bootstrap_snapshot`.
 
-```json
-{
-  "schema_version": 1,
-  "item_id": "hackernews:show:123",
-  "item_type": "hn_story",
-  "source": "hackernews",
-  "surface": "show",
-  "change": "entered_surface",
-  "occurred_at": "2026-08-29T23:00:00Z",
-  "first_observed_at": "2026-08-30T00:01:00Z",
-  "handoff_at": "2026-08-30T00:01:00Z",
-  "time_basis": "observed",
-  "content_status": "full",
-  "raw_refs": ["sha256:...json"],
-  "payload": {}
-}
-```
+A daily seal drains every undelivered non-bootstrap observation with `ready_at` before the cutoff.
+There is intentionally no lower time bound: a late observation after an outage cannot become
+permanently stranded. Initial historical article listings are retained as bootstrap context and do
+not masquerade as today's news.
 
-Content streams use the source's publication/version time. Recommendation and ranking surfaces use
-their first local observation time because those platforms do not expose an entry event. Content
-older than the 24-hour batch window remains in the store but is not automatically handed off.
+## Source contracts
 
-## Longitudinal deduplication
+- X List is a complete configured-list increment using `sinceTime`, pagination and overlap. Cursor
+  advancement follows durable raw/page receipts. X For You is explicitly a sampled recommendation
+  surface.
+- GitHub is bounded discovery over configured queries, Trending and tracked repositories. It emits
+  lane entry, star crossing/growth, release and material metadata events; it is not a claim of global
+  GitHub completeness.
+- arXiv consumes the complete configured multi-category daily feed. Hugging Face Daily Papers is a
+  dated, paginated attention/enrichment surface. They remain separate observations until unitization.
+- Hacker News scans item IDs from the durable `maxitem` cursor. New/top/show are attention surfaces
+  on one story identity, not three story records.
+- Media adapters retain raw discovery/body responses, normalize canonical URLs, recurse sitemap
+  indexes and emit content-hash revisions. Extraction failures preserve metadata for Phase 3.
 
-- X: `post_id + surface`; official edits may create a new revision.
-- GitHub: `numeric_repo_id + lane`; entering early, emerging and Trending are separate firsts.
-- arXiv: `arxiv_id + version`.
-- Hugging Face: `arxiv_id + daily_papers surface`.
-- HN: `story_id + new/top/show surface`.
-- Articles: `canonical URL + clean text hash`.
-
-Normal engagement changes do not trigger a new SourceItem. GitHub ordinary pushes and releases do
-not turn the discovery system into an unbounded long-term repository watcher.
+`SourceHealth` records operational status separately from `coverage_mode`:
+`complete_increment`, `bounded_discovery`, or `sampled_surface`. Receipts include pagination/cursor
+state, duplicate/revision counts, observed time range, raw completeness and quiet rationale.
 
 ## Phase 2 contract
 
-Every Phase 1 `item_id` must appear exactly once in `assignments.jsonl`:
+Deterministic unitization groups only provably identical entities: an X post/conversation, GitHub
+repo, arXiv paper, HN story or canonical article. Semantic similarity never deletes evidence.
+
+One logical Codex thread processes bounded batches of at most 160 units and 256 KiB projection.
+Each batch returns exactly one annotation per unit plus a compact working map:
 
 ```json
-{"id":"...","d":"r","t":["bundle-1"]}
-{"id":"...","d":"w","t":[]}
-{"id":"...","d":"n","t":[]}
+{"unit_id":"u_...","disposition":"investigate","summary_zh":"...","reason":"...","entities":[],"relation_hints":[],"duplicate_of":null}
 ```
 
-Research items may enter one or two bundles. A valid quiet day has zero bundles and a reason. Code
-validates coverage and asks the same Router session to repair an incomplete output once.
+Allowed dispositions are `investigate`, `supporting`, `duplicate`, and `discard`. Ambiguous weak
+signals default to investigation. The application validates each checkpoint before resuming the
+same thread and never performs the V2 all-item calibration pass.
 
-The implementation does not ask one model response to emit thousands of assignments. It distributes
-items into deterministic source-stratified batches of at most 100, validates each batch, and then
-consolidates the local topic proposals into at most 18 global bundles. A second batched calibration
-pass re-evaluates every item against the shared global topic map. Items that are high-signal but do
-not fit the map remain `watch` and are recorded in `new_topic_suggestions.json`; they are never
-silently forced into an unrelated topic. The final validator again requires exact Phase 1 coverage.
+After all annotations, the same thread reads only compact artifacts and creates 0-15 packages.
+Every investigate unit belongs to exactly one package. Packages are split mechanically above 90
+primary units or about 750 KiB.
 
-Each Phase 3 workspace contains the selected full normalized payloads, any resolved article body
-files, and `bundle_context.json` with source/content counts plus an ordered item-id hash. Reports
-must disclose how the supplied corpus was used or deliberately deprioritized.
+## Phase 3 contract
 
-## Queue isolation
+Each package lead receives `AGENTS.md`, a readable `PACKAGE.md`, a manifest, per-unit source files,
+an on-demand daily catalog, bootstrap index and progress checkpoint. It may use up to four
+non-recursive subagents for genuinely independent research directions.
 
-The main LaunchAgent first seals an immutable Phase 1 run in SQLite, materializes it under the
-unwatched `staging/` directory, and atomically renames it into `jobs/`. Only after that queue
-directory is visible does one transaction mark the run queued and its items delivered. Sealed runs
-are replayed at the beginning of every tick. A user LaunchAgent moves the job to `completed/` after
-Phase 2–4. A distinct recovery LaunchAgent watches only `completed/`, imports the artifacts and publishes them; its entry
-point is `tick --event recover`, so a queue wake cannot start another collection. Successful jobs
-move to `archived/`, Lark retryable jobs to `publish_pending/`, and failed worker jobs to `failed/`.
+The lead writes a Simplified-Chinese `dossier.md`, natural `subreports/*.md`, and a small artifact
+manifest. Every subreport identifies its triggering daily changes, verified facts, important detail,
+primary evidence, conflicts and unknowns. Relationships may use ASCII when useful.
 
-Every Codex call uses a custom permission profile rather than the broad built-in sandbox flag. The
-profile denies reads of the current user's entire `CODEX_HOME`, `.ssh`, and login Keychains while granting
-only read-only or current-workspace access as the phase requires. Installation fails closed unless
-an exact sandbox probe can write its workspace but receives `Operation not permitted` when opening
-`auth.json`, including a zero-byte read.
+The artifact manifest accounts for each investigate unit as primary or unresolved. Missing units
+mark Phase 3 partial and are recorded for prompt/context evaluation; production does not launch an
+automatic patch agent. Existing research still publishes.
+
+## Queue and permissions
+
+The collector seals Phase 1 locally, copies all referenced blobs plus compact bootstrap/history
+indexes into staging, and atomically renames the job into the queue. The worker writes Phase 2-4
+artifacts; recovery validates and imports either V3 artifacts or legacy V2 reports before publishing.
+
+Every Codex call denies the user's Codex data, SSH directory and login Keychains while granting only
+the current phase workspace. Installation performs a consistent SQLite backup, idempotent schema
+migration, model-access preflight, exact sandbox probe and browser launch check before cutover.

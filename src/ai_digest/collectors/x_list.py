@@ -15,7 +15,7 @@ from ..models import (
     TimeBasis,
 )
 from ..store import x_expiry
-from ..utils import parse_datetime
+from ..utils import json_dumps, parse_datetime, sha256_text
 from ..x_provider import TwitterApiIOKeyStore
 from .base import Collector, SafeHTTPClient, finish_manifest, health_from, new_fetch_manifest
 
@@ -182,6 +182,8 @@ class XListCollector(Collector):
             items.append(item)
 
         inserted = await self.state.put_items(items)
+        for manifest in manifests:
+            self.store.write_fetch_manifest(manifest)
         await self.state.set_cursors(cursor_updates)
         success_count = sum(
             1 for value in surfaces.values() if value["status"] == HealthStatus.SUCCESS.value
@@ -202,12 +204,16 @@ class XListCollector(Collector):
             errors,
         )
         health.surfaces = surfaces
-        return CollectorResult(
+        result = CollectorResult(
             source=self.source,
             items=items,
             manifests=manifests,
             health=health,
         )
+        result.health.raw_receipts_complete = status == HealthStatus.SUCCESS
+        if status == HealthStatus.SUCCESS and fetched_total == 0:
+            result.health.quiet_reason = "all configured Lists completed with no new Posts"
+        return result
 
     def _to_item(
         self,
@@ -229,6 +235,13 @@ class XListCollector(Collector):
             "bookmark_count": tweet.get("bookmarkCount", tweet.get("bookmark_count")),
         }
         username = author.get("userName") or author.get("username")
+        stable_content = {
+            "text": str(tweet.get("text") or ""),
+            "conversation_id": tweet.get("conversationId") or tweet.get("conversation_id"),
+            "references": _references(tweet),
+            "entities": entities,
+        }
+        content_hash = sha256_text(json_dumps(stable_content))
         return SourceItem(
             item_id=f"x_list:{post_id}",
             item_type="x_post",
@@ -237,6 +250,9 @@ class XListCollector(Collector):
             occurred_at=created,
             first_observed_at=observed_at,
             handoff_at=created,
+            ready_at=observed_at,
+            entity_key=f"x:{post_id}",
+            content_hash=content_hash,
             time_basis=TimeBasis.OCCURRED,
             content_status=ContentStatus.FULL,
             raw_refs=[blob_ref],

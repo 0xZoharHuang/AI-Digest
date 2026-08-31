@@ -42,6 +42,19 @@ class ContentStatus(StrEnum):
     TOMBSTONE = "tombstone"
 
 
+class ObservationKind(StrEnum):
+    LIVE_INCREMENT = "live_increment"
+    LATE_ARRIVAL = "late_arrival"
+    CONTENT_REVISION = "content_revision"
+    BOOTSTRAP_SNAPSHOT = "bootstrap_snapshot"
+
+
+class CoverageMode(StrEnum):
+    COMPLETE_INCREMENT = "complete_increment"
+    BOUNDED_DISCOVERY = "bounded_discovery"
+    SAMPLED_SURFACE = "sampled_surface"
+
+
 class SourceItem(BaseModel):
     schema_version: int = 1
     item_id: str
@@ -53,11 +66,19 @@ class SourceItem(BaseModel):
     updated_at: datetime | None = None
     first_observed_at: datetime = Field(default_factory=utc_now)
     handoff_at: datetime = Field(default_factory=utc_now)
+    ready_at: datetime = Field(default=None)  # type: ignore[assignment]
+    observation_kind: ObservationKind = ObservationKind.LIVE_INCREMENT
+    entity_key: str | None = None
+    content_hash: str | None = None
     time_basis: TimeBasis = TimeBasis.OBSERVED
     content_status: ContentStatus = ContentStatus.FULL
     raw_refs: list[str] = Field(default_factory=list)
     payload: dict[str, Any] = Field(default_factory=dict)
     expires_at: datetime | None = None
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.ready_at is None:
+            self.ready_at = self.first_observed_at
 
 
 class FetchManifest(BaseModel):
@@ -88,6 +109,56 @@ class SourceHealth(BaseModel):
     errors: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     surfaces: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    coverage_mode: CoverageMode = CoverageMode.COMPLETE_INCREMENT
+    duplicate_count: int = 0
+    revision_count: int = 0
+    oldest_occurred_at: datetime | None = None
+    newest_occurred_at: datetime | None = None
+    raw_receipts_complete: bool = True
+    quiet_reason: str | None = None
+
+
+class ObservationUnit(BaseModel):
+    unit_id: str
+    entity_key: str
+    item_ids: list[str]
+    sources: list[str]
+    occurred_at: datetime | None = None
+    summary: str = ""
+    projection: dict[str, Any] = Field(default_factory=dict)
+
+
+class Phase2Annotation(BaseModel):
+    unit_id: str
+    disposition: Literal["investigate", "supporting", "duplicate", "discard"]
+    summary_zh: str
+    reason: str
+    entities: list[str] = Field(default_factory=list)
+    relation_hints: list[str] = Field(default_factory=list)
+    duplicate_of: str | None = None
+
+
+class ResearchPackage(BaseModel):
+    package_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")
+    label: str
+    investigate_unit_ids: list[str]
+    supporting_unit_ids: list[str] = Field(default_factory=list)
+
+
+class SubreportArtifact(BaseModel):
+    slug: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,79}$")
+    path: str
+    unit_ids: list[str] = Field(default_factory=list)
+
+
+class ResearchArtifactManifest(BaseModel):
+    package_id: str
+    dossier: str
+    subreports: list[SubreportArtifact | str] = Field(default_factory=list)
+    primary_unit_ids: list[str] = Field(default_factory=list)
+    unresolved_unit_ids: list[str] = Field(default_factory=list)
+    missing_unit_ids: list[str] = Field(default_factory=list)
+    status: str = "success"
 
 
 class CollectorResult(BaseModel):

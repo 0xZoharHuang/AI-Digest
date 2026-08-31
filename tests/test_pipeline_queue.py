@@ -121,6 +121,76 @@ async def test_successful_reimport_archives_stale_worker_failure(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_v3_import_preserves_dossier_and_nested_subreport(tmp_path):
+    runtime, _state, run_dir, run_id = await _sealed_run(tmp_path, "v3-import")
+    (run_dir / "01_phase1" / "index.json").write_text(json.dumps({"item_ids": ["a"]}))
+    job = runtime.shared_runtime_root / "completed" / run_id
+    routing = job / "02_routing"
+    research = job / "03_research"
+    brief = job / "04_brief"
+    (research / "package" / "subreports").mkdir(parents=True)
+    routing.mkdir(parents=True)
+    brief.mkdir(parents=True)
+    unit = {
+        "unit_id": "u_a",
+        "entity_key": "item:a",
+        "item_ids": ["a"],
+        "sources": ["x_list"],
+        "summary": "A",
+        "projection": {},
+    }
+    annotation = {
+        "unit_id": "u_a",
+        "disposition": "investigate",
+        "summary_zh": "A",
+        "reason": "A",
+        "entities": [],
+        "relation_hints": [],
+        "duplicate_of": None,
+    }
+    package = {
+        "package_id": "package",
+        "label": "Package",
+        "investigate_unit_ids": ["u_a"],
+        "supporting_unit_ids": [],
+    }
+    (routing / "units.jsonl").write_text(json.dumps(unit) + "\n")
+    (routing / "annotations.jsonl").write_text(json.dumps(annotation) + "\n")
+    (routing / "packages.json").write_text(json.dumps([package]))
+    (routing / "PHASE2_COMPLETE").write_text("complete\n")
+    (research / "package" / "dossier.md").write_text("# Dossier\n")
+    (research / "package" / "subreports" / "detail.md").write_text("# Detail\n")
+    artifact = {
+        "package_id": "package",
+        "dossier": "dossier.md",
+        "subreports": [
+            {"slug": "detail", "path": "subreports/detail.md", "unit_ids": ["u_a"]}
+        ],
+        "primary_unit_ids": ["u_a"],
+        "unresolved_unit_ids": [],
+        "missing_unit_ids": [],
+        "status": "success",
+    }
+    (research / "package" / "research_manifest.json").write_text(json.dumps(artifact))
+    (research / "successes.json").write_text(
+        json.dumps({"package": "package/dossier.md"})
+    )
+    (research / "failures.json").write_text("[]")
+    (research / "quality.json").write_text(json.dumps({"status": "success"}))
+    (research / "PHASE3_COMPLETE").write_text("complete\n")
+    (brief / "daily_brief.md").write_text("# Brief\n")
+    (brief / "watch.jsonl").write_text("")
+    (brief / "failures.json").write_text("[]")
+    (brief / "quality.json").write_text(json.dumps({"status": "success"}))
+    (brief / "source_health.json").write_text("{}")
+    (brief / "PHASE4_COMPLETE").write_text("complete\n")
+
+    assert import_agent_job(runtime, job) == run_dir
+    assert (run_dir / "03_research/package/dossier.md").exists()
+    assert (run_dir / "03_research/package/subreports/detail.md").exists()
+
+
+@pytest.mark.asyncio
 async def test_recovery_quarantines_bad_job_and_publishes_next(tmp_path, monkeypatch):
     runtime, state, bad_run, bad_id = await _sealed_run(tmp_path, "bad-job")
     _, _, valid_run, valid_id = await _sealed_run(tmp_path, "valid-job", attempt=2)

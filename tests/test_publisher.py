@@ -91,3 +91,58 @@ def test_report_link_rewrite_handles_prefix_bundle_ids_exactly():
         {"agent": "https://lark.test/a", "agent-tools": "https://lark.test/b"},
     )
     assert rewritten == "[A](https://lark.test/a) [B](https://lark.test/b)"
+
+
+def test_v3_publisher_nests_subreports_and_rewrites_all_links(tmp_path):
+    run_dir = tmp_path / "runs" / "2026-08-31" / "attempt-0001"
+    package = run_dir / "03_research" / "physical_ai"
+    subreports = package / "subreports"
+    subreports.mkdir(parents=True)
+    (run_dir / "00_run_manifest.json").write_text(json.dumps({"run_id": "run-v3"}))
+    (package / "dossier.md").write_text(
+        "# Physical AI\n\n[Detail](subreport://physical_ai/runtime)"
+    )
+    (subreports / "runtime.md").write_text("# Runtime\n\nBody")
+    (package / "research_manifest.json").write_text(
+        json.dumps(
+            {
+                "package_id": "physical_ai",
+                "dossier": "dossier.md",
+                "subreports": [
+                    {
+                        "slug": "runtime",
+                        "path": "subreports/runtime.md",
+                        "unit_ids": ["u_a"],
+                    }
+                ],
+                "primary_unit_ids": ["u_a"],
+                "unresolved_unit_ids": [],
+                "missing_unit_ids": [],
+                "status": "success",
+            }
+        )
+    )
+    (run_dir / "03_research" / "successes.json").write_text(
+        json.dumps({"physical_ai": "physical_ai/dossier.md"})
+    )
+    (run_dir / "03_research" / "failures.json").write_text("[]")
+    health = run_dir / "01_phase1" / "source_health.json"
+    health.parent.mkdir(parents=True)
+    health.write_text("{}")
+    brief = run_dir / "04_brief" / "daily_brief.md"
+    brief.parent.mkdir(parents=True)
+    brief.write_text(
+        "# Brief\n\n[Dossier](report://physical_ai) "
+        "[Runtime](subreport://physical_ai/runtime)"
+    )
+    (run_dir / "04_brief" / "watch.jsonl").write_text("")
+
+    publisher = LarkPublisher(LarkConfig(space_id="space", receiver_open_id="user"))
+    fake = FakeLark()
+    publisher.cli = fake  # type: ignore[assignment]
+    result = publisher.publish(run_dir, "SUCCESS")
+
+    assert result.status == "success"
+    assert any(title == "Runtime" for _, title in fake.nodes)
+    assert all("subreport://" not in content for _, content in fake.writes)
+    assert all("report://" not in content for _, content in fake.writes)

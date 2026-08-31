@@ -34,7 +34,7 @@ if [[ "$mode" == "--cutover" ]]; then
   launchctl bootstrap "$launch_domain" "$tick_target"
   launchctl bootstrap "$launch_domain" "$recover_target"
   launchctl bootstrap "$launch_domain" "$runner_target"
-  echo "Cut over to V2 user LaunchAgents. Legacy plists are archived in $legacy_dir"
+  echo "Cut over to V3 user LaunchAgents. Legacy plists are archived in $legacy_dir"
   exit 0
 fi
 
@@ -147,8 +147,18 @@ if [[ "$probe_status" -eq 0 || ! -f "$probe_dir/workspace-ok" \
 fi
 rm -rf "$probe_dir"
 
+if [[ -f "$runtime_dir/state.db" ]]; then
+  backup_dir="$runtime_dir/backups"
+  install -d -m 700 "$backup_dir"
+  state_backup="$backup_dir/state-before-v3-$release_stamp.db"
+  sqlite3 "$runtime_dir/state.db" ".backup '$state_backup'"
+  chmod 600 "$state_backup"
+fi
+"$shared_app/.venv/bin/python" -m ai_digest.cli maintenance \
+  --classify-existing-article-bootstrap
+
 install -m 600 "$tick_tmp" "$tick_target"
 install -m 600 "$recover_tmp" "$recover_target"
 install -m 600 "$runner_tmp" "$runner_target"
-echo "Installed V2 files for the current user; schedules are still disabled."
+echo "Installed V3 files for the current user; schedules are still disabled."
 echo "Run the full manual acceptance, then execute: $0 --cutover"

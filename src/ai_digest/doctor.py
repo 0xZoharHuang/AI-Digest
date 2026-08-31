@@ -23,6 +23,18 @@ def run_doctor(runtime: RuntimeConfig, sources: SourcesConfig) -> dict[str, Any]
     codex = resolve_binary(runtime.codex.binary)
     lark = resolve_binary(runtime.lark.binary)
     add("codex_cli", Path(codex).exists(), codex)
+    for model in sorted(
+        {
+            runtime.codex.router_model,
+            runtime.codex.research_model,
+            runtime.codex.brief_model,
+        }
+    ):
+        add(
+            f"codex_model:{model}",
+            _codex_model_access(codex, model),
+            "minimal authenticated codex exec completed",
+        )
     add("lark_cli", Path(lark).exists(), lark)
     add("github_auth", _command_ok(["gh", "auth", "status"]), "gh keyring/login")
     x_enabled = bool(sources.x_list.get("enabled"))
@@ -108,6 +120,34 @@ def _command_ok(args: list[str]) -> bool:
         return subprocess.run(args, capture_output=True, timeout=15).returncode == 0
     except subprocess.SubprocessError:
         return False
+
+
+def _codex_model_access(binary: str, model: str) -> bool:
+    if not Path(binary).exists():
+        return False
+    try:
+        process = subprocess.run(
+            [
+                binary,
+                "exec",
+                "--ignore-user-config",
+                "--skip-git-repo-check",
+                "--json",
+                "-m",
+                model,
+                "-c",
+                'model_reasoning_effort="low"',
+                "Return only OK.",
+            ],
+            cwd=REPO_ROOT,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return process.returncode == 0 and '"type":"turn.completed"' in process.stdout
 
 
 def _playwright_executable() -> Path | None:

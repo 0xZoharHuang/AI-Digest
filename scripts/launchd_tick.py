@@ -16,14 +16,22 @@ STALE_AFTER_SECONDS = 24 * 60 * 60
 STAGING_NAME = re.compile(r"^\.?[A-Za-z0-9_-]{8,96}\.staging$")
 
 
-def events_for_hour(hour: int) -> list[str]:
+def events_for_time(hour: int, minute: int = 0) -> list[str]:
+    if hour == 13 and minute == 30:
+        return ["papers"]
     return {
-        1: ["x-list", "github"],
+        1: ["incremental"],
         7: ["daily"],
-        13: ["x-list", "github"],
-        19: ["x-list", "github"],
+        13: ["incremental"],
+        19: ["incremental", "papers"],
         20: ["x-for-you"],
-    }.get(hour, [])
+    }.get(hour, []) if minute == 0 or hour == 7 else []
+
+
+def events_for_hour(hour: int) -> list[str]:
+    """Compatibility helper for tests and older diagnostics."""
+
+    return events_for_time(hour, 0)
 
 
 def event_for_hour(hour: int) -> str:
@@ -58,7 +66,7 @@ def remove_stale_staging(shared_root: Path, now: float | None = None) -> list[Pa
 
 def main() -> int:
     now = datetime.now()
-    events = events_for_hour(now.hour)
+    events = events_for_time(now.hour, now.minute)
     runtime = load_runtime_config()
     for path in remove_stale_staging(runtime.shared_runtime_root):
         print(f"removed stale queue staging directory: {path}")

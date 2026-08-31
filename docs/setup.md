@@ -63,7 +63,7 @@ After inspecting the generated plist paths:
 
 Apply mode needs no administrator access. It creates a credential-free, versioned application copy
 under `~/Library/Application Support/ai-digest/app`, creates three user LaunchAgent plist files,
-and leaves both V1 and V2 schedules unloaded. Inspect and run a complete manual cycle before the
+and leaves both legacy and V3 schedules unloaded. Inspect and run a complete manual cycle before the
 separate cutover step:
 
 ```bash
@@ -71,7 +71,7 @@ separate cutover step:
 ```
 
 Cutover unloads the two legacy LaunchAgents, archives their exact plist files, and bootstraps three
-V2 user LaunchAgents:
+V3 user LaunchAgents:
 
 - `com.ai-digest.tick` is calendar-only and performs scheduled collection.
 - `com.ai-digest.recover` watches `completed/` and only runs `tick --event recover`; it never starts
@@ -82,7 +82,8 @@ The installer creates `staging/`, `jobs/`, `completed/`, `publish_pending/`, `ar
 and `logs/` below the current user's runtime directory. Roll back the schedules and restore the
 latest archived V1 plist files with `./scripts/install_macos.sh --rollback`.
 
-The calendar job polls Lists and GitHub at 01:00/13:00/19:00, runs the complete daily collection
+The calendar job polls X Lists, GitHub and HN at 01:00/13:00/19:00, prefetches dated arXiv/HF
+papers at 13:30 (with a 19:00 retry), runs the complete daily collection
 (including Lists and For You) at 07:00, and performs a second For You pass at 20:00.
 The 07:10 and 07:19 entries are crash-recovery retries: an active/sealed/queued/completed run is a
 no-op, while a `running` record older than 18 minutes may be retried before the 07:20 cutoff.
@@ -98,6 +99,7 @@ uv run ai-digest publish /path/to/test-run
 ```
 
 Before cutover, verify all three List surfaces, a non-empty For You pass, every non-X adapter, one
-complete Chinese Router/Research/Brief run, Wiki readback and a bot DM with a real message ID. Run a
-24-hour shadow pilot and review source counts, partial failures, r/w/n distribution, bundle count,
+complete Chinese annotate/package/research/Brief run, Wiki readback and a bot DM with a real message
+ID. Run a 24-hour shadow pilot and review source receipts, partial failures, disposition distribution,
+package count,
 Codex usage, provider credit usage and Lark status before switching from V1.

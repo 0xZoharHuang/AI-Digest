@@ -13,6 +13,7 @@ TICK_SCRIPT = runpy.run_path(str(ROOT / "scripts" / "launchd_tick.py"))
 STALE_AFTER_SECONDS = TICK_SCRIPT["STALE_AFTER_SECONDS"]
 event_for_hour = TICK_SCRIPT["event_for_hour"]
 events_for_hour = TICK_SCRIPT["events_for_hour"]
+events_for_time = TICK_SCRIPT["events_for_time"]
 remove_stale_staging = TICK_SCRIPT["remove_stale_staging"]
 
 
@@ -43,10 +44,11 @@ def test_calendar_event_mapping():
     assert event_for_hour(20) == "x-for-you"
     assert event_for_hour(3) == "recover"
     assert event_for_hour(23) == "recover"
-    assert events_for_hour(1) == ["x-list", "github"]
+    assert events_for_hour(1) == ["incremental"]
     assert events_for_hour(7) == ["daily"]
-    assert events_for_hour(13) == ["x-list", "github"]
-    assert events_for_hour(19) == ["x-list", "github"]
+    assert events_for_hour(13) == ["incremental"]
+    assert events_for_time(13, 30) == ["papers"]
+    assert events_for_hour(19) == ["incremental", "papers"]
 
 
 def test_daily_calendar_has_bounded_crash_retries_before_cutoff():

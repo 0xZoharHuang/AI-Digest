@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any
 
 from ..models import CollectorResult, ContentStatus, HealthStatus, SourceItem, TimeBasis
-from ..utils import parse_datetime
+from ..utils import json_dumps, parse_datetime, sha256_text
 from .base import Collector, SafeHTTPClient, finish_manifest, health_from, new_fetch_manifest
 
 
@@ -16,7 +16,7 @@ class HuggingFaceCollector(Collector):
         if not self.enabled:
             return self.disabled()
         started = time.monotonic()
-        url = str(self.config.get("url", "https://huggingface.co/api/papers"))
+        url = str(self.config.get("url", "https://huggingface.co/api/daily_papers"))
         client = SafeHTTPClient(timeout=40)
         manifest = new_fetch_manifest(self.source, url)
         errors: list[str] = []
@@ -24,16 +24,42 @@ class HuggingFaceCollector(Collector):
         items: list[SourceItem] = []
         rows: list[dict[str, Any]] = []
         try:
-            response = await client.request(
-                "GET", url, params={"limit": int(self.config.get("limit", 100))}
-            )
-            blob = self.store.write_blob(response.text, ".json")
-            rows = response.json()
-            for row in rows:
+            limit = int(self.config.get("page_size", self.config.get("limit", 100)))
+            max_pages = int(self.config.get("max_pages", 50))
+            target_date = now.date().isoformat()
+            blob_refs: list[str] = []
+            response = None
+            for page in range(max_pages):
+                response = await client.request(
+                    "GET",
+                    url,
+                    params={"date": target_date, "limit": limit, "p": page},
+                )
+                blob_refs.append(self.store.write_blob(response.text, ".json"))
+                page_rows = response.json()
+                if not isinstance(page_rows, list):
+                    raise RuntimeError("Hugging Face daily papers returned a non-list payload")
+                rows.extend(page_rows)
+                if len(page_rows) < limit:
+                    break
+            for raw_row in rows:
+                row = raw_row.get("paper", raw_row)
+                if not isinstance(row, dict):
+                    continue
                 paper_id = str(row.get("id", ""))
                 if not paper_id:
                     continue
                 published = parse_datetime(row.get("publishedAt"))
+                content_hash = sha256_text(
+                    json_dumps(
+                        {
+                            "title": row.get("title", ""),
+                            "summary": row.get("summary", ""),
+                            "ai_summary": row.get("ai_summary", ""),
+                            "github_repo": row.get("githubRepo"),
+                        }
+                    )
+                )
                 items.append(
                     SourceItem(
                         item_id=f"huggingface:daily:{paper_id}",
@@ -44,15 +70,18 @@ class HuggingFaceCollector(Collector):
                         occurred_at=published,
                         first_observed_at=now,
                         handoff_at=now,
+                        ready_at=now,
+                        entity_key=f"arxiv:{paper_id}",
+                        content_hash=content_hash,
                         time_basis=TimeBasis.OBSERVED,
                         content_status=ContentStatus.FULL,
-                        raw_refs=[blob],
+                        raw_refs=list(blob_refs),
                         payload={
                             "arxiv_id": paper_id,
                             "title": row.get("title", ""),
                             "summary": row.get("summary", ""),
                             "hf_ai_summary": row.get("ai_summary", ""),
-                            "upvotes": row.get("upvotes", 0),
+                            "upvotes": raw_row.get("upvotes", row.get("upvotes", 0)),
                             "published_at": row.get("publishedAt"),
                             "authors": row.get("authors") or [],
                             "github_repo": row.get("githubRepo"),
@@ -62,7 +91,8 @@ class HuggingFaceCollector(Collector):
                         },
                     )
                 )
-            manifest.blob_refs = [blob]
+            manifest.request.update({"date": target_date, "page_size": limit})
+            manifest.blob_refs = blob_refs
         except Exception as error:
             errors.append(f"{type(error).__name__}: {error}")
         finally:
@@ -80,7 +110,7 @@ class HuggingFaceCollector(Collector):
         )
         self.store.write_fetch_manifest(manifest)
         inserted = await self.state.put_items(items)
-        return CollectorResult(
+        result = CollectorResult(
             source=self.source,
             items=items,
             manifests=[manifest],
@@ -88,3 +118,6 @@ class HuggingFaceCollector(Collector):
                 self.source, started, status, len(rows), len(items), len(inserted), errors
             ),
         )
+        if status == HealthStatus.SUCCESS and not items:
+            result.health.quiet_reason = "dated Hugging Face Daily Papers page was empty"
+        return result

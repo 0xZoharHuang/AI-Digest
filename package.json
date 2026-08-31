@@ -1,11 +1,11 @@
 {
   "name": "ai-intelligence-radar-tools",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Pinned external CLIs used by AI Intelligence Radar",
   "license": "MIT",
   "dependencies": {
     "@larksuite/cli": "1.0.68",
-    "@openai/codex": "0.144.1"
+    "@openai/codex": "0.151.0"
   }
 }

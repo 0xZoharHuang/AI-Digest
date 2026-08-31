@@ -7,14 +7,24 @@ import re
 import shutil
 import sqlite3
 import stat
-from contextlib import suppress
+from contextlib import closing, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .agent_phases import AgentPhases
 from .config import RuntimeConfig, SourcesConfig, load_interests
-from .models import Assignment, Bundle, PublishManifest, RunManifest, RunStatus
+from .models import (
+    Assignment,
+    Bundle,
+    ObservationUnit,
+    Phase2Annotation,
+    PublishManifest,
+    ResearchArtifactManifest,
+    ResearchPackage,
+    RunManifest,
+    RunStatus,
+)
 from .phase1 import Phase1Runner
 from .publisher import LarkPublisher
 from .store import FileStore, StateDB, load_jsonl
@@ -41,11 +51,17 @@ async def run_local_pipeline(
         failures = json.loads(
             (run_dir / "03_research" / "failures.json").read_text(encoding="utf-8")
         )
+        quality_path = run_dir / "03_research" / "quality.json"
+        quality = (
+            json.loads(quality_path.read_text(encoding="utf-8"))
+            if quality_path.exists()
+            else {}
+        )
         manifest.phases["phase3"] = (
             RunStatus.QUIET
             if not routing.bundles
             else RunStatus.PARTIAL
-            if failures
+            if failures or quality.get("status") == "partial"
             else RunStatus.SUCCESS
         )
         await phases.brief(run_dir, routing, successes)
@@ -103,6 +119,7 @@ async def enqueue_agent_job(runtime: RuntimeConfig, run_dir: Path) -> Path:
         atomic_write_text(staging / "interests.md", load_interests())
         _copy_referenced_blobs(runtime, staging)
         _copy_recent_history(runtime, staging, run_dir)
+        _copy_bootstrap_index(runtime, staging)
         atomic_write_text(staging / "READY", "ready\n")
         _make_group_writable(staging)
         _fsync_tree(staging)
@@ -253,7 +270,14 @@ def _reconcile_manifest(runtime: RuntimeConfig, run_dir: Path) -> RunManifest:
             manifest.errors.append(message)
 
     bundles_path = run_dir / "02_routing" / "bundles.json"
-    bundles = json.loads(bundles_path.read_text(encoding="utf-8")) if bundles_path.exists() else []
+    packages_path = run_dir / "02_routing" / "packages.json"
+    bundles = (
+        json.loads(bundles_path.read_text(encoding="utf-8"))
+        if bundles_path.exists()
+        else json.loads(packages_path.read_text(encoding="utf-8"))
+        if packages_path.exists()
+        else []
+    )
     if not isinstance(bundles, list):
         raise ValueError("bundles.json must be an array")
     failed_phase = str(worker_failure.get("phase")) if worker_failure else None
@@ -269,13 +293,15 @@ def _reconcile_manifest(runtime: RuntimeConfig, run_dir: Path) -> RunManifest:
     failures_path = run_dir / "03_research" / "failures.json"
     successes = json.loads(successes_path.read_text(encoding="utf-8")) if successes_path.exists() else {}
     failures = json.loads(failures_path.read_text(encoding="utf-8")) if failures_path.exists() else []
+    quality_path = run_dir / "03_research" / "quality.json"
+    quality = json.loads(quality_path.read_text(encoding="utf-8")) if quality_path.exists() else {}
     if not isinstance(successes, dict) or not isinstance(failures, list):
         raise ValueError("invalid research outcome files")
     manifest.phases["phase3"] = (
         RunStatus.FAILED
         if failed_phase in {"phase2", "phase3"} and not successes
         else RunStatus.PARTIAL
-        if failures
+        if failures or quality.get("status") == "partial"
         else RunStatus.QUIET
         if not bundles
         else RunStatus.SUCCESS
@@ -468,7 +494,7 @@ def _update_run_state(
     if handoff_state not in allowed_states:
         raise ValueError(f"invalid handoff state: {handoff_state}")
     now = datetime.now(UTC).isoformat()
-    with sqlite3.connect(runtime.runtime_root / "state.db") as connection:
+    with closing(sqlite3.connect(runtime.runtime_root / "state.db")) as connection:
         cursor = connection.execute(
             "UPDATE runs SET status = ?, handoff_state = ?, updated_at = ? WHERE run_id = ?",
             (status_value, handoff_state, now, run_id),
@@ -517,7 +543,7 @@ def _publish_import_failure(runtime: RuntimeConfig, run_id: str, detail: str) ->
 
 def _lookup_run_dir(runtime: RuntimeConfig, run_id: str) -> Path:
     database = runtime.runtime_root / "state.db"
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection:
         row = connection.execute("SELECT path FROM runs WHERE run_id = ?", (run_id,)).fetchone()
     if not row:
         raise ValueError(f"unknown run id from runner: {run_id}")
@@ -532,6 +558,48 @@ def _import_routing(job: Path, run: Path) -> None:
     source = job / "02_routing"
     if not source.exists():
         raise ValueError("runner output is missing 02_routing")
+    if (source / "packages.json").exists():
+        units_content = _safe_read(source, Path("units.jsonl"), 50_000_000)
+        annotations_content = _safe_read(source, Path("annotations.jsonl"), 20_000_000)
+        packages_content = _safe_read(source, Path("packages.json"), 5_000_000)
+        units = [
+            ObservationUnit.model_validate(json.loads(line))
+            for line in units_content.splitlines()
+            if line
+        ]
+        annotations = [
+            Phase2Annotation.model_validate(json.loads(line))
+            for line in annotations_content.splitlines()
+            if line
+        ]
+        packages = [ResearchPackage.model_validate(row) for row in json.loads(packages_content)]
+        expected_units = {unit.unit_id for unit in units}
+        phase1_index = json.loads(
+            (run / "01_phase1" / "index.json").read_text(encoding="utf-8")
+        )
+        expected_items = {str(value) for value in phase1_index.get("item_ids", [])}
+        unit_items = [item_id for unit in units for item_id in unit.item_ids]
+        if len(unit_items) != len(set(unit_items)) or set(unit_items) != expected_items:
+            raise ValueError("V3 units do not exactly cover imported Phase 1 items")
+        if {row.unit_id for row in annotations} != expected_units:
+            raise ValueError("V3 annotations do not cover imported units")
+        investigate = {row.unit_id for row in annotations if row.disposition == "investigate"}
+        assigned = [unit_id for package in packages for unit_id in package.investigate_unit_ids]
+        if len(assigned) != len(set(assigned)) or set(assigned) != investigate:
+            raise ValueError("V3 packages do not exactly cover investigate units")
+        target = run / "02_routing"
+        target.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(target / "units.jsonl", units_content)
+        atomic_write_text(target / "annotations.jsonl", annotations_content)
+        atomic_write_json(target / "packages.json", [row.model_dump(mode="json") for row in packages])
+        working_map = _safe_optional_read(source, Path("working_map.md"), 2_000_000)
+        if working_map is not None:
+            atomic_write_text(target / "working_map.md", working_map)
+        _copy_optional_json(source, target, "unit_items.json", 20_000_000)
+        _copy_optional_json(source, target, "codex.json", 5_000_000)
+        _safe_read(source, Path("PHASE2_COMPLETE"), 100)
+        atomic_write_text(target / "PHASE2_COMPLETE", "v3 complete\n")
+        return
     bundles_raw = json.loads(_safe_read(source, Path("bundles.json"), 2_000_000))
     bundles = [Bundle.model_validate(row) for row in bundles_raw]
     assignments = [
@@ -569,12 +637,19 @@ def _import_research(job: Path, run: Path) -> None:
     if not source.exists():
         raise ValueError("runner output is missing 03_research")
     routing_path = run / "02_routing" / "bundles.json"
-    if not routing_path.exists():
+    packages_path = run / "02_routing" / "packages.json"
+    if not routing_path.exists() and not packages_path.exists():
         raise ValueError("research output arrived without validated routing")
-    bundle_ids = {
-        Bundle.model_validate(row).bundle_id
-        for row in json.loads(routing_path.read_text(encoding="utf-8"))
-    }
+    if packages_path.exists():
+        bundle_ids = {
+            ResearchPackage.model_validate(row).package_id
+            for row in json.loads(packages_path.read_text(encoding="utf-8"))
+        }
+    else:
+        bundle_ids = {
+            Bundle.model_validate(row).bundle_id
+            for row in json.loads(routing_path.read_text(encoding="utf-8"))
+        }
     successes_raw = json.loads(_safe_read(source, Path("successes.json"), 2_000_000))
     if not isinstance(successes_raw, dict):
         raise ValueError("successes.json must be an object")
@@ -583,13 +658,36 @@ def _import_research(job: Path, run: Path) -> None:
     target.mkdir(parents=True, exist_ok=True)
     for bundle_id, relative in successes_raw.items():
         Bundle(bundle_id=str(bundle_id), label="validated", item_ids=[])
-        if bundle_id not in bundle_ids or relative != f"{bundle_id}/report.md":
+        is_v3 = relative == f"{bundle_id}/dossier.md"
+        if bundle_id not in bundle_ids or (
+            not is_v3 and relative != f"{bundle_id}/report.md"
+        ):
             raise ValueError(f"invalid report mapping: {bundle_id} -> {relative}")
-        content = _safe_read(source, Path(bundle_id) / "report.md", 5_000_000)
-        report_target = target / bundle_id / "report.md"
+        filename = "dossier.md" if is_v3 else "report.md"
+        content = _safe_read(source, Path(bundle_id) / filename, 5_000_000)
+        report_target = target / bundle_id / filename
         report_target.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(report_target, content)
-        successes[bundle_id] = f"{bundle_id}/report.md"
+        successes[bundle_id] = f"{bundle_id}/{filename}"
+        if is_v3:
+            manifest_content = _safe_read(
+                source, Path(bundle_id) / "research_manifest.json", 2_000_000
+            )
+            artifact = ResearchArtifactManifest.model_validate_json(manifest_content)
+            atomic_write_json(
+                target / bundle_id / "research_manifest.json",
+                artifact.model_dump(mode="json"),
+            )
+            for subreport_artifact in artifact.subreports:
+                relative_path = (
+                    subreport_artifact
+                    if isinstance(subreport_artifact, str)
+                    else subreport_artifact.path
+                )
+                subreport = _safe_read(source, Path(bundle_id) / relative_path, 5_000_000)
+                destination = target / bundle_id / relative_path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                atomic_write_text(destination, subreport)
         _copy_optional_json(source / bundle_id, target / bundle_id, "codex.json", 2_000_000)
     atomic_write_json(target / "successes.json", successes)
     failures_content = _safe_read(source, Path("failures.json"), 2_000_000)
@@ -597,6 +695,7 @@ def _import_research(job: Path, run: Path) -> None:
     if not isinstance(failures_value, list):
         raise ValueError("failures.json must be an array")
     atomic_write_json(target / "failures.json", failures_value)
+    _copy_optional_json(source, target, "quality.json", 5_000_000, default={})
     _safe_read(source, Path("PHASE3_COMPLETE"), 100)
     atomic_write_text(target / "PHASE3_COMPLETE", "complete\n")
 
@@ -613,6 +712,7 @@ def _import_brief(job: Path, run: Path) -> None:
         ("watch.jsonl", 10_000_000),
         ("failures.json", 2_000_000),
         ("source_health.json", 2_000_000),
+        ("quality.json", 5_000_000),
         ("codex.json", 2_000_000),
     ):
         content = _safe_optional_read(source, Path(name), limit)
@@ -724,6 +824,10 @@ def _copy_referenced_blobs(runtime: RuntimeConfig, staging: Path) -> None:
     refs: set[str] = set()
     for path in (staging / "01_phase1").glob("*.jsonl"):
         for row in load_jsonl(path):
+            raw_refs = row.get("raw_refs")
+            if isinstance(raw_refs, list):
+                for ref in raw_refs:
+                    refs.add(str(ref))
             payload = row.get("payload") or {}
             if not isinstance(payload, dict):
                 continue
@@ -743,7 +847,11 @@ def _copy_recent_history(runtime: RuntimeConfig, staging: Path, current_run: Pat
     history_root.mkdir(parents=True, exist_ok=True)
     cutoff = datetime.now(UTC).timestamp() - 30 * 24 * 3600
     lines = ["# Prior 30-day research reports", ""]
-    for report in sorted(runtime.runtime_root.glob("runs/*/attempt-*/03_research/*/report.md")):
+    reports = [
+        *runtime.runtime_root.glob("runs/*/attempt-*/03_research/*/report.md"),
+        *runtime.runtime_root.glob("runs/*/attempt-*/03_research/*/dossier.md"),
+    ]
+    for report in sorted(reports):
         if current_run in report.parents or report.stat().st_mtime < cutoff:
             continue
         target = history_root / (
@@ -760,6 +868,38 @@ def _copy_recent_history(runtime: RuntimeConfig, staging: Path, current_run: Pat
         )
         lines.append(f"- [{title}](history/{target.name})")
     atomic_write_text(staging / "history_index.md", "\n".join(lines) + "\n")
+
+
+def _copy_bootstrap_index(runtime: RuntimeConfig, staging: Path) -> None:
+    database = runtime.runtime_root / "state.db"
+    if not database.exists():
+        atomic_write_text(staging / "bootstrap_index.jsonl", "")
+        return
+    rows: list[dict[str, object]] = []
+    with closing(sqlite3.connect(f"file:{database}?mode=ro", uri=True)) as connection:
+        values = connection.execute(
+            """
+            SELECT item_id, source, entity_key, payload_json
+            FROM source_items
+            WHERE observation_kind = 'bootstrap_snapshot'
+            ORDER BY ready_at DESC LIMIT 5000
+            """
+        ).fetchall()
+    for item_id, source, entity_key, payload_json in values:
+        payload = json.loads(str(payload_json)).get("payload") or {}
+        rows.append(
+            {
+                "item_id": str(item_id),
+                "source": str(source),
+                "entity_key": entity_key,
+                "title": payload.get("title") or payload.get("text") or "",
+                "url": payload.get("url") or payload.get("hn_url"),
+            }
+        )
+    atomic_write_text(
+        staging / "bootstrap_index.jsonl",
+        "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows),
+    )
 
 
 def should_skip_late(runtime: RuntimeConfig, now: datetime | None = None) -> bool:

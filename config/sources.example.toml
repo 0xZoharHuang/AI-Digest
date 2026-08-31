@@ -28,9 +28,10 @@ hours = [7, 20]
 
 [github]
 enabled = true
-per_query = 20
+per_query = 100
 # GitHub Search permits 30 authenticated requests/minute. Keep two requests in reserve.
 search_request_budget = 28
+candidate_processing_limit = 1500
 created_within_days = 365
 recent_created_within_days = 45
 pushed_within_days = 45
@@ -64,15 +65,19 @@ queries = [
 enabled = true
 allow_empty = true
 categories = ["cs.RO", "cs.AI", "cs.LG", "cs.CV", "cs.CL", "stat.ML"]
-rss_url = "https://export.arxiv.org/rss/{categories}"
+rss_url = "https://rss.arxiv.org/rss/{categories}"
 
 [huggingface]
 enabled = true
-url = "https://huggingface.co/api/papers"
+url = "https://huggingface.co/api/daily_papers"
+page_size = 100
+max_pages = 50
 limit = 100
 
 [hackernews]
 enabled = true
+max_incremental_ids = 20000
+item_concurrency = 20
 surfaces = ["new", "top", "show"]
 new_limit = 500
 top_limit = 500

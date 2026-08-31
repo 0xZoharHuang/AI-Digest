@@ -7,13 +7,20 @@ import time
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import feedparser
 import trafilatura
 from bs4 import BeautifulSoup
 
-from ..models import CollectorResult, ContentStatus, HealthStatus, SourceItem, TimeBasis
+from ..models import (
+    CollectorResult,
+    ContentStatus,
+    HealthStatus,
+    ObservationKind,
+    SourceItem,
+    TimeBasis,
+)
 from ..utils import parse_datetime, sha256_text
 from .base import Collector, SafeHTTPClient, finish_manifest, health_from, new_fetch_manifest
 
@@ -34,12 +41,22 @@ class ArticleCollector(Collector):
         errors: list[str] = []
         cursor_updates: dict[str, str | None] = {}
         extraction_failures: dict[str, int] = {}
+        source_stats: dict[str, dict[str, Any]] = {}
         fetched = 0
         successful_sources = 0
         try:
             for source_config in self.sources:
+                source_id = str(source_config.get("id", "article"))
+                source_stats[source_id] = {
+                    "status": "running",
+                    "discovered": 0,
+                    "materialized": 0,
+                    "extraction_failures": 0,
+                    "error": None,
+                }
                 try:
                     rows, manifest = await self._discover(client, source_config, now)
+                    source_stats[source_id]["discovered"] = len(rows)
                     fetched += len(rows)
                     manifests.append(manifest)
                     semaphore = asyncio.Semaphore(
@@ -68,13 +85,22 @@ class ArticleCollector(Collector):
                         cursor_updates.update(updates)
                         if item:
                             items.append(item)
+                            source_stats[source_id]["materialized"] += 1
                             if item.payload.get("extraction_error"):
-                                source_id = str(source_config.get("id", "article"))
                                 extraction_failures[source_id] = (
                                     extraction_failures.get(source_id, 0) + 1
                                 )
+                                source_stats[source_id]["extraction_failures"] += 1
+                    source_stats[source_id]["status"] = (
+                        "partial"
+                        if source_stats[source_id]["extraction_failures"]
+                        else "success"
+                    )
+                    cursor_updates[f"article-source:{source_id}:initialized"] = now.isoformat()
                     successful_sources += 1
                 except Exception as error:
+                    source_stats[source_id]["status"] = "failed"
+                    source_stats[source_id]["error"] = f"{type(error).__name__}: {error}"
                     errors.append(
                         f"{source_config.get('id', 'article')}: {type(error).__name__}: {error}"
                     )
@@ -95,7 +121,7 @@ class ArticleCollector(Collector):
             status = HealthStatus.PARTIAL
         elif errors:
             status = HealthStatus.FAILED
-        return CollectorResult(
+        result = CollectorResult(
             source=self.source,
             items=items,
             manifests=manifests,
@@ -103,6 +129,9 @@ class ArticleCollector(Collector):
                 self.source, started, status, fetched, len(items), len(inserted), errors
             ),
         )
+        result.health.surfaces = source_stats
+        result.health.raw_receipts_complete = not bool(extraction_failures)
+        return result
 
     async def _discover(self, client, config, now):  # type: ignore[no-untyped-def]
         url = str(config["url"])
@@ -110,10 +139,37 @@ class ArticleCollector(Collector):
         response = await client.request("GET", url, data_limit=5_000_000)
         suffix = ".xml" if "xml" in response.headers.get("content-type", "") else ".txt"
         blob = self.store.write_blob(response.text, suffix)
+        blob_refs = [blob]
         if config.get("kind") == "rss":
             rows = self._rss_rows(response.content, config)
         elif config.get("kind") == "sitemap":
-            rows = self._sitemap_rows(response.text, config, now)
+            root = ET.fromstring(response.text)
+            if root.tag.endswith("sitemapindex"):
+                rows = []
+                sitemap_urls = [
+                    child.text
+                    for element in root
+                    for child in element
+                    if child.tag.endswith("loc") and child.text
+                ][: int(config.get("sitemap_child_limit", 20))]
+                for child_url in sitemap_urls:
+                    child_response = await client.request(
+                        "GET", str(child_url), data_limit=5_000_000
+                    )
+                    blob_refs.append(self.store.write_blob(child_response.text, ".xml"))
+                    rows.extend(
+                        self._sitemap_rows(
+                            child_response.text, {**config, "allow_empty": True}, now
+                        )
+                    )
+                rows.sort(
+                    key=lambda row: row.get("updated_at")
+                    or datetime.min.replace(tzinfo=UTC),
+                    reverse=True,
+                )
+                rows = rows[: int(config.get("max_entries", 100))]
+            else:
+                rows = self._sitemap_rows(response.text, config, now)
         else:
             rows = self._index_rows(response.text, config)
         if (
@@ -122,7 +178,7 @@ class ArticleCollector(Collector):
             and not bool(config.get("allow_empty", False))
         ):
             raise RuntimeError("discovery returned zero rows")
-        manifest.blob_refs = [blob]
+        manifest.blob_refs = blob_refs
         return rows, finish_manifest(
             manifest,
             response=response,
@@ -216,7 +272,7 @@ class ArticleCollector(Collector):
         return rows[: int(config.get("max_entries", 100))]
 
     async def _article(self, client, config, row, now):  # type: ignore[no-untyped-def]
-        url = str(row["url"])
+        url = _canonical_url(str(row["url"]))
         host = (urlparse(url).hostname or "").lower()
         allowed = {str(value).lower() for value in config.get("allowed_domains", [])}
         if allowed and host not in allowed:
@@ -292,6 +348,19 @@ class ArticleCollector(Collector):
         occurred = row.get("occurred_at") or page_date or now
         updated = row.get("updated_at")
         change = "updated" if previous_hash is not None else "published"
+        bootstrap_age = timedelta(hours=int(config.get("bootstrap_max_age_hours", 24)))
+        initialized = await self.state.get_cursor(
+            f"article-source:{config['id']}:initialized"
+        )
+        observation_kind = (
+            ObservationKind.CONTENT_REVISION
+            if previous_hash is not None
+            else ObservationKind.BOOTSTRAP_SNAPSHOT
+            if occurred < now - bootstrap_age and initialized is None
+            else ObservationKind.LATE_ARRIVAL
+            if occurred < now - bootstrap_age
+            else ObservationKind.LIVE_INCREMENT
+        )
         item = SourceItem(
             item_id=f"article:{config['id']}:{entity}:{clean_hash[:12]}",
             item_type="article",
@@ -302,6 +371,10 @@ class ArticleCollector(Collector):
             updated_at=updated,
             first_observed_at=now,
             handoff_at=(updated if change == "updated" and updated else occurred),
+            ready_at=now,
+            observation_kind=observation_kind,
+            entity_key=f"article:{config['id']}:{entity}",
+            content_hash=clean_hash,
             time_basis=(
                 TimeBasis.UPDATED
                 if change == "updated" and updated
@@ -340,3 +413,19 @@ def _feed_text(entry: Any) -> str:
     if content:
         return str(content[0].get("value", ""))
     return str(entry.get("summary") or entry.get("description") or "")
+
+
+def _canonical_url(value: str) -> str:
+    parsed = urlparse(value)
+    query = urlencode(
+        [
+            (key, item)
+            for key, item in parse_qsl(parsed.query, keep_blank_values=True)
+            if not key.lower().startswith("utm_")
+            and key.lower() not in {"ref", "source", "fbclid", "gclid"}
+        ]
+    )
+    path = parsed.path or "/"
+    if path != "/":
+        path = path.rstrip("/")
+    return urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), path, "", query, ""))

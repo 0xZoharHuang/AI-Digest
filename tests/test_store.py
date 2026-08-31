@@ -6,7 +6,7 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from ai_digest.models import FetchManifest, SourceItem
+from ai_digest.models import FetchManifest, ObservationKind, SourceItem
 from ai_digest.store import FileStore, StateDB, load_jsonl, source_group, x_expiry
 from ai_digest.utils import atomic_write_jsonl
 
@@ -37,6 +37,59 @@ async def test_store_deduplicates_and_delivers_atomically(tmp_path):
     second = files.write_blob("same", ".txt")
     assert first == second
     assert files.resolve_blob(first).read_text() == "same"
+
+
+@pytest.mark.asyncio
+async def test_ready_queue_delivers_late_items_and_excludes_bootstrap(tmp_path):
+    state = StateDB(tmp_path / "state.db")
+    await state.init()
+    now = datetime(2026, 8, 30, tzinfo=UTC)
+    late = SourceItem(
+        item_id="late",
+        item_type="article",
+        source="article:test",
+        surface="primary",
+        occurred_at=now - timedelta(days=4),
+        first_observed_at=now,
+        ready_at=now,
+    )
+    bootstrap = late.model_copy(
+        update={
+            "item_id": "bootstrap",
+            "observation_kind": ObservationKind.BOOTSTRAP_SNAPSHOT,
+        }
+    )
+    await state.put_items([late, bootstrap])
+    pending = await state.pending_items(now - timedelta(hours=1), now + timedelta(minutes=1))
+    assert [item.item_id for item in pending] == ["late"]
+
+
+@pytest.mark.asyncio
+async def test_content_hash_change_creates_revision_observation(tmp_path):
+    state = StateDB(tmp_path / "state.db")
+    await state.init()
+    now = datetime(2026, 8, 30, tzinfo=UTC)
+    first = SourceItem(
+        item_id="x_list:1",
+        item_type="x_post",
+        source="x_list",
+        surface="public_lists",
+        first_observed_at=now,
+        ready_at=now,
+        entity_key="x:1",
+        content_hash="a" * 64,
+    )
+    revised = first.model_copy(
+        update={"content_hash": "b" * 64, "ready_at": now + timedelta(minutes=1)}
+    )
+    assert await state.put_items([first]) == ["x_list:1"]
+    inserted = await state.put_items([revised])
+    assert inserted == [f"x_list:1:rev:{'b' * 12}"]
+    pending = await state.pending_items(now - timedelta(days=1), now + timedelta(hours=1))
+    assert {item.observation_kind for item in pending} == {
+        ObservationKind.LIVE_INCREMENT,
+        ObservationKind.CONTENT_REVISION,
+    }
 
 
 @pytest.mark.asyncio

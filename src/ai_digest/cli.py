@@ -89,7 +89,15 @@ def parser() -> argparse.ArgumentParser:
     tick.add_argument("--local-agents", action="store_true")
     tick.add_argument(
         "--event",
-        choices=["daily", "x-list", "x-for-you", "github", "recover"],
+        choices=[
+            "daily",
+            "incremental",
+            "papers",
+            "x-list",
+            "x-for-you",
+            "github",
+            "recover",
+        ],
         default="daily",
     )
     commands.add_parser("agent-worker")
@@ -98,6 +106,7 @@ def parser() -> argparse.ArgumentParser:
     maintenance = commands.add_parser("maintenance")
     maintenance.add_argument("--prune-x", action="store_true")
     maintenance.add_argument("--delete-x-post", action="append")
+    maintenance.add_argument("--classify-existing-article-bootstrap", action="store_true")
     return root
 
 
@@ -171,6 +180,18 @@ async def async_main(args: argparse.Namespace) -> int:
             results = await phase1.collect_only({"github"})
             console.print_json(data=[row.health.model_dump(mode="json") for row in results])
             return 0
+        if args.event == "incremental":
+            results = []
+            for source in ("x_list", "github", "hackernews"):
+                results.extend(await phase1.collect_only({source}))
+            console.print_json(data=[row.health.model_dump(mode="json") for row in results])
+            return 0 if all(row.health.status.value != "failed" for row in results) else 1
+        if args.event == "papers":
+            results = []
+            for source in ("arxiv", "huggingface"):
+                results.extend(await phase1.collect_only({source}))
+            console.print_json(data=[row.health.model_dump(mode="json") for row in results])
+            return 0 if all(row.health.status.value != "failed" for row in results) else 1
         await phase1.initialize()
         local_date = datetime.now(UTC).astimezone(ZoneInfo(runtime.timezone)).date().isoformat()
         if await phase1.state.has_daily_run_in_progress_or_done(local_date):
@@ -199,6 +220,9 @@ async def async_main(args: argparse.Namespace) -> int:
         return 0
     if args.command == "maintenance":
         count = 0
+        if args.classify_existing_article_bootstrap:
+            await phase1.initialize()
+            count += await phase1.state.classify_pending_article_bootstrap(datetime.now(UTC))
         if args.prune_x:
             count += await phase1.prune_expired_x_content()
         if args.delete_x_post:

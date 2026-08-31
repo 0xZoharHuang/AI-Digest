@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import calendar
 import re
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import feedparser
 
 from ..models import CollectorResult, ContentStatus, HealthStatus, SourceItem, TimeBasis
-from ..utils import parse_datetime
+from ..utils import json_dumps, parse_datetime, sha256_text
 from .base import Collector, SafeHTTPClient, finish_manifest, health_from, new_fetch_manifest
 
 
@@ -26,11 +27,17 @@ class ArxivCollector(Collector):
         errors: list[str] = []
         items: list[SourceItem] = []
         fetched = 0
+        feed_metadata: dict[str, Any] = {}
         response = None
         try:
             response = await client.request("GET", url)
             blob = self.store.write_blob(response.text, ".xml")
             parsed = feedparser.parse(response.content)
+            feed_metadata = {
+                "title": parsed.feed.get("title"),
+                "updated": parsed.feed.get("updated"),
+                "published": parsed.feed.get("published"),
+            }
             entries = list(parsed.entries)
             if parsed.bozo:
                 errors.append(f"feed_parse: {parsed.bozo_exception}")
@@ -63,7 +70,7 @@ class ArxivCollector(Collector):
         )
         self.store.write_fetch_manifest(manifest)
         inserted = await self.state.put_items(items)
-        return CollectorResult(
+        result = CollectorResult(
             source=self.source,
             items=items,
             manifests=[manifest],
@@ -71,6 +78,12 @@ class ArxivCollector(Collector):
                 self.source, started, status, fetched, len(items), len(inserted), errors
             ),
         )
+        result.health.surfaces = {"category_feed": feed_metadata}
+        if status == HealthStatus.SUCCESS and not items:
+            result.health.quiet_reason = (
+                "arXiv returned a valid empty daily announcement feed; weekends are expected"
+            )
+        return result
 
     def _entry(self, entry: Any, blob: str, now: datetime) -> SourceItem | None:
         url = str(entry.get("link") or entry.get("id") or "")
@@ -80,8 +93,14 @@ class ArxivCollector(Collector):
         paper_id = match.group(1)
         explicit_version = match.group(2) or entry.get("arxiv_version")
         version = int(explicit_version or 1)
-        occurred = parse_datetime(entry.get("published") or entry.get("updated")) or now
-        updated = parse_datetime(entry.get("updated"))
+        occurred = (
+            _feed_datetime(entry.get("published_parsed"))
+            or parse_datetime(entry.get("published") or entry.get("updated"))
+            or now
+        )
+        updated = _feed_datetime(entry.get("updated_parsed")) or parse_datetime(
+            entry.get("updated")
+        )
         authors = [author.get("name", "") for author in entry.get("authors", [])]
         categories = [tag.get("term", "") for tag in entry.get("tags", [])]
         announce_type = str(
@@ -113,6 +132,18 @@ class ArxivCollector(Collector):
             updated_at=updated,
             first_observed_at=now,
             handoff_at=updated or occurred,
+            ready_at=now,
+            entity_key=f"arxiv:{paper_id}",
+            content_hash=sha256_text(
+                json_dumps(
+                    {
+                        "version": version,
+                        "announce_type": announce_type,
+                        "title": " ".join(str(entry.get("title", "")).split()),
+                        "abstract": " ".join(str(entry.get("summary", "")).split()),
+                    }
+                )
+            ),
             time_basis=(
                 TimeBasis.UPDATED
                 if updated and (version > 1 or announce_type in {"replace", "withdraw"})
@@ -138,3 +169,12 @@ class ArxivCollector(Collector):
                 "pdf_url": f"https://arxiv.org/pdf/{paper_id}",
             },
         )
+
+
+def _feed_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        return datetime.fromtimestamp(calendar.timegm(value), UTC)
+    except (TypeError, ValueError, OverflowError):
+        return None

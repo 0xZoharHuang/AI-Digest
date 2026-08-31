@@ -57,6 +57,7 @@ class GitHubCollector(Collector):
         super().__init__(config, store, state)
         self._hydrate_semaphore = asyncio.Semaphore(10)
         self._repo_semaphore = asyncio.Semaphore(10)
+        self._prepare_semaphore = asyncio.Semaphore(20)
         self._repo_cache: dict[str, tuple[dict[str, Any], str]] = {}
 
     async def collect(self, now):  # type: ignore[no-untyped-def]
@@ -76,6 +77,7 @@ class GitHubCollector(Collector):
         candidates: dict[str, RepoCandidate] = {}
         manifests = []
         errors: list[str] = []
+        warnings: list[str] = []
         fetched = 0
         try:
             for since in ("daily", "weekly"):
@@ -116,13 +118,22 @@ class GitHubCollector(Collector):
         except Exception as error:
             errors.append(f"{type(error).__name__}: {error}")
 
+        candidate_total = len(candidates)
+        candidate_limit = int(self.config.get("candidate_processing_limit", 1500))
+        candidate_values = list(candidates.values())[:candidate_limit]
+        if candidate_total > candidate_limit:
+            warnings.append(
+                f"candidate processing cap reached: {candidate_total} discovered, "
+                f"{candidate_limit} snapshotted; query order rotates across polls"
+            )
         try:
+            async def prepare(candidate: RepoCandidate) -> PreparedRepo:
+                async with self._prepare_semaphore:
+                    return await self._prepare_repo(client, headers, candidate, now)
+
             prepared = list(
                 await asyncio.gather(
-                    *[
-                        self._prepare_repo(client, headers, candidate, now)
-                        for candidate in candidates.values()
-                    ]
+                    *(prepare(candidate) for candidate in candidate_values)
                 )
             )
         finally:
@@ -155,7 +166,7 @@ class GitHubCollector(Collector):
             status = HealthStatus.PARTIAL
         elif errors:
             status = HealthStatus.FAILED
-        return CollectorResult(
+        result = CollectorResult(
             source=self.source,
             items=items,
             manifests=manifests,
@@ -167,8 +178,18 @@ class GitHubCollector(Collector):
                 len(snapshots),
                 len(inserted),
                 errors,
+                warnings,
             ),
         )
+        result.health.surfaces = {
+            "bounded_discovery": {
+                "candidate_total": candidate_total,
+                "candidate_processed": len(candidate_values),
+                "candidate_cap": candidate_limit,
+            }
+        }
+        result.health.raw_receipts_complete = not bool(errors)
+        return result
 
     def _search_plan(self, now: datetime) -> list[SearchRequest]:
         queries = [str(value).strip() for value in self.config.get("queries", []) if str(value)]
@@ -275,7 +296,7 @@ class GitHubCollector(Collector):
                 "q": query,
                 "sort": request.sort,
                 "order": "desc",
-                "per_page": int(self.config.get("per_query", 20)),
+                "per_page": min(100, int(self.config.get("per_query", 100))),
             },
         )
         blob = self.store.write_blob(response.text, ".json")
@@ -411,8 +432,6 @@ class GitHubCollector(Collector):
                 delta_baselines[label] = str(baseline["observed_at"])
         snapshot["star_deltas"] = star_deltas
         snapshot["delta_baselines"] = delta_baselines
-        snapshot_id = sha256_text(json_dumps(snapshot))
-        snapshot["snapshot_id"] = snapshot_id
 
         existing = set(context["existing_item_ids"])
         event_specs: list[tuple[str, str, str, dict[str, Any]]] = []
@@ -423,6 +442,7 @@ class GitHubCollector(Collector):
                 )
 
         latest = context["latest"]
+        previous_metadata = dict(latest.get("metadata") or {}) if latest is not None else {}
         if latest is not None:
             previous_stars = int(latest["stars"])
             for threshold, item_id in crossing_ids.items():
@@ -439,6 +459,61 @@ class GitHubCollector(Collector):
                             },
                         )
                     )
+
+        readme = ""
+        release: dict[str, Any] | None = None
+        extra_refs: list[str] = []
+        pushed_changed = bool(
+            latest is not None
+            and snapshot.get("pushed_at")
+            and snapshot.get("pushed_at") != previous_metadata.get("pushed_at")
+        )
+        meaningful_existing_event = any(
+            change != "entered_lane" for _, _, change, _ in event_specs
+        )
+        if meaningful_existing_event or pushed_changed:
+            readme, release, extra_refs = await self._hydrate_repo(
+                client, headers, str(repo["full_name"])
+            )
+        snapshot["latest_release"] = release
+        snapshot_id = sha256_text(json_dumps(snapshot))
+        snapshot["snapshot_id"] = snapshot_id
+
+        if latest is not None:
+            changed_fields = {
+                key: {"before": previous_metadata.get(key), "after": snapshot.get(key)}
+                for key in ("archived", "disabled", "default_branch", "license")
+                if key in previous_metadata and previous_metadata.get(key) != snapshot.get(key)
+            }
+            if changed_fields:
+                event_specs.append(
+                    (
+                        f"github:{repo_id}:metadata:{snapshot_id[:16]}",
+                        "metadata",
+                        "metadata_change",
+                        {"kind": "metadata_change", "changes": changed_fields},
+                    )
+                )
+            previous_release = previous_metadata.get("latest_release") or {}
+            if (
+                release
+                and previous_metadata.get("latest_release") is not None
+                and release.get("tag")
+                and release.get("tag") != previous_release.get("tag")
+            ):
+                event_specs.append(
+                    (
+                        f"github:{repo_id}:release:{snapshot_id[:16]}",
+                        "release",
+                        "release_published",
+                        {
+                            "kind": "release_published",
+                            "previous_tag": previous_release.get("tag"),
+                            "tag": release.get("tag"),
+                            "published_at": release.get("published_at"),
+                        },
+                    )
+                )
 
         triggers = {
             label: delta
@@ -466,13 +541,6 @@ class GitHubCollector(Collector):
                 int(self.config.get("growth_event_cooldown_hours", 24)),
             )
 
-        readme = ""
-        release: dict[str, Any] | None = None
-        extra_refs: list[str] = []
-        if event_specs:
-            readme, release, extra_refs = await self._hydrate_repo(
-                client, headers, str(repo["full_name"])
-            )
         raw_refs = list(dict.fromkeys([*candidate.raw_refs, *extra_refs]))
         base_payload = self._event_payload(
             repo,
@@ -492,6 +560,9 @@ class GitHubCollector(Collector):
                 occurred_at=created if change == "entered_lane" else None,
                 first_observed_at=now,
                 handoff_at=now,
+                ready_at=now,
+                entity_key=f"github:{repo_id}",
+                content_hash=snapshot_id,
                 time_basis=TimeBasis.OBSERVED,
                 content_status=ContentStatus.PREVIEW,
                 raw_refs=list(raw_refs),

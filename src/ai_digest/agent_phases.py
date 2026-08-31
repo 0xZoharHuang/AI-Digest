@@ -14,6 +14,7 @@ from .config import RuntimeConfig, load_interests
 from .models import Assignment, Bundle, RoutingOutput, SourceItem
 from .store import load_jsonl
 from .utils import atomic_write_json, atomic_write_jsonl, atomic_write_text
+from .v3 import V3Phases
 
 ROUTING_SCHEMA = {
     "type": "object",
@@ -116,6 +117,11 @@ class AgentPhases:
         )
 
     async def route(self, run_dir: Path, interests_path: Path | None = None) -> RoutingOutput:
+        return await V3Phases(self.runtime, self.runner).route(run_dir, interests_path)
+
+    async def _route_legacy(
+        self, run_dir: Path, interests_path: Path | None = None
+    ) -> RoutingOutput:
         phase1 = run_dir / "01_phase1"
         if not (phase1 / "PHASE1_COMPLETE").exists():
             raise RuntimeError("Phase 1 is not sealed")
@@ -504,6 +510,14 @@ class AgentPhases:
         return routing, errors
 
     async def research(self, run_dir: Path, routing: RoutingOutput | None = None) -> dict[str, str]:
+        routing_root = run_dir / "02_routing"
+        if (routing_root / "packages.json").exists():
+            return await V3Phases(self.runtime, self.runner).research(run_dir, routing)
+        return await self._research_legacy(run_dir, routing)
+
+    async def _research_legacy(
+        self, run_dir: Path, routing: RoutingOutput | None = None
+    ) -> dict[str, str]:
         if routing is None:
             routing = _load_routing(run_dir / "02_routing")
         items = _load_phase1_items(run_dir / "01_phase1")
@@ -595,6 +609,22 @@ class AgentPhases:
         return successes
 
     async def brief(
+        self,
+        run_dir: Path,
+        routing: RoutingOutput | None = None,
+        successes: dict[str, str] | None = None,
+    ) -> Path:
+        if (run_dir / "02_routing" / "packages.json").exists():
+            if successes is None:
+                successes = json.loads(
+                    (run_dir / "03_research" / "successes.json").read_text(encoding="utf-8")
+                )
+            return await V3Phases(self.runtime, self.runner).brief(
+                run_dir, routing, successes
+            )
+        return await self._brief_legacy(run_dir, routing, successes)
+
+    async def _brief_legacy(
         self,
         run_dir: Path,
         routing: RoutingOutput | None = None,

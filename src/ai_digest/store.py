@@ -9,7 +9,7 @@ from typing import Any
 
 import aiosqlite
 
-from .models import FetchManifest, SourceItem
+from .models import FetchManifest, ObservationKind, SourceItem
 from .utils import atomic_write_bytes, atomic_write_json, atomic_write_text, sha256_bytes
 
 
@@ -114,7 +114,7 @@ class StateDB:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     async def init(self) -> None:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=30) as db:
             await db.executescript(
                 """
                 PRAGMA journal_mode=WAL;
@@ -125,6 +125,10 @@ class StateDB:
                     item_type TEXT NOT NULL,
                     handoff_at TEXT NOT NULL,
                     first_observed_at TEXT NOT NULL,
+                    ready_at TEXT,
+                    observation_kind TEXT,
+                    entity_key TEXT,
+                    content_hash TEXT,
                     payload_json TEXT NOT NULL,
                     delivered_run_id TEXT,
                     sealed_run_id TEXT,
@@ -186,6 +190,10 @@ class StateDB:
                 """
             )
             await self._ensure_column(db, "source_items", "sealed_run_id", "TEXT")
+            await self._ensure_column(db, "source_items", "ready_at", "TEXT")
+            await self._ensure_column(db, "source_items", "observation_kind", "TEXT")
+            await self._ensure_column(db, "source_items", "entity_key", "TEXT")
+            await self._ensure_column(db, "source_items", "content_hash", "TEXT")
             await self._ensure_column(
                 db,
                 "runs",
@@ -193,10 +201,22 @@ class StateDB:
                 "TEXT NOT NULL DEFAULT 'open'",
             )
             await self._ensure_column(db, "runs", "queued_at", "TEXT")
+            await db.execute(
+                "UPDATE source_items SET ready_at = first_observed_at WHERE ready_at IS NULL"
+            )
+            await db.execute(
+                """UPDATE source_items SET observation_kind = ?
+                WHERE observation_kind IS NULL""",
+                (ObservationKind.LIVE_INCREMENT.value,),
+            )
             await db.executescript(
                 """
                 CREATE INDEX IF NOT EXISTS idx_source_items_pending_v2
                     ON source_items(delivered_run_id, sealed_run_id, handoff_at);
+                CREATE INDEX IF NOT EXISTS idx_source_items_ready_v3
+                    ON source_items(delivered_run_id, sealed_run_id, observation_kind, ready_at);
+                CREATE INDEX IF NOT EXISTS idx_source_items_entity_v3
+                    ON source_items(entity_key, ready_at);
                 CREATE INDEX IF NOT EXISTS idx_source_items_source
                     ON source_items(source, surface);
                 CREATE INDEX IF NOT EXISTS idx_runs_handoff
@@ -223,55 +243,144 @@ class StateDB:
 
     async def put_items(self, items: Iterable[SourceItem]) -> list[str]:
         inserted: list[str] = []
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=30) as db:
             for item in items:
+                candidate = item
                 cursor = await db.execute(
                     """
                     INSERT OR IGNORE INTO source_items
                     (item_id, source, surface, item_type, handoff_at, first_observed_at,
-                     payload_json, expires_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     ready_at, observation_kind, entity_key, content_hash, payload_json, expires_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        item.item_id,
-                        item.source,
-                        item.surface,
-                        item.item_type,
-                        item.handoff_at.isoformat(),
-                        item.first_observed_at.isoformat(),
-                        item.model_dump_json(),
-                        item.expires_at.isoformat() if item.expires_at else None,
+                        candidate.item_id,
+                        candidate.source,
+                        candidate.surface,
+                        candidate.item_type,
+                        candidate.handoff_at.isoformat(),
+                        candidate.first_observed_at.isoformat(),
+                        candidate.ready_at.isoformat(),
+                        candidate.observation_kind.value,
+                        candidate.entity_key,
+                        candidate.content_hash,
+                        candidate.model_dump_json(),
+                        candidate.expires_at.isoformat() if candidate.expires_at else None,
                     ),
                 )
                 if cursor.rowcount == 1:
-                    inserted.append(item.item_id)
+                    inserted.append(candidate.item_id)
+                    continue
+                if not candidate.content_hash:
+                    continue
+                prior = await db.execute(
+                    "SELECT content_hash FROM source_items WHERE item_id = ?",
+                    (candidate.item_id,),
+                )
+                prior_row = await prior.fetchone()
+                if prior_row is None or prior_row[0] in {None, candidate.content_hash}:
+                    continue
+                revision_id = f"{candidate.item_id}:rev:{candidate.content_hash[:12]}"
+                revision = candidate.model_copy(
+                    update={
+                        "item_id": revision_id,
+                        "observation_kind": ObservationKind.CONTENT_REVISION,
+                        "change": "content_revision",
+                    }
+                )
+                revision_cursor = await db.execute(
+                    """
+                    INSERT OR IGNORE INTO source_items
+                    (item_id, source, surface, item_type, handoff_at, first_observed_at,
+                     ready_at, observation_kind, entity_key, content_hash, payload_json, expires_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        revision.item_id,
+                        revision.source,
+                        revision.surface,
+                        revision.item_type,
+                        revision.handoff_at.isoformat(),
+                        revision.first_observed_at.isoformat(),
+                        revision.ready_at.isoformat(),
+                        revision.observation_kind.value,
+                        revision.entity_key,
+                        revision.content_hash,
+                        revision.model_dump_json(),
+                        revision.expires_at.isoformat() if revision.expires_at else None,
+                    ),
+                )
+                if revision_cursor.rowcount == 1:
+                    inserted.append(revision.item_id)
             await db.commit()
         return inserted
 
     async def has_item(self, item_id: str) -> bool:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=30) as db:
             cursor = await db.execute("SELECT 1 FROM source_items WHERE item_id = ?", (item_id,))
             return await cursor.fetchone() is not None
 
     async def pending_items(self, start: datetime, end: datetime) -> list[SourceItem]:
-        async with aiosqlite.connect(self.path) as db:
+        """Return every ready, undelivered live observation before the cutoff.
+
+        ``start`` is retained for source compatibility with V2 callers. V3 deliberately
+        does not use it as a lower bound: a late observation must remain deliverable after
+        an outage instead of becoming permanently stranded.
+        """
+
+        async with aiosqlite.connect(self.path, timeout=30) as db:
             cursor = await db.execute(
                 """
-                SELECT payload_json FROM source_items
+                SELECT payload_json, ready_at, observation_kind, entity_key, content_hash
+                FROM source_items
                 WHERE delivered_run_id IS NULL AND sealed_run_id IS NULL
-                    AND handoff_at >= ? AND handoff_at < ?
-                ORDER BY handoff_at, item_id
+                    AND observation_kind != ?
+                    AND ready_at < ?
+                ORDER BY ready_at, item_id
                 """,
-                (start.isoformat(), end.isoformat()),
+                (ObservationKind.BOOTSTRAP_SNAPSHOT.value, end.isoformat()),
             )
             rows = await cursor.fetchall()
-        return [SourceItem.model_validate_json(row[0]) for row in rows]
+        items: list[SourceItem] = []
+        for payload, ready_at, kind, entity_key, content_hash in rows:
+            item = SourceItem.model_validate_json(payload)
+            items.append(
+                item.model_copy(
+                    update={
+                        "ready_at": datetime.fromisoformat(str(ready_at)),
+                        "observation_kind": ObservationKind(str(kind)),
+                        "entity_key": entity_key,
+                        "content_hash": content_hash,
+                    }
+                )
+            )
+        return items
+
+    async def classify_pending_article_bootstrap(self, first_seen_before: datetime) -> int:
+        """Quarantine old initial article snapshots without deleting their evidence."""
+
+        async with aiosqlite.connect(self.path, timeout=30) as db:
+            cursor = await db.execute(
+                """
+                UPDATE source_items SET observation_kind = ?
+                WHERE delivered_run_id IS NULL AND sealed_run_id IS NULL
+                    AND source LIKE 'article:%'
+                    AND first_observed_at <= ?
+                    AND handoff_at < first_observed_at
+                """,
+                (
+                    ObservationKind.BOOTSTRAP_SNAPSHOT.value,
+                    first_seen_before.isoformat(),
+                ),
+            )
+            await db.commit()
+            return int(cursor.rowcount)
 
     async def mark_delivered(self, item_ids: Iterable[str], run_id: str) -> None:
         values = [(run_id, item_id) for item_id in item_ids]
         if not values:
             return
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=30) as db:
             await db.executemany(
                 "UPDATE source_items SET delivered_run_id = ? WHERE item_id = ?",
                 values,
@@ -287,7 +396,7 @@ class StateDB:
         """
 
         values = list(dict.fromkeys(item_ids))
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=30) as db:
             await db.execute("BEGIN IMMEDIATE")
             run_cursor = await db.execute("SELECT 1 FROM runs WHERE run_id = ?", (run_id,))
             if await run_cursor.fetchone() is None:
@@ -336,7 +445,7 @@ class StateDB:
             await db.commit()
 
     async def list_sealed_unqueued_runs(self) -> list[tuple[str, Path]]:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=30) as db:
             cursor = await db.execute(
                 """
                 SELECT run_id, path FROM runs
@@ -350,7 +459,7 @@ class StateDB:
     async def mark_run_queued(self, run_id: str) -> bool:
         """Atomically finalize delivery after the queue directory is visible."""
 
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=30) as db:
             await db.execute("BEGIN IMMEDIATE")
             cursor = await db.execute(
                 "SELECT handoff_state FROM runs WHERE run_id = ?",
@@ -392,7 +501,7 @@ class StateDB:
         allowed_states = {"local_complete", "published"}
         if handoff_state not in allowed_states:
             raise ValueError(f"invalid local completion state: {handoff_state}")
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=30) as db:
             await db.execute("BEGIN IMMEDIATE")
             cursor = await db.execute(
                 "SELECT handoff_state FROM runs WHERE run_id = ?",
@@ -429,7 +538,7 @@ class StateDB:
         return True
 
     async def get_cursor(self, source: str) -> str | None:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=30) as db:
             cursor = await db.execute("SELECT value FROM cursors WHERE source = ?", (source,))
             row = await cursor.fetchone()
         return row[0] if row else None
@@ -441,7 +550,7 @@ class StateDB:
         if not values:
             return
         now = datetime.now(UTC).isoformat()
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=30) as db:
             await db.executemany(
                 """
                 INSERT INTO cursors(source, value, updated_at) VALUES (?, ?, ?)
@@ -463,19 +572,24 @@ class StateDB:
         moment = observed_at.astimezone(UTC)
         item_ids = list(dict.fromkeys(event_item_ids))
         baselines: dict[str, dict[str, Any] | None] = {}
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=30) as db:
             cursor = await db.execute(
                 """
-                SELECT observed_at, stars FROM github_repo_snapshots
+                SELECT observed_at, stars, metadata_json FROM github_repo_snapshots
                 WHERE repo_id = ? AND observed_at < ?
                 ORDER BY observed_at DESC LIMIT 1
                 """,
                 (repo_id, moment.isoformat()),
             )
             row = await cursor.fetchone()
-            latest = (
-                {"observed_at": str(row[0]), "stars": int(row[1])} if row is not None else None
-            )
+            latest = None
+            if row is not None:
+                metadata = json.loads(str(row[2]))
+                latest = {
+                    "observed_at": str(row[0]),
+                    "stars": int(row[1]),
+                    "metadata": metadata,
+                }
 
             for label, delta in (
                 ("6h", timedelta(hours=6)),
@@ -540,7 +654,7 @@ class StateDB:
             raise ValueError("GitHub event marker does not reference this poll's item")
 
         inserted: list[str] = []
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=30) as db:
             await db.execute("BEGIN IMMEDIATE")
             try:
                 suppressed_event_ids: set[str] = set()
@@ -565,8 +679,9 @@ class StateDB:
                         """
                         INSERT OR IGNORE INTO source_items
                         (item_id, source, surface, item_type, handoff_at, first_observed_at,
+                         ready_at, observation_kind, entity_key, content_hash,
                          payload_json, expires_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             item.item_id,
@@ -575,6 +690,10 @@ class StateDB:
                             item.item_type,
                             item.handoff_at.isoformat(),
                             item.first_observed_at.isoformat(),
+                            item.ready_at.isoformat(),
+                            item.observation_kind.value,
+                            item.entity_key,
+                            item.content_hash,
                             item.model_dump_json(),
                             item.expires_at.isoformat() if item.expires_at else None,
                         ),
@@ -651,7 +770,7 @@ class StateDB:
         if limit <= 0:
             return []
         cutoff = observed_at.astimezone(UTC) - timedelta(days=max(0, within_days))
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=30) as db:
             cursor = await db.execute(
                 """
                 SELECT repo_id, full_name, first_seen_at, last_checked_at
@@ -676,7 +795,7 @@ class StateDB:
     async def github_snapshots(self, repo_id: str) -> list[dict[str, Any]]:
         """Return immutable snapshots in observation order (primarily for audits/tests)."""
 
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=30) as db:
             cursor = await db.execute(
                 """
                 SELECT metadata_json, file_ref FROM github_repo_snapshots
@@ -693,7 +812,7 @@ class StateDB:
         return values
 
     async def baseline(self, source: str) -> int | None:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=30) as db:
             cursor = await db.execute(
                 "SELECT fetched_count FROM source_baselines WHERE source = ?", (source,)
             )
@@ -702,7 +821,7 @@ class StateDB:
 
     async def set_baseline(self, source: str, fetched_count: int) -> None:
         now = datetime.now(UTC).isoformat()
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=30) as db:
             await db.execute(
                 """
                 INSERT INTO source_baselines(source, fetched_count, updated_at) VALUES (?, ?, ?)
@@ -717,7 +836,7 @@ class StateDB:
         self, run_id: str, date: str, attempt: int, status: str, path: Path
     ) -> None:
         now = datetime.now(UTC).isoformat()
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=30) as db:
             await db.execute(
                 """
                 INSERT INTO runs(run_id,date,attempt,status,path,created_at,updated_at)
@@ -729,7 +848,7 @@ class StateDB:
             await db.commit()
 
     async def has_run_for_date(self, date: str) -> bool:
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=30) as db:
             cursor = await db.execute("SELECT 1 FROM runs WHERE date = ? LIMIT 1", (date,))
             return await cursor.fetchone() is not None
 
@@ -745,7 +864,7 @@ class StateDB:
         cutoff = (now or datetime.now(UTC)) - timedelta(
             minutes=max(1, running_stale_after_minutes)
         )
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=30) as db:
             cursor = await db.execute(
                 """
                 SELECT 1 FROM runs
@@ -765,7 +884,7 @@ class StateDB:
 
     async def pop_expired_x_items(self, now: datetime | None = None) -> list[SourceItem]:
         cutoff = (now or datetime.now(UTC)).isoformat()
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=30) as db:
             cursor = await db.execute(
                 "SELECT payload_json FROM source_items WHERE expires_at IS NOT NULL AND expires_at < ?",
                 (cutoff,),
@@ -780,7 +899,7 @@ class StateDB:
 
     async def pop_x_post(self, post_id: str) -> list[SourceItem]:
         patterns = (f"x_list:{post_id}", f"x_for_you:{post_id}")
-        async with aiosqlite.connect(self.path) as db:
+        async with aiosqlite.connect(self.path, timeout=30) as db:
             cursor = await db.execute(
                 "SELECT payload_json FROM source_items WHERE item_id IN (?, ?)", patterns
             )
