@@ -66,13 +66,17 @@ def test_lark_publisher_builds_tree_rewrites_links_and_is_idempotent(tmp_path):
     publisher.cli = fake  # type: ignore[assignment]
     first = publisher.publish(run_dir, "SUCCESS")
     second = publisher.publish(run_dir, "SUCCESS")
+    brief.write_text("# Brief updated\n\n[Full](report://b1)")
+    third = publisher.publish(run_dir, "SUCCESS")
 
     assert first.status == "success"
     assert second.dm_sent
     assert second.dm_identity == "bot"
     assert second.dm_message_id == "om-test"
     assert second.dm_chat_id == "oc-test"
-    assert len(fake.messages) == 1
+    assert third.artifact_hash != first.artifact_hash
+    assert len(fake.messages) == 2
+    assert fake.messages[0][1] != fake.messages[1][1]
     assert any("https://lark.test/" in content for _, content in fake.writes)
 
 

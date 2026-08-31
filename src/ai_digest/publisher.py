@@ -224,12 +224,24 @@ class LarkPublisher:
         publish_root = run_dir / "05_publish"
         publish_root.mkdir(parents=True, exist_ok=True)
         manifest_path = publish_root / "publish_manifest.json"
+        artifact_hash = _publish_artifact_hash(run_dir, status)
         if manifest_path.exists():
             manifest = PublishManifest.model_validate_json(
                 manifest_path.read_text(encoding="utf-8")
             )
-            if manifest.status == "success" and manifest.dm_sent and manifest.dm_message_id:
+            if (
+                manifest.status == "success"
+                and manifest.dm_sent
+                and manifest.dm_message_id
+                and manifest.artifact_hash == artifact_hash
+            ):
                 return manifest
+            if manifest.artifact_hash != artifact_hash:
+                manifest.status = "pending"
+                manifest.dm_sent = False
+                manifest.dm_message_id = None
+                manifest.dm_chat_id = None
+                manifest.errors = []
             if manifest.dm_sent and not manifest.dm_message_id:
                 manifest.dm_sent = False
         else:
@@ -299,7 +311,7 @@ class LarkPublisher:
             manifest.nodes["day"] = day_node
 
             idempotency_key = hashlib.sha256(
-                f"ai-digest:{self.config.dm_identity}:{date}".encode()
+                f"ai-digest:{self.config.dm_identity}:{date}:{artifact_hash}".encode()
             ).hexdigest()[:48]
             manifest.dm_idempotency_key = idempotency_key
             if not manifest.dm_sent:
@@ -345,6 +357,7 @@ class LarkPublisher:
                 manifest.dm_identity = self.config.dm_identity
                 manifest.dm_message_id = message_id
                 manifest.dm_chat_id = chat_id
+            manifest.artifact_hash = artifact_hash
             manifest.status = "success"
         except Exception as error:
             manifest.status = "failed"
@@ -353,6 +366,30 @@ class LarkPublisher:
             raise
         atomic_write_json(manifest_path, manifest.model_dump(mode="json"))
         return manifest
+
+
+def _publish_artifact_hash(run_dir: Path, status: str) -> str:
+    hasher = hashlib.sha256()
+    hasher.update(status.encode())
+    relative_paths = [
+        Path("01_phase1/source_health.json"),
+        Path("03_research/successes.json"),
+        Path("03_research/failures.json"),
+        Path("04_brief/watch.jsonl"),
+        Path("04_brief/daily_brief.md"),
+    ]
+    successes_path = run_dir / "03_research" / "successes.json"
+    if successes_path.exists():
+        successes = json.loads(successes_path.read_text(encoding="utf-8"))
+        for bundle_id, report_path in sorted(successes.items()):
+            if str(report_path) == f"{bundle_id}/report.md":
+                relative_paths.append(Path("03_research") / str(bundle_id) / "report.md")
+    for relative in relative_paths:
+        path = run_dir / relative
+        hasher.update(relative.as_posix().encode())
+        if path.is_file() and not path.is_symlink():
+            hasher.update(path.read_bytes())
+    return hasher.hexdigest()
 
 
 def _safe_key(value: str) -> str:

@@ -179,6 +179,12 @@ def import_agent_job(runtime: RuntimeConfig, job_dir: Path) -> Path:
     _import_routing(job_dir, run_dir)
     _import_research(job_dir, run_dir)
     _import_brief(job_dir, run_dir)
+    stale_failure = run_dir / "worker_failure.json"
+    if not (job_dir / "worker_failure.json").exists() and stale_failure.exists():
+        recovery_root = run_dir / "recovery"
+        recovery_root.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        stale_failure.replace(recovery_root / f"worker_failure-resolved-{stamp}.json")
     _copy_optional_json(job_dir, run_dir, "worker_failure.json", 100_000)
     atomic_write_text(run_dir / "AGENT_JOB_IMPORTED", job_dir.name + "\n")
     return run_dir

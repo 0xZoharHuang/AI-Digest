@@ -109,6 +109,18 @@ async def test_import_rejects_symlinked_model_report(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_successful_reimport_archives_stale_worker_failure(tmp_path):
+    runtime, _state, run_dir, run_id = await _sealed_run(tmp_path, "recovered")
+    (run_dir / "worker_failure.json").write_text(json.dumps({"phase": "phase2"}))
+    job = runtime.shared_runtime_root / "completed" / run_id
+    _write_job_outputs(job)
+
+    assert import_agent_job(runtime, job) == run_dir
+    assert not (run_dir / "worker_failure.json").exists()
+    assert list((run_dir / "recovery").glob("worker_failure-resolved-*.json"))
+
+
+@pytest.mark.asyncio
 async def test_recovery_quarantines_bad_job_and_publishes_next(tmp_path, monkeypatch):
     runtime, state, bad_run, bad_id = await _sealed_run(tmp_path, "bad-job")
     _, _, valid_run, valid_id = await _sealed_run(tmp_path, "valid-job", attempt=2)

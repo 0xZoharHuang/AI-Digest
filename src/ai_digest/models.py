@@ -161,6 +161,7 @@ class PublishNode(BaseModel):
 class PublishManifest(BaseModel):
     run_id: str
     status: str = "pending"
+    artifact_hash: str | None = None
     nodes: dict[str, PublishNode] = Field(default_factory=dict)
     dm_idempotency_key: str | None = None
     dm_sent: bool = False
