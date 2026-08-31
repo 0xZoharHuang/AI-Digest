@@ -167,7 +167,7 @@ def test_calibration_requires_global_topics_and_watch_for_new_topic(tmp_path):
             {
                 "assignments": [
                     {"id": "a", "d": "r", "t": ["global"]},
-                    {"id": "b", "d": "w", "t": []},
+                    {"id": "b", "d": "w", "t": ["global"]},
                 ],
                 "new_topic_suggestions": [{"label": "New", "item_ids": ["b"]}],
             }
@@ -175,5 +175,6 @@ def test_calibration_requires_global_topics_and_watch_for_new_topic(tmp_path):
     )
     calibrated = _read_and_validate_calibration(output, index, {"global"})
     assert calibrated is not None
+    assert calibrated[0][1].t == []
     output.write_text(output.read_text().replace('"d": "w"', '"d": "n"'))
     assert _read_and_validate_calibration(output, index, {"global"}) is None
