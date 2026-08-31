@@ -34,7 +34,7 @@ PHASE2_REPAIR_MAX_BYTES = 64 * 1024
 PACKAGE_MAX_COUNT = 15
 CATALOG_SHARD_MAX_UNITS = 160
 CATALOG_SHARD_MAX_BYTES = 256 * 1024
-PHASE2_PROMPT_VERSION = "2026-08-31.4"
+PHASE2_PROMPT_VERSION = "2026-08-31.5"
 PHASE2_WORKING_MAP_MAX_BYTES = 64 * 1024
 
 SUMMARY_SCHEMA: dict[str, Any] = {
@@ -1544,9 +1544,10 @@ def phase2_agents_md() -> str:
 - 不输出重要性、investigate/supporting/discard、研究问题或宏观趋势。
 - 每条摘要使用准确简体中文，说明材料实际表达了什么，不评价它是否值得研究；同时赋予一个
   动态 group_id。语义相近材料复用已有 group_id，确有新类别时再创建。
-- interests.md 只帮助理解读者和命名分组，绝不能决定某条是否输出。无关、闲聊、市场、低信号或
-  其他领域材料也必须逐条摘要，可归入 outside_reader_scope、low_signal_misc 等自然 group；
-  是否值得发布完全由 Phase 3 决定。
+- interests.md 只帮助理解读者，绝不能决定某条是否输出或怎样评价它。无关、闲聊、市场、语境很短或
+  其他领域材料也必须逐条摘要，并按照它实际谈论的对象、领域或事件自然分组。不能因为材料偏离兴趣、
+  看似低信号或上下文较少，就把不同主题放进 outside/other/low-signal 一类总桶；是否值得研究或发布
+  完全由 Phase 3 决定。
 - working_map 是你跨批次维护的简短当天 group 地图；记录 group_id 的语义，可随新材料修正名称
   和边界，但不要抄录原文。
 - 最终分包覆盖全部 summaries，每个 unit 恰好属于一个 package，最多 15 个。
@@ -1580,6 +1581,10 @@ def phase3_agents_md() -> str:
 READER.md 描述的是一位能够跨技术、产品和创业问题推理、但不可能预先熟悉每个细分领域的读者。
 保留足够低层的机制、实现和证据，使他能自行建模；关键领域术语第一次出现时用一句自然语言说明，
 不要以“便于理解”为由删掉算法、架构、实验条件或反例。
+
+读者产物要保留调查的真实入口：今天系统新看到了哪篇论文、哪次发布、哪个仓库/帖子/声明，以及它
+为什么引出了后续研究。“今天新看到”不等于研究对象今天一定发生了变化；明确区分首次观察、来源
+发布或更新、关注度变化与只是进入当前发现范围。随后说明研究把理解推进到了哪里。
 
 先读 READER.md、PACKAGE.md、manifest.json、RESEARCH_METHOD.md 和 manifest 列出的全部 catalog 分片。Phase 2
 分组只是容量边界和宽松导航，不是研究结论；你可以推翻标签、重新聚类并自主决定研究深度。
