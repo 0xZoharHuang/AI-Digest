@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 def utc_now() -> datetime:
@@ -129,6 +129,8 @@ class ObservationUnit(BaseModel):
 
 
 class Phase2Annotation(BaseModel):
+    """Read-only compatibility model for V3 routing artifacts."""
+
     unit_id: str
     disposition: Literal["investigate", "supporting", "duplicate", "discard"]
     summary_zh: str
@@ -138,11 +140,58 @@ class Phase2Annotation(BaseModel):
     duplicate_of: str | None = None
 
 
-class ResearchPackage(BaseModel):
+class Phase2Summary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    unit_id: str
+    summary_zh: str
+
+    @field_validator("summary_zh")
+    @classmethod
+    def summary_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("summary_zh must not be blank")
+        return value.strip()
+
+
+class Phase2CatalogEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    unit_id: str
+    summary_zh: str
+    package_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+    @field_validator("summary_zh")
+    @classmethod
+    def summary_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("summary_zh must not be blank")
+        return value.strip()
+
+
+class LegacyResearchPackage(BaseModel):
+    """Read-only compatibility model for V3 package files."""
+
     package_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")
     label: str
     investigate_unit_ids: list[str]
     supporting_unit_ids: list[str] = Field(default_factory=list)
+
+
+class ResearchPackage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    package_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")
+    label_zh: str
+    scope_note_zh: str
+    unit_ids: list[str] = Field(min_length=1)
+
+    @field_validator("label_zh", "scope_note_zh")
+    @classmethod
+    def text_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("package text must not be blank")
+        return value.strip()
 
 
 class SubreportArtifact(BaseModel):
@@ -151,7 +200,9 @@ class SubreportArtifact(BaseModel):
     unit_ids: list[str] = Field(default_factory=list)
 
 
-class ResearchArtifactManifest(BaseModel):
+class LegacyResearchArtifactManifest(BaseModel):
+    """Read-only compatibility model for V3 dossier artifacts."""
+
     package_id: str
     dossier: str
     subreports: list[SubreportArtifact | str] = Field(default_factory=list)
@@ -159,6 +210,55 @@ class ResearchArtifactManifest(BaseModel):
     unresolved_unit_ids: list[str] = Field(default_factory=list)
     missing_unit_ids: list[str] = Field(default_factory=list)
     status: str = "success"
+
+
+class ResearchIntakeEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    unit_id: str
+    research_use: Literal["research_subject", "evidence", "context", "not_used"]
+    note_zh: str
+
+    @field_validator("note_zh")
+    @classmethod
+    def note_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("note_zh must not be blank")
+        return value.strip()
+
+
+class ResearchEvidenceEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    claim: str
+    status: Literal[
+        "verified_fact",
+        "source_claim",
+        "inference",
+        "disputed",
+        "unknown",
+    ]
+    evidence: list[str] = Field(default_factory=list)
+    scope: str = ""
+    conflict: str = ""
+    related_unit_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("claim")
+    @classmethod
+    def claim_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("claim must not be blank")
+        return value.strip()
+
+
+class ResearchArtifactManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    package_id: str
+    main_report: Literal["main_report.md"] | None
+    subreports: list[SubreportArtifact] = Field(default_factory=list)
+    reviewed_unit_ids: list[str] = Field(default_factory=list)
+    status: Literal["success", "complete", "not_published"] = "success"
 
 
 class CollectorResult(BaseModel):

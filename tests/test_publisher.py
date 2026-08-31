@@ -122,7 +122,7 @@ def test_lark_publisher_builds_tree_rewrites_links_and_is_idempotent(tmp_path):
     assert len(fake.messages) == 2
     assert fake.messages[0][1] != fake.messages[1][1]
     assert any("https://lark.test/" in content for _, content in fake.writes)
-    assert third.navigation_version == 1
+    assert third.navigation_version == 2
     assert any("日报索引" in content for _, content in fake.writes)
     assert fake.deleted == ["node-stale"]
 
@@ -140,21 +140,46 @@ def test_report_link_rewrite_handles_prefix_bundle_ids_exactly():
     assert rewritten == "[A](https://lark.test/a) [B](https://lark.test/b)"
 
 
-def test_v3_publisher_nests_subreports_and_rewrites_all_links(tmp_path):
+def test_main_report_publisher_nests_optional_subreports_and_hides_internal_id(tmp_path):
     run_dir = tmp_path / "runs" / "2026-08-31" / "attempt-0001"
     package = run_dir / "03_research" / "physical_ai"
     subreports = package / "subreports"
     subreports.mkdir(parents=True)
     (run_dir / "00_run_manifest.json").write_text(json.dumps({"run_id": "run-v3"}))
-    (package / "dossier.md").write_text(
+    (package / "main_report.md").write_text(
         "# Physical AI\n\n[Detail](subreport://physical_ai/runtime)"
     )
     (subreports / "runtime.md").write_text("# Runtime\n\nBody")
+    (package / "intake.jsonl").write_text(
+        json.dumps(
+            {
+                "unit_id": "u_a",
+                "research_use": "research_subject",
+                "note_zh": "已研究",
+            },
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
+    (package / "evidence.jsonl").write_text(
+        json.dumps(
+            {
+                "claim": "机器人能力已核查",
+                "status": "verified_fact",
+                "evidence": ["https://example.com/source"],
+                "scope": "当前版本",
+                "conflict": "",
+                "related_unit_ids": ["u_a"],
+            },
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
     (package / "research_manifest.json").write_text(
         json.dumps(
             {
                 "package_id": "physical_ai",
-                "dossier": "dossier.md",
+                "main_report": "main_report.md",
                 "subreports": [
                     {
                         "slug": "runtime",
@@ -162,15 +187,13 @@ def test_v3_publisher_nests_subreports_and_rewrites_all_links(tmp_path):
                         "unit_ids": ["u_a"],
                     }
                 ],
-                "primary_unit_ids": ["u_a"],
-                "unresolved_unit_ids": [],
-                "missing_unit_ids": [],
+                "reviewed_unit_ids": ["u_a"],
                 "status": "success",
             }
         )
     )
     (run_dir / "03_research" / "successes.json").write_text(
-        json.dumps({"physical_ai": "physical_ai/dossier.md"})
+        json.dumps({"physical_ai": "physical_ai/main_report.md"})
     )
     (run_dir / "03_research" / "failures.json").write_text("[]")
     health = run_dir / "01_phase1" / "source_health.json"
@@ -195,6 +218,7 @@ def test_v3_publisher_nests_subreports_and_rewrites_all_links(tmp_path):
     assert all("report://" not in content for _, content in fake.writes)
     assert any("子报告导航" in content for _, content in fake.writes)
     assert any("> 导航：" in content for _, content in fake.writes)
+    assert all("physical_ai" not in title for _, title in fake.nodes)
 
 
 def test_publish_preflight_parses_unicode_jsonl_and_prevents_partial_writes(tmp_path):

@@ -4,20 +4,25 @@ import json
 import sqlite3
 import uuid
 from contextlib import closing
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .artifacts import load_artifact_layout, load_not_published_artifacts
 from .config import LarkConfig, RuntimeConfig, SourcesConfig, resolve_binary
 from .models import (
-    Phase2Annotation,
+    Phase2CatalogEntry,
     PublishNode,
-    ResearchArtifactManifest,
     ResearchPackage,
     SourceItem,
 )
 from .phase1 import Phase1Runner
-from .pipeline import enqueue_agent_job, recover_and_publish, run_agent_worker
+from .pipeline import (
+    enqueue_agent_job,
+    recover_and_publish,
+    requeue_due_agent_jobs,
+    run_agent_worker,
+)
 from .publisher import LarkPublisher, validate_publish_inputs
 from .store import FileStore, StateDB, load_jsonl, parse_jsonl_text, source_group
 from .utils import atomic_write_json, atomic_write_text
@@ -145,8 +150,22 @@ async def run_automation_smoke(
     root = Path(str(receipt["smoke_root"]))
     smoke_runtime = isolated_runtime(source_runtime, root)
     worker_runtime = isolated_runtime(source_runtime, root, worker=True)
-    completed = await run_agent_worker(worker_runtime)
     expected = worker_runtime.shared_runtime_root / "completed" / str(receipt["run_id"])
+    completed: list[Path] = []
+    worker_attempt_count = 0
+    for attempt in range(1, 4):
+        worker_attempt_count = attempt
+        completed = await run_agent_worker(worker_runtime)
+        if completed:
+            break
+        requeued = requeue_due_agent_jobs(
+            worker_runtime,
+            datetime.now(UTC) + timedelta(days=366),
+        )
+        if not requeued:
+            break
+    receipt["worker_attempt_count"] = worker_attempt_count
+    atomic_write_json(root / SMOKE_RECEIPT, receipt)
     if completed != [expected]:
         raise RuntimeError(f"worker did not complete the expected smoke job: {completed}")
     recovered = recover_and_publish(smoke_runtime, publish_mode="preflight")
@@ -209,9 +228,9 @@ def verify_automation_smoke(source_runtime: RuntimeConfig, smoke_root: Path) -> 
     phase1_index = _json_object(run_dir / "01_phase1" / "index.json")
     expected_items = {str(value) for value in phase1_index.get("item_ids", [])}
     units = load_jsonl(run_dir / "02_routing" / "units.jsonl")
-    annotations = [
-        Phase2Annotation.model_validate(row)
-        for row in load_jsonl(run_dir / "02_routing" / "annotations.jsonl")
+    catalog = [
+        Phase2CatalogEntry.model_validate(row)
+        for row in load_jsonl(run_dir / "02_routing" / "catalog.jsonl")
     ]
     packages = [
         ResearchPackage.model_validate(row)
@@ -226,16 +245,15 @@ def verify_automation_smoke(source_runtime: RuntimeConfig, smoke_root: Path) -> 
         if not isinstance(item_ids, list):
             raise RuntimeError("Phase 2 unit has invalid item_ids")
         unit_items.extend(str(item_id) for item_id in item_ids)
-    if len(unit_ids) != len(set(unit_ids)) or {row.unit_id for row in annotations} != set(unit_ids):
-        raise RuntimeError("Phase 2 unit/annotation coverage is not exact")
+    if len(unit_ids) != len(set(unit_ids)) or {row.unit_id for row in catalog} != set(unit_ids):
+        raise RuntimeError("Phase 2 unit/catalog coverage is not exact")
     if len(unit_items) != len(set(unit_items)) or set(unit_items) != expected_items:
         raise RuntimeError("Phase 2 units do not exactly cover Phase 1")
-    investigate = {row.unit_id for row in annotations if row.disposition == "investigate"}
-    packaged = [unit_id for package in packages for unit_id in package.investigate_unit_ids]
-    if not packages or not investigate:
+    packaged = [unit_id for package in packages for unit_id in package.unit_ids]
+    if not packages or not unit_ids:
         raise RuntimeError("smoke produced no research package; Phase 3 was not exercised")
-    if len(packaged) != len(set(packaged)) or set(packaged) != investigate:
-        raise RuntimeError("Phase 2 packages do not exactly cover investigate units")
+    if len(packaged) != len(set(packaged)) or set(packaged) != set(unit_ids):
+        raise RuntimeError("Phase 2 packages do not exactly cover units")
 
     failures = json.loads(
         (run_dir / "03_research" / "failures.json").read_text(encoding="utf-8")
@@ -245,15 +263,29 @@ def verify_automation_smoke(source_runtime: RuntimeConfig, smoke_root: Path) -> 
         raise RuntimeError(f"Phase 3 smoke quality was not successful: {quality}, {failures}")
     successes = _json_object(run_dir / "03_research" / "successes.json")
     if not successes:
-        raise RuntimeError("Phase 3 produced no dossier")
-    for package_id in successes:
-        artifact = ResearchArtifactManifest.model_validate_json(
-            (run_dir / "03_research" / package_id / "research_manifest.json").read_text(
-                encoding="utf-8"
-            )
+        raise RuntimeError("Phase 3 produced no main report")
+    package_by_id = {package.package_id: package for package in packages}
+    for package_id, report_path in successes.items():
+        load_artifact_layout(
+            run_dir / "03_research" / package_id,
+            package_id,
+            str(report_path),
+            expected_unit_ids=set(package_by_id[package_id].unit_ids),
         )
-        if artifact.missing_unit_ids:
-            raise RuntimeError(f"Phase 3 silently missed units in {package_id}")
+    not_published = json.loads(
+        (run_dir / "03_research" / "not_published.json").read_text(encoding="utf-8")
+    )
+    if not isinstance(not_published, list):
+        raise RuntimeError("Phase 3 not_published is not an array")
+    for package_id_value in not_published:
+        package_id = str(package_id_value)
+        load_not_published_artifacts(
+            run_dir / "03_research" / package_id,
+            package_id,
+            expected_unit_ids=set(package_by_id[package_id].unit_ids),
+        )
+    if set(successes) | set(not_published) != set(package_by_id):
+        raise RuntimeError("Phase 3 did not decide every research package")
 
     preflight = validate_publish_inputs(run_dir, str(row[0]).upper())
     x_list_text = (run_dir / "01_phase1" / "x_list.jsonl").read_text(encoding="utf-8")
@@ -279,9 +311,10 @@ def verify_automation_smoke(source_runtime: RuntimeConfig, smoke_root: Path) -> 
             "state": {"status": str(row[0]), "handoff_state": str(row[1])},
             "phase1_item_count": len(expected_items),
             "phase2_unit_count": len(unit_ids),
-            "phase2_investigate_count": len(investigate),
+            "phase2_catalog_count": len(catalog),
             "package_count": len(packages),
-            "dossier_count": len(successes),
+            "main_report_count": len(successes),
+            "not_published_count": len(not_published),
             "phase3_missing_count": 0,
             "publisher_preflight": preflight,
             "wiki_dry_run": wiki_dry_run,
@@ -512,10 +545,10 @@ def _verify_wiki_tree(run_dir: Path, status: str) -> dict[str, Any]:
     }
     for node in report_nodes.values():
         if not node.url or node.url not in fake.content[day.node_token]:
-            raise RuntimeError("daily Brief does not link to every dossier")
+            raise RuntimeError("daily Brief does not link to every main report")
     for key, node in report_nodes.items():
         if day.url not in fake.content[node.node_token]:
-            raise RuntimeError(f"dossier has no back-navigation: {key}")
+            raise RuntimeError(f"main report has no back-navigation: {key}")
     for key, node in subreport_nodes.items():
         _, package_id, _ = key.split(":", 2)
         parent = report_nodes[f"report:{package_id}"]
@@ -526,7 +559,7 @@ def _verify_wiki_tree(run_dir: Path, status: str) -> dict[str, Any]:
         "navigation_version": manifest.navigation_version,
         "page_count": len(fake.content),
         "empty_page_count": 0,
-        "dossier_count": len(report_nodes),
+        "main_report_count": len(report_nodes),
         "subreport_count": len(subreport_nodes),
         "unresolved_internal_link_count": 0,
         "dm_transport": "in-memory",

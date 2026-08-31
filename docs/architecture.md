@@ -5,12 +5,12 @@
 ```text
 platform observations -> sealed source JSONL -> exact observation units
   -> one serial Phase 2 Codex thread -> 0-15 research packages
-  -> package research leads -> Chinese dossiers/subreports
+  -> package research leads -> Chinese main reports/optional subreports
   -> navigation brief -> private Lark Wiki + self-DM
 ```
 
-Phase 1 maximizes durable observation coverage. Phase 2 annotates and dispatches without browsing or
-research. Phase 3 verifies concrete changes and explains them faithfully; it does not have to invent
+Phase 1 maximizes durable observation coverage. Phase 2 understands and groups without browsing,
+importance ranking or research. Phase 3 follows new information into primary artifacts; it does not have to invent
 a unified thesis. Phase 4 is a reading index, not a second research or decision layer.
 
 ## Runtime truth
@@ -25,8 +25,8 @@ store/
 runs/<date>/attempt-0001/
   00_run_manifest.json
   01_phase1/{x_list,x_for_you,github,papers,articles,hackernews}.jsonl
-  02_routing/{units.jsonl,annotations.jsonl,working_map.md,packages.json}
-  03_research/<package-id>/{dossier.md,subreports/,research_manifest.json}
+  02_routing/{units.jsonl,catalog.jsonl,working_map.md,packages.json,phase2_manifest.json}
+  03_research/<package-id>/{main_report.md,intake.jsonl,evidence.jsonl,subreports/,research_manifest.json}
   04_brief/daily_brief.md
   05_publish/publish_manifest.json
 state.db
@@ -79,34 +79,39 @@ state, duplicate/revision counts, observed time range, raw completeness and quie
 Deterministic unitization groups only provably identical entities: an X post/conversation, GitHub
 repo, arXiv paper, HN story or canonical article. Semantic similarity never deletes evidence.
 
-One logical Codex thread processes bounded batches of at most 160 units and 256 KiB projection.
-Each batch returns exactly one annotation per unit plus a compact working map:
+One new Codex thread is created for each day and resumed across bounded batches of at most 160 units
+and 256 KiB projection. Each batch returns exactly one factual Chinese summary per unit plus a compact
+working map:
 
 ```json
-{"unit_id":"u_...","disposition":"investigate","summary_zh":"...","reason":"...","entities":[],"relation_hints":[],"duplicate_of":null}
+{"unit_id":"u_...","summary_zh":"..."}
 ```
 
-Allowed dispositions are `investigate`, `supporting`, `duplicate`, and `discard`. Ambiguous weak
-signals default to investigation. The application validates each checkpoint before resuming the
-same thread and never performs the V2 all-item calibration pass.
+Phase 2 does not decide importance, research depth, questions or conclusions. The application
+persists the thread as soon as Codex starts it, hashes every input checkpoint, and rejects mixed
+threads or stale outputs.
 
-After all annotations, the same thread reads only compact artifacts and creates 0-15 packages.
-Every investigate unit belongs to exactly one package. Packages are split mechanically above 90
-primary units or about 750 KiB.
+After all batches, the same thread creates 1–15 semantic packages. Every unit belongs to exactly one
+package. Code validates exact coverage but does not reclassify or mechanically split an Agent-made
+package; large package catalogs are stored as bounded shards for the Lead.
 
 ## Phase 3 contract
 
-Each package lead receives `AGENTS.md`, a readable `PACKAGE.md`, a manifest, per-unit source files,
-an on-demand daily catalog, bootstrap index and progress checkpoint. It may use up to four
+Each package lead receives `AGENTS.md`, `RESEARCH_METHOD.md`, a readable `PACKAGE.md`, bounded catalog
+shards, per-unit source files, an on-demand daily catalog, bootstrap index and progress checkpoint. It may use up to four
 non-recursive subagents for genuinely independent research directions.
 
-The lead writes a Simplified-Chinese `dossier.md`, natural `subreports/*.md`, and a small artifact
-manifest. Every subreport identifies its triggering daily changes, verified facts, important detail,
-primary evidence, conflicts and unknowns. Relationships may use ASCII when useful.
+The lead writes a self-contained Simplified-Chinese `main_report.md`; it creates subreports only when
+an independent evidence chain or technical section naturally warrants one. Internal `intake.jsonl`
+proves every package unit was inspected, while `evidence.jsonl` distinguishes verified facts, source
+claims, inference, disputes and unknowns. Professional terminology, analogy and ASCII are available
+when they materially improve understanding.
 
-The artifact manifest accounts for each investigate unit as primary or unresolved. Missing units
-mark Phase 3 partial and are recorded for prompt/context evaluation; production does not launch an
-automatic patch agent. Existing research still publishes.
+The artifact manifest and intake must account for every package unit exactly once. Code validates
+structure, paths, IDs and link closure only; it does not grade prose or launch a semantic reviewer.
+Infrastructure failures retain checkpoints, while valid completed package artifacts are not rerun.
+After doing the research, a Lead may return `status=not_published` with no reader page when the
+package offers no material insight for the configured reader; intake and evidence remain durable.
 
 ## Queue and permissions
 
@@ -118,7 +123,7 @@ backoff. Lark failures remain in `publish_pending`; the recovery heartbeat retri
 due time. Process locks make tick, worker and publisher recovery single-owner operations.
 
 The publisher validates all local files and internal links before its first external write. Year and
-month nodes are materialized navigation indexes; day, dossier and subreport pages contain deterministic
+month nodes are materialized navigation indexes; day, main-report and subreport pages contain deterministic
 back-navigation. Only stale content nodes recorded in the same run's publish manifest may be removed.
 
 Every Codex call denies the user's Codex data, SSH directory and login Keychains while granting only

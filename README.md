@@ -7,7 +7,7 @@
 A local-first daily research pipeline for frontier AI, agents, robotics, and Physical AI.
 
 AI Intelligence Radar watches independent source surfaces, preserves replayable observations, asks
-Codex agents to investigate the day's concrete changes, and publishes a private, navigable Lark
+Codex agents to investigate the day's new signals, and publishes a private, navigable Lark
 Wiki. It is designed for people who want to stay sensitive to a field without manually checking six
 different feeds every day.
 
@@ -18,19 +18,19 @@ X / GitHub / papers / media / HN
        durable observations
                 │
                 ▼
- one serial annotation + packaging thread
+ one daily semantic-grouping thread
                 │
                 ▼
        parallel research leads
                 │
                 ▼
- Chinese dossiers + subreports + daily Brief
+ Chinese main reports + optional subreports + daily Brief
                 │
                 ▼
       private Lark Wiki + self-DM
 ```
 
-> **Project status:** v0.3 is production-used on macOS under one local user account. The data model,
+> **Project status:** v0.4 is production-used on macOS under one local user account. The data model,
 > queue recovery, no-publish E2E smoke, and Lark publisher are tested. Source coverage remains
 > platform-specific: “complete increment”, “bounded discovery”, and “sampled surface” are not treated
 > as interchangeable promises.
@@ -43,8 +43,9 @@ traceable research**:
 - A source adapter records what the platform actually exposed, not what an editorial layer guessed
   was important.
 - A daily run drains every ready, undelivered observation; late arrivals survive outages.
-- Phase 2 annotates every observation unit exactly once before it creates research packages.
-- Phase 3 checks the concrete change, primary evidence, conflicts, and unknowns.
+- Phase 2 understands and uniquely groups every observation unit without deciding its importance.
+- Phase 3 uses each new signal as a starting point for primary-evidence deep research.
+- A Lead may withhold a fully inspected package instead of publishing a filler page.
 - Phase 4 is a reading map. It does not compress the day into a forced grand narrative.
 - Phase 5 is deterministic code: validate files, update the Wiki tree, then send one idempotent DM.
 
@@ -55,14 +56,14 @@ AI Intelligence Radar
 └── 2026                         # navigable year index
     └── 2026-08                  # navigable month index
         └── 2026-08-31 · Brief   # daily reading entry point
-            ├── Research dossier A
+            ├── Main report A
             │   ├── Subreport A1
             │   └── Subreport A2
-            └── Research dossier B
+            └── Main report B
 ```
 
 Year and month nodes are real index pages, not empty containers. The publisher adds deterministic
-breadcrumbs, verifies every dossier/subreport link before the first external write, and only removes
+breadcrumbs, verifies every main-report/subreport link before the first external write, and only removes
 stale content nodes that are recorded in the same run's publish manifest.
 
 ## Pipeline
@@ -70,8 +71,8 @@ stale content nodes that are recorded in the same run's publish manifest.
 | Phase | First-principles job | Main artifacts |
 |---|---|---|
 | 1 — Observe | Save platform-native increments, revisions, receipts, and health without editorial ranking | source JSONL, raw blobs, fetch manifests, `index.json` |
-| 2 — Route | Mechanically form exact units; one serial Codex thread annotates all units and creates 0–15 dynamic packages | `units.jsonl`, `annotations.jsonl`, `working_map.md`, `packages.json` |
-| 3 — Research | One lead per package verifies what changed and writes natural Simplified-Chinese research | `dossier.md`, `subreports/*.md`, `research_manifest.json` |
+| 2 — Route | Mechanically form exact units; one daily Codex thread summarizes and uniquely groups every unit into 1–15 dynamic packages | `units.jsonl`, `catalog.jsonl`, `working_map.md`, `packages.json`, `phase2_manifest.json` |
+| 3 — Research | One lead per package performs artifact-level deep research and writes natural Simplified-Chinese work | `main_report.md`, `intake.jsonl`, `evidence.jsonl`, optional `subreports/*.md` |
 | 4 — Navigate | Build a reader-facing Brief that links to research and exposes failures/unknowns | `daily_brief.md`, quality and source-health files |
 | 5 — Publish | Validate the tree, update Lark idempotently, and send one self-DM | `publish_manifest.json` |
 
@@ -106,7 +107,7 @@ Figure, 1X, Skild, a16z, IEEE Spectrum Robotics, and The Robot Report. See
 
 Linux can run much of the library and test suite, but the production scheduler, Keychain storage,
 Playwright login handoff, and acceptance evidence are currently macOS-first. Windows support is not
-part of v0.3.
+part of v0.4.
 
 ## Quick start
 
@@ -257,7 +258,7 @@ levels; a unit test alone is not production sign-off. See [Verification guide](d
 ## Legacy implementation
 
 The earlier Claude/Notion/OpenClaw implementation is preserved at the annotated Git tag
-`legacy-v1`. v0.3 does not keep both architectures alive in the same production tree.
+`legacy-v1`. v0.4 does not keep both architectures alive in the same production tree.
 
 ## License
 

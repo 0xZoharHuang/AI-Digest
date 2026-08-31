@@ -14,7 +14,20 @@ tick_target="$launch_agents/com.ai-digest.tick.plist"
 recover_target="$launch_agents/com.ai-digest.recover.plist"
 runner_target="$launch_agents/com.ai-digest.agent-runner.plist"
 
+require_empty_active_queues() {
+  for queue_name in staging jobs retry_wait completed publish_pending; do
+    queue_path="$queue_dir/$queue_name"
+    [[ -d "$queue_path" ]] || continue
+    first_entry=$(find "$queue_path" -mindepth 1 -maxdepth 1 -print -quit)
+    if [[ -n "$first_entry" ]]; then
+      echo "Refusing schedule switch while $queue_name is not empty: $first_entry" >&2
+      exit 2
+    fi
+  done
+}
+
 if [[ "$mode" == "--cutover" ]]; then
+  require_empty_active_queues
   for target in "$tick_target" "$recover_target" "$runner_target"; do
     [[ -f "$target" ]] || { echo "Missing installed plist: $target" >&2; exit 2; }
   done
@@ -42,6 +55,7 @@ if [[ "$mode" == "--cutover" ]]; then
 fi
 
 if [[ "$mode" == "--rollback" ]]; then
+  require_empty_active_queues
   launchctl bootout "$launch_domain/com.ai-digest.tick" 2>/dev/null || true
   launchctl bootout "$launch_domain/com.ai-digest.recover" 2>/dev/null || true
   launchctl bootout "$launch_domain/com.ai-digest.agent-runner" 2>/dev/null || true

@@ -14,15 +14,17 @@ from pathlib import Path
 from typing import Literal
 
 from .agent_phases import AgentPhases
+from .artifacts import load_artifact_layout, load_not_published_artifacts
 from .codex_runner import RetryableCodexError
 from .config import RuntimeConfig, SourcesConfig, load_interests
 from .models import (
     Assignment,
     Bundle,
+    LegacyResearchPackage,
     ObservationUnit,
     Phase2Annotation,
+    Phase2CatalogEntry,
     PublishManifest,
-    ResearchArtifactManifest,
     ResearchPackage,
     RunManifest,
     RunStatus,
@@ -833,6 +835,48 @@ def _import_routing(job: Path, run: Path) -> None:
     source = job / "02_routing"
     if not source.exists():
         raise ValueError("runner output is missing 02_routing")
+    if (source / "phase2_manifest.json").exists():
+        units_content = _safe_read(source, Path("units.jsonl"), 50_000_000)
+        catalog_content = _safe_read(source, Path("catalog.jsonl"), 20_000_000)
+        packages_content = _safe_read(source, Path("packages.json"), 5_000_000)
+        manifest_content = _safe_read(source, Path("phase2_manifest.json"), 2_000_000)
+        if (source / "annotations.jsonl").exists():
+            raise ValueError("runner output mixes Phase 2 routing contracts")
+        units = [ObservationUnit.model_validate(row) for row in parse_jsonl_text(units_content)]
+        catalog = [
+            Phase2CatalogEntry.model_validate(row)
+            for row in parse_jsonl_text(catalog_content)
+        ]
+        packages = [ResearchPackage.model_validate(row) for row in json.loads(packages_content)]
+        from .v3 import (
+            validate_catalog_coverage,
+            validate_packages,
+            validate_phase2_manifest,
+            validate_unit_item_ids,
+        )
+
+        validate_phase2_manifest(source)
+        phase1_index = json.loads(
+            (run / "01_phase1" / "index.json").read_text(encoding="utf-8")
+        )
+        expected_items = {str(value) for value in phase1_index.get("item_ids", [])}
+        validate_unit_item_ids(expected_items, units)
+        validate_catalog_coverage(units, catalog)
+        validate_packages(packages, catalog)
+        target = run / "02_routing"
+        target.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(target / "units.jsonl", units_content)
+        atomic_write_text(target / "catalog.jsonl", catalog_content)
+        atomic_write_text(target / "packages.json", packages_content)
+        atomic_write_text(target / "phase2_manifest.json", manifest_content)
+        working_map = _safe_optional_read(source, Path("working_map.md"), 2_000_000)
+        if working_map is not None:
+            atomic_write_text(target / "working_map.md", working_map)
+        _copy_optional_json(source, target, "unit_items.json", 20_000_000)
+        _copy_optional_json(source, target, "codex.json", 5_000_000)
+        _safe_read(source, Path("PHASE2_COMPLETE"), 100)
+        atomic_write_text(target / "PHASE2_COMPLETE", "v4 complete\n")
+        return
     if (source / "packages.json").exists():
         units_content = _safe_read(source, Path("units.jsonl"), 50_000_000)
         annotations_content = _safe_read(source, Path("annotations.jsonl"), 20_000_000)
@@ -842,26 +886,27 @@ def _import_routing(job: Path, run: Path) -> None:
             Phase2Annotation.model_validate(row)
             for row in parse_jsonl_text(annotations_content)
         ]
-        packages = [ResearchPackage.model_validate(row) for row in json.loads(packages_content)]
-        expected_units = {unit.unit_id for unit in units}
-        phase1_index = json.loads(
-            (run / "01_phase1" / "index.json").read_text(encoding="utf-8")
-        )
-        expected_items = {str(value) for value in phase1_index.get("item_ids", [])}
+        legacy_packages = [
+            LegacyResearchPackage.model_validate(row)
+            for row in json.loads(packages_content)
+        ]
+        from .v3 import validate_legacy_phase2
+
+        validate_legacy_phase2(units, annotations, legacy_packages)
+        expected_items = {
+            str(value)
+            for value in json.loads(
+                (run / "01_phase1" / "index.json").read_text(encoding="utf-8")
+            ).get("item_ids", [])
+        }
         unit_items = [item_id for unit in units for item_id in unit.item_ids]
         if len(unit_items) != len(set(unit_items)) or set(unit_items) != expected_items:
-            raise ValueError("V3 units do not exactly cover imported Phase 1 items")
-        if {row.unit_id for row in annotations} != expected_units:
-            raise ValueError("V3 annotations do not cover imported units")
-        investigate = {row.unit_id for row in annotations if row.disposition == "investigate"}
-        assigned = [unit_id for package in packages for unit_id in package.investigate_unit_ids]
-        if len(assigned) != len(set(assigned)) or set(assigned) != investigate:
-            raise ValueError("V3 packages do not exactly cover investigate units")
+            raise ValueError("legacy V3 units do not exactly cover imported Phase 1 items")
         target = run / "02_routing"
         target.mkdir(parents=True, exist_ok=True)
         atomic_write_text(target / "units.jsonl", units_content)
         atomic_write_text(target / "annotations.jsonl", annotations_content)
-        atomic_write_json(target / "packages.json", [row.model_dump(mode="json") for row in packages])
+        atomic_write_text(target / "packages.json", packages_content)
         working_map = _safe_optional_read(source, Path("working_map.md"), 2_000_000)
         if working_map is not None:
             atomic_write_text(target / "working_map.md", working_map)
@@ -911,9 +956,19 @@ def _import_research(job: Path, run: Path) -> None:
     packages_path = run / "02_routing" / "packages.json"
     if not routing_path.exists() and not packages_path.exists():
         raise ValueError("research output arrived without validated routing")
-    if packages_path.exists():
+    expected_units: dict[str, set[str]] = {}
+    if packages_path.exists() and (run / "02_routing" / "phase2_manifest.json").exists():
+        packages = [
+            ResearchPackage.model_validate(row)
+            for row in json.loads(packages_path.read_text(encoding="utf-8"))
+        ]
+        bundle_ids = {package.package_id for package in packages}
+        expected_units = {
+            package.package_id: set(package.unit_ids) for package in packages
+        }
+    elif packages_path.exists():
         bundle_ids = {
-            ResearchPackage.model_validate(row).package_id
+            LegacyResearchPackage.model_validate(row).package_id
             for row in json.loads(packages_path.read_text(encoding="utf-8"))
         }
     else:
@@ -929,38 +984,56 @@ def _import_research(job: Path, run: Path) -> None:
     target.mkdir(parents=True, exist_ok=True)
     for bundle_id, relative in successes_raw.items():
         Bundle(bundle_id=str(bundle_id), label="validated", item_ids=[])
-        is_v3 = relative == f"{bundle_id}/dossier.md"
-        if bundle_id not in bundle_ids or (
-            not is_v3 and relative != f"{bundle_id}/report.md"
-        ):
+        if bundle_id not in bundle_ids:
             raise ValueError(f"invalid report mapping: {bundle_id} -> {relative}")
-        filename = "dossier.md" if is_v3 else "report.md"
-        content = _safe_read(source, Path(bundle_id) / filename, 5_000_000)
-        report_target = target / bundle_id / filename
-        report_target.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(report_target, content)
-        successes[bundle_id] = f"{bundle_id}/{filename}"
-        if is_v3:
-            manifest_content = _safe_read(
-                source, Path(bundle_id) / "research_manifest.json", 2_000_000
+        package_root = source / bundle_id
+        try:
+            layout = load_artifact_layout(
+                package_root,
+                str(bundle_id),
+                str(relative),
+                expected_unit_ids=expected_units.get(str(bundle_id)),
             )
-            artifact = ResearchArtifactManifest.model_validate_json(manifest_content)
-            atomic_write_json(
-                target / bundle_id / "research_manifest.json",
-                artifact.model_dump(mode="json"),
-            )
-            for subreport_artifact in artifact.subreports:
-                relative_path = (
-                    subreport_artifact
-                    if isinstance(subreport_artifact, str)
-                    else subreport_artifact.path
-                )
-                subreport = _safe_read(source, Path(bundle_id) / relative_path, 5_000_000)
-                destination = target / bundle_id / relative_path
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                atomic_write_text(destination, subreport)
+        except (ValueError, TypeError) as error:
+            raise ValueError(f"unsafe runner output: {error}") from error
+        for artifact_path in layout.files():
+            relative_path = artifact_path.relative_to(package_root)
+            content = _safe_read(source, Path(bundle_id) / relative_path, 10_000_000)
+            destination = target / bundle_id / relative_path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(destination, content)
+        successes[bundle_id] = f"{bundle_id}/{layout.main_name}"
         _copy_optional_json(source / bundle_id, target / bundle_id, "codex.json", 2_000_000)
     atomic_write_json(target / "successes.json", successes)
+    not_published_content = _safe_optional_read(
+        source, Path("not_published.json"), 2_000_000
+    )
+    not_published_value = json.loads(not_published_content) if not_published_content else []
+    if not isinstance(not_published_value, list):
+        raise ValueError("not_published.json must be an array")
+    not_published: list[str] = []
+    for package_id_value in not_published_value:
+        package_id = str(package_id_value)
+        if package_id not in bundle_ids or package_id in successes:
+            raise ValueError(f"invalid not-published package: {package_id}")
+        package_root = source / package_id
+        try:
+            paths = load_not_published_artifacts(
+                package_root,
+                package_id,
+                expected_unit_ids=expected_units.get(package_id),
+            )
+        except (ValueError, TypeError) as error:
+            raise ValueError(f"unsafe runner output: {error}") from error
+        for artifact_path in paths:
+            relative_path = artifact_path.relative_to(package_root)
+            content = _safe_read(source, Path(package_id) / relative_path, 10_000_000)
+            destination = target / package_id / relative_path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(destination, content)
+        _copy_optional_json(source / package_id, target / package_id, "codex.json", 2_000_000)
+        not_published.append(package_id)
+    atomic_write_json(target / "not_published.json", sorted(not_published))
     failures_content = _safe_read(source, Path("failures.json"), 2_000_000)
     failures_value = json.loads(failures_content)
     if not isinstance(failures_value, list):
@@ -982,6 +1055,7 @@ def _import_brief(job: Path, run: Path) -> None:
     for name, limit in (
         ("watch.jsonl", 10_000_000),
         ("failures.json", 2_000_000),
+        ("not_published.json", 2_000_000),
         ("source_health.json", 2_000_000),
         ("quality.json", 5_000_000),
         ("codex.json", 2_000_000),
@@ -1119,6 +1193,7 @@ def _copy_recent_history(runtime: RuntimeConfig, staging: Path, current_run: Pat
     reports = [
         *runtime.runtime_root.glob("runs/*/attempt-*/03_research/*/report.md"),
         *runtime.runtime_root.glob("runs/*/attempt-*/03_research/*/dossier.md"),
+        *runtime.runtime_root.glob("runs/*/attempt-*/03_research/*/main_report.md"),
     ]
     for report in sorted(reports):
         if current_run in report.parents or report.stat().st_mtime < cutoff:
