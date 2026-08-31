@@ -113,11 +113,12 @@ def _command_ok(args: list[str]) -> bool:
 def _playwright_executable() -> Path | None:
     code = (
         "from playwright.sync_api import sync_playwright; "
-        "p=sync_playwright().start(); print(p.chromium.executable_path); p.stop()"
+        "p=sync_playwright().start(); path=p.chromium.executable_path; "
+        "b=p.chromium.launch(headless=True); b.close(); print(path); p.stop()"
     )
     try:
         process = subprocess.run(
-            [sys.executable, "-c", code], capture_output=True, text=True, timeout=15
+            [sys.executable, "-c", code], capture_output=True, text=True, timeout=30
         )
         if process.returncode == 0 and process.stdout.strip():
             return Path(process.stdout.strip())

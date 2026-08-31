@@ -27,7 +27,7 @@ from .models import (
     SourceHealth,
     SourceItem,
 )
-from .store import FileStore, StateDB, source_group
+from .store import FileStore, StateDB, load_jsonl, source_group
 from .utils import atomic_write_json, atomic_write_jsonl, atomic_write_text
 
 
@@ -148,6 +148,18 @@ class Phase1Runner:
                 phase_dir / f"{name}.jsonl",
                 (item.model_dump(mode="json") for item in grouped.get(name, [])),
             )
+        written_ids = [
+            str(row["item_id"])
+            for name in filenames
+            for row in load_jsonl(phase_dir / f"{name}.jsonl")
+        ]
+        expected_ids = [item.item_id for item in pending]
+        if (
+            len(written_ids) != len(expected_ids)
+            or len(written_ids) != len(set(written_ids))
+            or set(written_ids) != set(expected_ids)
+        ):
+            raise RuntimeError("Phase 1 JSONL round-trip coverage validation failed")
         atomic_write_json(
             phase_dir / "source_health.json",
             {key: value.model_dump(mode="json") for key, value in manifest.source_health.items()},

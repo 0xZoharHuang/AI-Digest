@@ -805,7 +805,14 @@ def source_group(item: SourceItem) -> str:
 def load_jsonl(path: Path) -> list[dict[str, object]]:
     if not path.exists():
         return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    # JSON strings may legally contain U+2028/U+2029 when ensure_ascii=False. str.splitlines()
+    # treats those code points as record separators and corrupts otherwise valid JSONL. JSONL
+    # records are separated only by the literal LF byte written by atomic_write_jsonl().
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").split("\n")
+        if line
+    ]
 
 
 def x_expiry(observed_at: datetime, retention_days: int) -> datetime:

@@ -229,8 +229,9 @@ def test_revision_manifest_helpers_and_grouping(tmp_path):
     )
     assert store.write_fetch_manifest(manifest).exists()
     path = tmp_path / "rows.jsonl"
-    atomic_write_jsonl(path, [{"a": 1}])
-    assert load_jsonl(path) == [{"a": 1}]
+    rows = [{"a": 1}, {"text": "before\u2028after"}, {"text": "before\u2029after"}]
+    atomic_write_jsonl(path, rows)
+    assert load_jsonl(path) == rows
     assert load_jsonl(tmp_path / "missing") == []
     assert source_group(item) == "articles"
     assert x_expiry(now, 30) == now + timedelta(days=30)

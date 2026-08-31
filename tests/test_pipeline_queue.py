@@ -55,6 +55,18 @@ async def test_existing_visible_job_finalizes_crash_interrupted_delivery(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_failed_job_staging_is_removed_before_retry(tmp_path):
+    runtime, _state, run_dir, run_id = await _sealed_run(tmp_path, "bad-jsonl")
+    (run_dir / "01_phase1" / "x_list.jsonl").write_text('{"broken":')
+
+    with pytest.raises(json.JSONDecodeError):
+        await enqueue_agent_job(runtime, run_dir)
+
+    assert not (runtime.shared_runtime_root / "staging" / f"{run_id}.staging").exists()
+    assert not (runtime.shared_runtime_root / "jobs" / run_id).exists()
+
+
+@pytest.mark.asyncio
 async def test_worker_recovers_done_before_move_and_rejects_symlinks(tmp_path):
     runtime = RuntimeConfig(
         runtime_root=tmp_path / "runtime", shared_runtime_root=tmp_path / "shared"

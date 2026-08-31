@@ -116,6 +116,7 @@ for config_name in runtime.toml sources.toml interests.md twitter_cookies.json; 
 done
 cd "$app_staging"
 uv sync --no-editable
+"$app_staging/.venv/bin/python" -m playwright install chromium
 npm ci --ignore-scripts
 cd "$project_dir"
 chmod -R u=rwX,go= "$app_staging"

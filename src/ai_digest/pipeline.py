@@ -97,16 +97,21 @@ async def enqueue_agent_job(runtime: RuntimeConfig, run_dir: Path) -> Path:
     if staging.exists():
         shutil.rmtree(staging)
     staging.mkdir(parents=True)
-    shutil.copy2(run_dir / "00_run_manifest.json", staging / "00_run_manifest.json")
-    shutil.copytree(run_dir / "01_phase1", staging / "01_phase1")
-    atomic_write_text(staging / "interests.md", load_interests())
-    _copy_referenced_blobs(runtime, staging)
-    _copy_recent_history(runtime, staging, run_dir)
-    atomic_write_text(staging / "READY", "ready\n")
-    _make_group_writable(staging)
-    _fsync_tree(staging)
-    staging.replace(job_dir)
-    _fsync_directory(queue)
+    try:
+        shutil.copy2(run_dir / "00_run_manifest.json", staging / "00_run_manifest.json")
+        shutil.copytree(run_dir / "01_phase1", staging / "01_phase1")
+        atomic_write_text(staging / "interests.md", load_interests())
+        _copy_referenced_blobs(runtime, staging)
+        _copy_recent_history(runtime, staging, run_dir)
+        atomic_write_text(staging / "READY", "ready\n")
+        _make_group_writable(staging)
+        _fsync_tree(staging)
+        staging.replace(job_dir)
+        _fsync_directory(queue)
+    except Exception:
+        if staging.exists():
+            shutil.rmtree(staging)
+        raise
     await state.mark_run_queued(job_name)
     return job_dir
 
