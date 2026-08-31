@@ -23,11 +23,13 @@ from ai_digest.v3 import (
     adopt_thread_id,
     build_observation_units,
     materialize_research_packages,
+    package_schema,
     phase2_agents_md,
     phase3_agents_md,
     phase4_agents_md,
     read_summary_output,
     read_summary_subset,
+    summary_schema,
     unit_batches,
     validate_legacy_phase2,
     validate_packages,
@@ -621,6 +623,17 @@ def test_reader_prompts_preserve_scan_then_drill_down_semantics():
     assert "source_health 描述采集器运行状态" in phase4_agents_md()
     assert "不得写“今日没有新增信息" in phase4_agents_md()
     assert "今天看到的原始入口" in phase4_agents_md()
+
+
+def test_phase2_schemas_constrain_only_system_owned_ids():
+    summaries = summary_schema({"u_b", "u_a"})["properties"]["summaries"]
+    assert summaries["minItems"] == summaries["maxItems"] == 2
+    assert summaries["items"]["properties"]["unit_id"]["enum"] == ["u_a", "u_b"]
+
+    groups = package_schema({"group_b", "group_a"})["properties"]["packages"]
+    group_ids = groups["items"]["properties"]["group_ids"]
+    assert group_ids["items"]["enum"] == ["group_a", "group_b"]
+    assert group_ids["uniqueItems"] is True
 
 
 @pytest.mark.asyncio
