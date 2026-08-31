@@ -30,11 +30,14 @@ from ai_digest.v3 import (
     phase4_agents_md,
     read_summary_output,
     read_summary_subset,
+    read_working_map_output,
     summary_schema,
     unit_batches,
     validate_legacy_phase2,
     validate_packages,
     validate_research_manifest,
+    working_map_covers_groups,
+    working_map_schema,
 )
 
 
@@ -444,7 +447,7 @@ async def test_phase2_uses_one_daily_resumed_thread_and_writes_new_contract(
                                 }
                                 for row in rows
                             ],
-                            "working_map": "# Map\n\n- 机器人",
+                            "working_map": "# Map\n\n- robotics：机器人",
                         },
                         ensure_ascii=False,
                     )
@@ -485,6 +488,63 @@ async def test_phase2_uses_one_daily_resumed_thread_and_writes_new_contract(
 
 
 @pytest.mark.asyncio
+async def test_phase2_repairs_incomplete_working_map_on_same_thread(tmp_path):
+    run = _sealed_run(tmp_path)
+
+    class MapRepairRunner:
+        calls: list[tuple[str, str | None]] = []
+
+        async def run(self, **kwargs):  # type: ignore[no-untyped-def]
+            workspace = kwargs["workspace"]
+            output = kwargs["output_file"]
+            self.calls.append((workspace.name, kwargs.get("resume_thread_id")))
+            if workspace.name.startswith("batch-"):
+                row = load_jsonl(workspace / "units.jsonl")[0]
+                payload = {
+                    "summaries": [
+                        {
+                            "unit_id": row["unit_id"],
+                            "summary_zh": "机器人更新",
+                            "group_id": "robotics",
+                        }
+                    ],
+                    "working_map": "# Map\n\n遗漏了系统 group id",
+                }
+            elif workspace.name == "map-repair":
+                payload = {
+                    "groups": [
+                        {"group_id": "robotics", "description_zh": "机器人与具身智能"}
+                    ]
+                }
+            else:
+                payload = {
+                    "packages": [
+                        {
+                            "package_id": "robotics",
+                            "label_zh": "机器人",
+                            "scope_note_zh": "机器人材料。",
+                            "group_ids": ["robotics"],
+                        }
+                    ]
+                }
+            output.write_text(json.dumps(payload, ensure_ascii=False))
+            return CodexResult(exit_code=0, thread_id="map-thread")
+
+    runner = MapRepairRunner()
+    await V3Phases(
+        RuntimeConfig(runtime_root=tmp_path, shared_runtime_root=tmp_path / "queue"),
+        runner,  # type: ignore[arg-type]
+    ).route(run)
+    assert runner.calls == [
+        ("batch-0001", None),
+        ("map-repair", "map-thread"),
+        ("finalize", "map-thread"),
+    ]
+    working_map = (run / "02_routing" / "working_map.md").read_text()
+    assert working_map_covers_groups(working_map, {"robotics"})
+
+
+@pytest.mark.asyncio
 async def test_phase2_repairs_only_missing_rows_in_bounded_same_thread_parts(tmp_path):
     run = _sealed_run(tmp_path, ("1", "2", "3"))
 
@@ -515,7 +575,7 @@ async def test_phase2_repairs_only_missing_rows_in_bounded_same_thread_parts(tmp
                                     "group_id": "robotics",
                                 }
                             ],
-                            "working_map": "# Map",
+                            "working_map": "# Map\n\n- robotics：机器人",
                         }
                     )
                 )
@@ -532,7 +592,7 @@ async def test_phase2_repairs_only_missing_rows_in_bounded_same_thread_parts(tmp
                                 }
                                 for row in rows
                             ],
-                            "working_map": "# Map repaired",
+                            "working_map": "# Map repaired\n\n- robotics：机器人",
                         }
                     )
                 )
@@ -599,7 +659,7 @@ async def test_phase2_missing_session_abandons_generation_and_starts_from_batch_
                                     "group_id": "robotics",
                                 }
                             ],
-                            "working_map": "# Map",
+                            "working_map": "# Map\n\n- robotics：机器人",
                         }
                     )
                 )
@@ -666,6 +726,32 @@ def test_phase2_schemas_constrain_only_system_owned_ids():
     group_ids = groups["items"]["properties"]["group_ids"]
     assert group_ids["items"]["enum"] == ["group_a", "group_b"]
     assert "uniqueItems" not in group_ids
+
+    map_groups = working_map_schema({"group_b", "group_a"})["properties"]["groups"]
+    assert map_groups["items"]["properties"]["group_id"]["enum"] == [
+        "group_a",
+        "group_b",
+    ]
+
+
+def test_working_map_repair_requires_exact_group_coverage(tmp_path):
+    output = tmp_path / "working-map.json"
+    output.write_text(
+        json.dumps(
+            {
+                "groups": [
+                    {"group_id": "group_a", "description_zh": "代理运行时"},
+                    {"group_id": "group_b", "description_zh": "机器人学习"},
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    repaired = read_working_map_output(output, {"group_a", "group_b"})
+    assert repaired is not None
+    assert working_map_covers_groups(repaired, {"group_a", "group_b"})
+    assert read_working_map_output(output, {"group_a", "group_b", "group_c"}) is None
 
 
 @pytest.mark.asyncio
