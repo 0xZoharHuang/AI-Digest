@@ -365,6 +365,20 @@ def test_research_lead_can_withhold_a_package_without_reader_pages(tmp_path):
     assert not (tmp_path / "main_report.md").exists()
 
 
+def test_single_evidence_url_is_mechanically_normalized(tmp_path):
+    package = ResearchPackage(
+        package_id="package",
+        label_zh="Package",
+        scope_note_zh="Scope",
+        unit_ids=["u_a"],
+    )
+    _write_research_artifacts(tmp_path, package.unit_ids)
+    row = json.loads((tmp_path / "evidence.jsonl").read_text())
+    row["evidence"] = "https://example.com/source"
+    (tmp_path / "evidence.jsonl").write_text(json.dumps(row) + "\n")
+    assert validate_research_manifest(tmp_path, package).status == "complete"
+
+
 @pytest.mark.asyncio
 async def test_phase2_uses_one_daily_resumed_thread_and_writes_new_contract(
     tmp_path, monkeypatch

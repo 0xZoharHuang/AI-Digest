@@ -243,6 +243,13 @@ class ResearchEvidenceEntry(BaseModel):
     conflict: str = ""
     related_unit_ids: list[str] = Field(default_factory=list)
 
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def one_evidence_locator_becomes_a_list(cls, value: Any) -> Any:
+        if isinstance(value, str) and value.strip():
+            return [value.strip()]
+        return value
+
     @field_validator("claim")
     @classmethod
     def claim_is_not_blank(cls, value: str) -> str:
