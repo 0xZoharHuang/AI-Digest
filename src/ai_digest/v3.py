@@ -1463,7 +1463,7 @@ def phase3_agents_md() -> str:
   reviewed_unit_ids 和 status="success"。
 
 如果完成核查后，本包没有任何内容值得 READER.md 所描述的读者更新认知，或内容明确偏离其兴趣且没有
-意外的重要关联，不要制造填充式文章。此时仍完成 intake.jsonl 和 evidence.jsonl，但不创建
+直接、实质的 AI/机器人关联，不要制造填充式文章；在无关领域本身很重要，并不足以发布。此时仍完成 intake.jsonl 和 evidence.jsonl，但不创建
 main_report.md/subreports；research_manifest.json 写 main_report=null、subreports=[]、
 status="not_published"。这是你的研究与发布判断，不是 Phase 2 的筛选。
 

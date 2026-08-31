@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import suppress
 
 import pytest
 
@@ -23,7 +24,7 @@ def _fake_codex(tmp_path, *, thread_id: str, delay: float):  # type: ignore[no-u
 
 @pytest.mark.asyncio
 async def test_thread_checkpoint_is_durable_before_turn_completion(tmp_path):
-    binary = _fake_codex(tmp_path, thread_id="thread-one", delay=1.0)
+    binary = _fake_codex(tmp_path, thread_id="thread-one", delay=2.0)
     checkpoint = tmp_path / "session.json"
     runner = CodexRunner(str(binary), idle_timeout_seconds=5)
     task = asyncio.create_task(
@@ -36,12 +37,22 @@ async def test_thread_checkpoint_is_durable_before_turn_completion(tmp_path):
             thread_checkpoint_path=checkpoint,
         )
     )
-    for _ in range(200):
-        if checkpoint.exists():
-            break
-        await asyncio.sleep(0.01)
-    if not checkpoint.exists() and task.done():
-        pytest.fail(f"fake Codex exited before checkpoint: {(await task).raw_lines}")
+    async def wait_for_checkpoint() -> None:
+        while not checkpoint.exists():
+            if task.done():
+                pytest.fail(
+                    f"fake Codex exited before checkpoint: {(await task).raw_lines}"
+                )
+            await asyncio.sleep(0.01)
+
+    try:
+        await asyncio.wait_for(wait_for_checkpoint(), timeout=10)
+    except BaseException:
+        if not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        raise
     assert json.loads(checkpoint.read_text())["thread_id"] == "thread-one"
     assert not task.done()
     result = await task

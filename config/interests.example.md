@@ -9,5 +9,5 @@ Current attention includes, but is not limited to:
 - The models, data, simulation, hardware and infrastructure enabling those systems.
 
 This is not a fixed taxonomy or a Phase 2 exclusion rule: every unit is grouped and reaches a
-Phase 3 Lead. After research, the Lead may also publish an unexpected topic when it could materially
-change the reader's understanding of an important technical or industry direction.
+Phase 3 Lead. An unexpected topic is publishable only when research establishes a direct, material
+connection to these AI/robotics interests; general importance in an unrelated field is not enough.
