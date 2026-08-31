@@ -11,7 +11,8 @@ versioning for public releases.
 
 - Open-source documentation index, operations/source/verification/Wiki guides, contribution policy,
   issue templates, and CI configuration.
-- Daily single-thread semantic grouping with exact unit-to-package catalog coverage.
+- Daily single-thread semantic grouping with continuous group IDs and exact unit-to-package catalog
+  coverage.
 - Artifact-level Phase 3 deep research with `main_report.md`, intake/evidence ledgers, and optional
   subreports, using GPT-5.6 Sol at medium reasoning.
 

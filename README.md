@@ -43,7 +43,8 @@ traceable research**:
 - A source adapter records what the platform actually exposed, not what an editorial layer guessed
   was important.
 - A daily run drains every ready, undelivered observation; late arrivals survive outages.
-- Phase 2 understands and uniquely groups every observation unit without deciding its importance.
+- Phase 2 understands each observation once, assigns a dynamic group, and consolidates those groups
+  into unique packages without deciding importance.
 - Phase 3 uses each new signal as a starting point for primary-evidence deep research.
 - A Lead may withhold a fully inspected package instead of publishing a filler page.
 - Phase 4 is a reading map. It does not compress the day into a forced grand narrative.

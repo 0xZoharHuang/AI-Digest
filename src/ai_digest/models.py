@@ -145,6 +145,7 @@ class Phase2Summary(BaseModel):
 
     unit_id: str
     summary_zh: str
+    group_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
     @field_validator("summary_zh")
     @classmethod
@@ -191,6 +192,22 @@ class ResearchPackage(BaseModel):
     def text_is_not_blank(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("package text must not be blank")
+        return value.strip()
+
+
+class Phase2PackagePlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    package_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")
+    label_zh: str
+    scope_note_zh: str
+    group_ids: list[str] = Field(min_length=1)
+
+    @field_validator("label_zh", "scope_note_zh")
+    @classmethod
+    def text_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("package plan text must not be blank")
         return value.strip()
 
 
