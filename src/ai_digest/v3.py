@@ -95,7 +95,6 @@ def package_schema(group_ids: set[str]) -> dict[str, Any]:
                             "type": "array",
                             "items": {"type": "string", "enum": allowed},
                             "minItems": 1,
-                            "uniqueItems": True,
                         },
                     },
                 },

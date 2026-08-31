@@ -638,7 +638,7 @@ def test_phase2_schemas_constrain_only_system_owned_ids():
     groups = package_schema({"group_b", "group_a"})["properties"]["packages"]
     group_ids = groups["items"]["properties"]["group_ids"]
     assert group_ids["items"]["enum"] == ["group_a", "group_b"]
-    assert group_ids["uniqueItems"] is True
+    assert "uniqueItems" not in group_ids
 
 
 @pytest.mark.asyncio
