@@ -29,6 +29,8 @@ from .utils import atomic_write_json, atomic_write_jsonl, atomic_write_text
 
 PHASE2_BATCH_MAX_UNITS = 160
 PHASE2_BATCH_MAX_BYTES = 256 * 1024
+PHASE2_REPAIR_MAX_UNITS = 40
+PHASE2_REPAIR_MAX_BYTES = 64 * 1024
 PACKAGE_MAX_COUNT = 15
 CATALOG_SHARD_MAX_UNITS = 160
 CATALOG_SHARD_MAX_BYTES = 256 * 1024
@@ -236,6 +238,7 @@ class V3Phases:
                 codex_batches.append({**checkpoint, "batch": number, "reused": True})
                 continue
             result = CodexResult(exit_code=0, thread_id=thread_id)
+            repair_part_summaries: list[dict[str, Any]] = []
             if partial is None or not partial[0]:
                 result = await run_phase2_turn(
                     self.runner,
@@ -260,54 +263,101 @@ class V3Phases:
                 missing_ids = expected_batch_ids - completed_ids
                 repair_root = batch_root / "repair"
                 repair_root.mkdir(parents=True, exist_ok=True)
-                atomic_write_jsonl(
-                    repair_root / "units.jsonl",
-                    (
-                        unit.model_dump(mode="json")
-                        for unit in batch
-                        if unit.unit_id in missing_ids
-                    ),
+                missing_units = [unit for unit in batch if unit.unit_id in missing_ids]
+                repair_batches = bounded_unit_batches(
+                    missing_units,
+                    max_units=PHASE2_REPAIR_MAX_UNITS,
+                    max_bytes=PHASE2_REPAIR_MAX_BYTES,
                 )
-                atomic_write_text(repair_root / "interests.md", interests)
-                atomic_write_text(repair_root / "working_map.md", partial_map)
-                atomic_write_json(repair_root / "summary.schema.json", SUMMARY_SCHEMA)
-                atomic_write_text(repair_root / "AGENTS.md", phase2_agents_md())
-                repair_output = repair_root / f"summary_output.{input_hash[:16]}.json"
-                repair = await run_phase2_turn(
-                    self.runner,
-                    workspace=repair_root,
-                    prompt=(
-                        f"当前批次已有 {len(completed_ids)} 个有效摘要。只处理 units.jsonl "
-                        f"中的 {len(missing_ids)} 个缺失 units；不要重复已有摘要。返回完整 schema JSON。"
-                    ),
-                    model=self.runtime.codex.router_model,
-                    reasoning=self.runtime.codex.router_reasoning,
-                    sandbox="read-only",
-                    output_file=repair_output,
-                    output_schema=repair_root / "summary.schema.json",
-                    resume_thread_id=thread_id,
-                    thread_checkpoint_path=session_path,
-                )
-                thread_id = persist_phase2_thread(
-                    session_path, thread_id, repair.thread_id
-                )
-                repair.events = [*result.events, *repair.events]
-                result = repair
-                repaired = read_summary_output(repair_output, missing_ids)
-                if repaired is not None:
-                    repaired_summaries, repaired_map = repaired
-                    merged = [*partial_summaries, *repaired_summaries]
-                    atomic_write_json(
-                        output,
-                        {
-                            "summaries": [value.model_dump(mode="json") for value in merged],
-                            "working_map": repaired_map,
-                        },
+                repaired_summaries: list[Phase2Summary] = []
+                repair_map = partial_map
+                for part_number, repair_batch in enumerate(repair_batches, start=1):
+                    part_root = repair_root / f"part-{part_number:04d}"
+                    part_root.mkdir(parents=True, exist_ok=True)
+                    atomic_write_jsonl(
+                        part_root / "units.jsonl",
+                        (unit.model_dump(mode="json") for unit in repair_batch),
                     )
-                    parsed = read_summary_output(output, expected_batch_ids)
+                    atomic_write_text(part_root / "interests.md", interests)
+                    atomic_write_text(part_root / "working_map.md", repair_map)
+                    atomic_write_json(part_root / "summary.schema.json", SUMMARY_SCHEMA)
+                    atomic_write_text(part_root / "AGENTS.md", phase2_agents_md())
+                    part_ids = {unit.unit_id for unit in repair_batch}
+                    part_hash = phase2_batch_input_hash(
+                        repair_batch,
+                        interests,
+                        repair_map,
+                        number=number * 1000 + part_number,
+                        total=len(repair_batches),
+                        model=self.runtime.codex.router_model,
+                        reasoning=self.runtime.codex.router_reasoning,
+                    )
+                    part_output = part_root / f"summary_output.{part_hash[:16]}.json"
+                    part_checkpoint = _read_json(part_root / "codex.json", {})
+                    part_cached = None
+                    if (
+                        part_checkpoint.get("input_hash") == part_hash
+                        and part_checkpoint.get("thread_id") == thread_id
+                    ):
+                        part_cached = read_summary_output(part_output, part_ids)
+                    if part_cached is None and phase2_has_later_repair_checkpoint(
+                        repair_root, part_number
+                    ):
+                        abandon_phase2_generation(
+                            root, work_root, "repair_checkpoint_rewind_required"
+                        )
+                        return await self.route(run_dir, interests_path)
+                    if part_cached is None:
+                        repair = await run_phase2_turn(
+                            self.runner,
+                            workspace=part_root,
+                            prompt=(
+                                f"这是当前批次结构恢复的第 {part_number}/{len(repair_batches)} "
+                                f"部分。只处理 units.jsonl 中的 {len(part_ids)} 个缺失 units，"
+                                "每条都必须输出摘要和 group_id；即使偏离 interests 也不得省略。"
+                            ),
+                            model=self.runtime.codex.router_model,
+                            reasoning=self.runtime.codex.router_reasoning,
+                            sandbox="read-only",
+                            output_file=part_output,
+                            output_schema=part_root / "summary.schema.json",
+                            resume_thread_id=thread_id,
+                            thread_checkpoint_path=session_path,
+                        )
+                        thread_id = persist_phase2_thread(
+                            session_path, thread_id, repair.thread_id
+                        )
+                        _raise_if_retryable("Phase 2 summary repair", repair)
+                        part_cached = read_summary_output(part_output, part_ids)
+                        part_summary = codex_summary(repair)
+                        part_summary["input_hash"] = part_hash
+                        atomic_write_json(part_root / "codex.json", part_summary)
+                    else:
+                        part_summary = {**part_checkpoint, "reused": True}
+                    if part_cached is None:
+                        raise RuntimeError(
+                            f"Phase 2 batch {number} repair part {part_number} "
+                            "did not cover its units exactly"
+                        )
+                    part_values, repair_map = part_cached
+                    repaired_summaries.extend(part_values)
+                    repair_part_summaries.append(
+                        {**part_summary, "part": part_number}
+                    )
+                merged = [*partial_summaries, *repaired_summaries]
+                atomic_write_json(
+                    output,
+                    {
+                        "summaries": [value.model_dump(mode="json") for value in merged],
+                        "working_map": repair_map,
+                    },
+                )
+                parsed = read_summary_output(output, expected_batch_ids)
             summary = codex_summary(result)
             summary["batch"] = number
             summary["input_hash"] = input_hash
+            if repair_part_summaries:
+                summary["repair_parts"] = repair_part_summaries
             atomic_write_json(batch_root / "codex.json", summary)
             if parsed is None:
                 _raise_if_retryable("Phase 2 summary", result)
@@ -767,14 +817,24 @@ def compact_item_projection(item: SourceItem) -> dict[str, Any]:
 
 
 def unit_batches(units: list[ObservationUnit]) -> list[list[ObservationUnit]]:
+    return bounded_unit_batches(
+        units,
+        max_units=PHASE2_BATCH_MAX_UNITS,
+        max_bytes=PHASE2_BATCH_MAX_BYTES,
+    )
+
+
+def bounded_unit_batches(
+    units: list[ObservationUnit], *, max_units: int, max_bytes: int
+) -> list[list[ObservationUnit]]:
     batches: list[list[ObservationUnit]] = []
     current: list[ObservationUnit] = []
     size = 0
     for unit in units:
         unit_size = len(unit.model_dump_json().encode()) + 1
         if current and (
-            len(current) >= PHASE2_BATCH_MAX_UNITS
-            or size + unit_size > PHASE2_BATCH_MAX_BYTES
+            len(current) >= max_units
+            or size + unit_size > max_bytes
         ):
             batches.append(current)
             current = []
@@ -1215,6 +1275,17 @@ def phase2_has_later_checkpoint(work_root: Path, batch_number: int) -> bool:
         if number > batch_number:
             return True
     return (work_root / "finalize" / "codex.json").is_file()
+
+
+def phase2_has_later_repair_checkpoint(repair_root: Path, part_number: int) -> bool:
+    for path in repair_root.glob("part-*/codex.json"):
+        try:
+            number = int(path.parent.name.removeprefix("part-"))
+        except ValueError:
+            continue
+        if number > part_number:
+            return True
+    return False
 
 
 async def run_phase2_turn(runner: CodexRunner, **kwargs: Any) -> CodexResult:

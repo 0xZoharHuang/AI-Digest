@@ -456,6 +456,94 @@ async def test_phase2_uses_one_daily_resumed_thread_and_writes_new_contract(
 
 
 @pytest.mark.asyncio
+async def test_phase2_repairs_only_missing_rows_in_bounded_same_thread_parts(tmp_path):
+    run = _sealed_run(tmp_path, ("1", "2", "3"))
+
+    class RepairRunner:
+        calls: list[tuple[str, str | None]] = []
+
+        async def run(self, **kwargs):  # type: ignore[no-untyped-def]
+            workspace = kwargs["workspace"]
+            output = kwargs["output_file"]
+            self.calls.append((workspace.name, kwargs.get("resume_thread_id")))
+            if workspace.name.startswith("batch-"):
+                rows = load_jsonl(workspace / "units.jsonl")
+                output.write_text(
+                    json.dumps(
+                        {
+                            "summaries": [
+                                {
+                                    "unit_id": row["unit_id"],
+                                    "summary_zh": "首轮摘要",
+                                    "group_id": "robotics",
+                                }
+                                for row in rows[:2]
+                            ]
+                            + [
+                                {
+                                    "unit_id": "u_truncated_unknown",
+                                    "summary_zh": "未知行",
+                                    "group_id": "robotics",
+                                }
+                            ],
+                            "working_map": "# Map",
+                        }
+                    )
+                )
+            elif workspace.name.startswith("part-"):
+                rows = load_jsonl(workspace / "units.jsonl")
+                output.write_text(
+                    json.dumps(
+                        {
+                            "summaries": [
+                                {
+                                    "unit_id": row["unit_id"],
+                                    "summary_zh": "补齐摘要",
+                                    "group_id": "robotics",
+                                }
+                                for row in rows
+                            ],
+                            "working_map": "# Map repaired",
+                        }
+                    )
+                )
+            else:
+                output.write_text(
+                    json.dumps(
+                        {
+                            "packages": [
+                                {
+                                    "package_id": "robotics",
+                                    "label_zh": "机器人",
+                                    "scope_note_zh": "机器人材料。",
+                                    "group_ids": ["robotics"],
+                                }
+                            ]
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            return CodexResult(exit_code=0, thread_id="repair-thread")
+
+    runner = RepairRunner()
+    await V3Phases(
+        RuntimeConfig(runtime_root=tmp_path, shared_runtime_root=tmp_path / "queue"),
+        runner,  # type: ignore[arg-type]
+    ).route(run)
+    assert runner.calls == [
+        ("batch-0001", None),
+        ("part-0001", "repair-thread"),
+        ("finalize", "repair-thread"),
+    ]
+    root = run / "02_routing"
+    assert len(load_jsonl(root / "catalog.jsonl")) == 3
+    checkpoint = json.loads(
+        (root / "unit-packages-v1/batches/batch-0001/codex.json").read_text()
+    )
+    assert checkpoint["repair_parts"][0]["part"] == 1
+
+
+@pytest.mark.asyncio
 async def test_phase2_missing_session_abandons_generation_and_starts_from_batch_one(tmp_path):
     run = _sealed_run(tmp_path)
     stale = run / "02_routing" / "unit-packages-v1"
