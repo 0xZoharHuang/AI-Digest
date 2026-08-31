@@ -21,6 +21,7 @@ from ai_digest.store import load_jsonl
 from ai_digest.v3 import (
     V3Phases,
     adopt_thread_id,
+    append_run_status,
     build_observation_units,
     materialize_research_packages,
     package_schema,
@@ -714,6 +715,28 @@ def test_reader_prompts_preserve_scan_then_drill_down_semantics():
     assert "source_health 描述采集器运行状态" in phase4_agents_md()
     assert "不得写“今日没有新增信息" in phase4_agents_md()
     assert "今天看到的原始入口" in phase4_agents_md()
+    assert "不得出现 Phase 1/2/3/4" in phase4_agents_md()
+
+
+def test_run_status_uses_reader_language(tmp_path):
+    run = tmp_path / "runs" / "2026-08-31" / "attempt-0001"
+    (run / "01_phase1").mkdir(parents=True)
+    (run / "03_research").mkdir()
+    (run / "01_phase1" / "source_health.json").write_text(
+        json.dumps({"x_list": {"status": "success"}})
+    )
+    (run / "03_research" / "quality.json").write_text(
+        json.dumps({"status": "success"})
+    )
+    (run / "03_research" / "failures.json").write_text("[]")
+    (run / "03_research" / "not_published.json").write_text("[]")
+    brief = run / "brief.md"
+    brief.write_text("# 日报\n")
+    append_run_status(brief, run, {"one": "one/main_report.md"})
+    content = brief.read_text()
+    assert "研究状态：完成" in content
+    assert "Phase 3" not in content
+    assert "Lead" not in content
 
 
 def test_phase2_schemas_constrain_only_system_owned_ids():
