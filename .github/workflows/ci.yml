@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-14
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install Python dependencies
+        run: uv sync --extra dev --locked
+
+      - name: Install pinned CLIs
+        run: npm ci --ignore-scripts
+
+      - name: Ruff
+        run: uv run ruff check src/ai_digest tests scripts
+
+      - name: Mypy
+        run: uv run mypy src/ai_digest
+
+      - name: Pytest
+        run: uv run pytest --cov=ai_digest
+
+      - name: npm lockfile
+        run: npm ci --ignore-scripts --dry-run

@@ -1,0 +1,60 @@
+name: Bug report
+description: Report a reproducible non-sensitive defect.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include credentials, cookies, private Wiki IDs, private source content, or raw production databases/logs.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v0.3.0 or commit SHA
+    validations:
+      required: true
+
+  - type: dropdown
+    id: boundary
+    attributes:
+      label: System boundary
+      options:
+        - Phase 1 source adapter
+        - State, cursor, or queue
+        - Phase 2 routing
+        - Phase 3 research
+        - Phase 4 Brief
+        - Lark publisher
+        - macOS LaunchAgent or installer
+        - Documentation or tooling
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Prefer synthetic fixtures and redacted logs.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Verification evidence
+      description: Include commands, exit codes, timestamps, and evidence level.

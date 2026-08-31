@@ -5,6 +5,23 @@ description = "Source-first daily intelligence radar with Codex research agents 
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
+authors = [{ name = "Zohar Huang" }]
+keywords = [
+    "ai-agents",
+    "daily-digest",
+    "deep-research",
+    "physical-ai",
+    "robotics",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
+]
 dependencies = [
     "aiosqlite>=0.20,<1",
     "beautifulsoup4>=4.12,<5",
@@ -15,6 +32,12 @@ dependencies = [
     "rich>=13.9,<15",
     "trafilatura>=2.0,<3",
 ]
+
+[project.urls]
+Homepage = "https://github.com/0xZoharHuang/AI-Digest"
+Repository = "https://github.com/0xZoharHuang/AI-Digest.git"
+Issues = "https://github.com/0xZoharHuang/AI-Digest/issues"
+Documentation = "https://github.com/0xZoharHuang/AI-Digest/tree/main/docs"
 
 [project.optional-dependencies]
 dev = [

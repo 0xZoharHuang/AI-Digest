@@ -1,111 +1,264 @@
 # AI Intelligence Radar
 
-Source-first daily intelligence monitoring for AI, agents, robotics and Physical AI. The system
-collects independent source observations, seals a reproducible Phase 1 handoff, lets one serial
-Codex thread annotate and package the day, runs package research leads, and publishes a private
-Lark Wiki with readable dossiers and natural subreports.
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-3776AB.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![macOS](https://img.shields.io/badge/production-macOS-000000.svg)](docs/setup.md)
+
+A local-first daily research pipeline for frontier AI, agents, robotics, and Physical AI.
+
+AI Intelligence Radar watches independent source surfaces, preserves replayable observations, asks
+Codex agents to investigate the day's concrete changes, and publishes a private, navigable Lark
+Wiki. It is designed for people who want to stay sensitive to a field without manually checking six
+different feeds every day.
 
 ```text
-independent sources -> sealed observations -> serial annotate/package -> dossiers -> Brief -> Lark
+X / GitHub / papers / media / HN
+                │
+                ▼
+       durable observations
+                │
+                ▼
+ one serial annotation + packaging thread
+                │
+                ▼
+       parallel research leads
+                │
+                ▼
+ Chinese dossiers + subreports + daily Brief
+                │
+                ▼
+      private Lark Wiki + self-DM
 ```
 
-The V1 Claude/Notion/OpenClaw implementation is preserved at the annotated Git tag `legacy-v1`.
+> **Project status:** v0.3 is production-used on macOS under one local user account. The data model,
+> queue recovery, no-publish E2E smoke, and Lark publisher are tested. Source coverage remains
+> platform-specific: “complete increment”, “bounded discovery”, and “sampled surface” are not treated
+> as interchangeable promises.
 
-## Design boundaries
+## Why this project exists
 
-- Phase 1 collects and performs source-local deduplication. It does not score quality, merge
-  platforms, build a semantic graph, or execute third-party code.
-- Phase 2 mechanically forms cross-source observation units, then one logical Codex thread processes
-  bounded checkpoints and creates 0-15 dynamic research packages. It does not browse or research.
-- Phase 3 gives every package to a research lead. Three run concurrently; each may use up to four
-  non-recursive subagents and writes a Chinese dossier plus natural subreports.
-- Phase 4 creates a Chinese reading/navigation brief without adding research or a forced thesis.
-- Phase 5 is deterministic code using the open-source Lark CLI.
+Most digests optimize for summarization. This project optimizes for **durable observation and
+traceable research**:
 
-See [architecture.md](docs/architecture.md) for the data contracts and [setup.md](docs/setup.md) for
-the one-time X, Lark, Codex runner and launchd setup.
+- A source adapter records what the platform actually exposed, not what an editorial layer guessed
+  was important.
+- A daily run drains every ready, undelivered observation; late arrivals survive outages.
+- Phase 2 annotates every observation unit exactly once before it creates research packages.
+- Phase 3 checks the concrete change, primary evidence, conflicts, and unknowns.
+- Phase 4 is a reading map. It does not compress the day into a forced grand narrative.
+- Phase 5 is deterministic code: validate files, update the Wiki tree, then send one idempotent DM.
 
-## Sources
+## What gets published
 
-- Three public X Lists through TwitterAPI.io, with per-List incremental cursors and cross-List Post
-  deduplication. A separate cookie-backed Playwright collector captures the personal For You feed
-  as a best-effort, non-blocking source.
-- GitHub Trending plus bounded recent/activity search lanes for 1–499-star and 500–5000-star
-  repos, immutable forward snapshots, 6h/24h/7d deltas, threshold crossings, releases and material
-  metadata events.
-- arXiv categories `cs.RO`, `cs.AI`, `cs.LG`, `cs.CV`, `cs.CL`, `stat.ML`.
-- Hugging Face Daily Papers.
-- First-party lab/company feeds and sites.
-- a16z, The Robot Report and IEEE Spectrum Robotics.
-- Hacker News incremental item scanning with new/top/show attention surfaces.
+```text
+AI Intelligence Radar
+└── 2026                         # navigable year index
+    └── 2026-08                  # navigable month index
+        └── 2026-08-31 · Brief   # daily reading entry point
+            ├── Research dossier A
+            │   ├── Subreport A1
+            │   └── Subreport A2
+            └── Research dossier B
+```
 
-## Local setup
+Year and month nodes are real index pages, not empty containers. The publisher adds deterministic
+breadcrumbs, verifies every dossier/subreport link before the first external write, and only removes
+stale content nodes that are recorded in the same run's publish manifest.
+
+## Pipeline
+
+| Phase | First-principles job | Main artifacts |
+|---|---|---|
+| 1 — Observe | Save platform-native increments, revisions, receipts, and health without editorial ranking | source JSONL, raw blobs, fetch manifests, `index.json` |
+| 2 — Route | Mechanically form exact units; one serial Codex thread annotates all units and creates 0–15 dynamic packages | `units.jsonl`, `annotations.jsonl`, `working_map.md`, `packages.json` |
+| 3 — Research | One lead per package verifies what changed and writes natural Simplified-Chinese research | `dossier.md`, `subreports/*.md`, `research_manifest.json` |
+| 4 — Navigate | Build a reader-facing Brief that links to research and exposes failures/unknowns | `daily_brief.md`, quality and source-health files |
+| 5 — Publish | Validate the tree, update Lark idempotently, and send one self-DM | `publish_manifest.json` |
+
+The detailed contracts are in [Architecture and data contracts](docs/architecture.md).
+
+## Sources and coverage semantics
+
+| Source | Access path | Coverage mode | Offline recovery |
+|---|---|---|---|
+| Public X Lists | TwitterAPI.io List timeline | complete configured-list increment | `sinceTime` cursor + overlap |
+| X For You | opted-in Playwright session | sampled surface | cannot reconstruct missed recommendations |
+| GitHub | Trending + bounded Search + tracked repos | bounded discovery | multi-day queries + immutable snapshots |
+| arXiv | official multi-category RSS | complete current announcement feed while online | submitted-date API is a bounded supplement, not announcement replay |
+| Hugging Face Papers | official dated API | bounded attention surface | dated page backlog |
+| Hacker News | official Firebase IDs | complete incremental ID scan | bounded `maxitem` chunks |
+| Media | RSS/Atom, sitemap, then index adapters | bounded publisher surface | conditional requests + retained feed/index history |
+
+Configured media include OpenAI, NVIDIA, Hugging Face, Physical Intelligence, Anthropic, DeepMind,
+Figure, 1X, Skild, a16z, IEEE Spectrum Robotics, and The Robot Report. See
+[Source contracts](docs/sources.md) for exact cursor, revision, and limitation semantics.
+
+## Requirements
+
+- macOS for the production LaunchAgent and Keychain path
+- Python 3.12+
+- [`uv`](https://docs.astral.sh/uv/)
+- Node.js 20+ and npm
+- GitHub CLI (`gh`) for authenticated GitHub collection
+- a current ChatGPT/Codex CLI login
+- a Lark Wiki plus user/bot authorization for publishing
+- optional: TwitterAPI.io credits and an explicitly opted-in personal X browser session
+
+Linux can run much of the library and test suite, but the production scheduler, Keychain storage,
+Playwright login handoff, and acceptance evidence are currently macOS-first. Windows support is not
+part of v0.3.
+
+## Quick start
 
 ```bash
+git clone https://github.com/0xZoharHuang/AI-Digest.git
+cd AI-Digest
+
 uv sync --extra dev
 npm ci --ignore-scripts
 uv run playwright install chromium
+
 cp config/runtime.example.toml config/runtime.toml
 cp config/sources.example.toml config/sources.toml
 cp config/interests.example.md config/interests.md
+
 uv run ai-digest doctor
-uv run ai-digest x-provider-set-key
-uv run ai-digest x-login
 ```
 
-Local config, credentials and runtime data are ignored by Git.
+Configure only the sources you intend to use. Local configuration, browser cookies, runtime data,
+logs, and credentials are ignored by Git.
+
+Useful first runs:
+
+```bash
+# Read-only source checks
+uv run ai-digest collect --source arxiv --source huggingface
+
+# Local pipeline; does not publish
+uv run ai-digest pipeline
+
+# Isolated owner runtime + real Codex worker + publish preflight; never calls Lark
+uv run ai-digest automation-smoke
+```
+
+For X List and browser setup, Lark authorization, and current-user installation, follow
+[Setup and rollout](docs/setup.md).
+
+## Production on macOS
+
+The installer is intentionally two-step:
+
+```bash
+./scripts/install_macos.sh          # dry-run only
+./scripts/install_macos.sh --apply  # immutable install; schedules still disabled
+
+uv run ai-digest doctor
+uv run ai-digest automation-smoke
+
+./scripts/install_macos.sh --cutover
+```
+
+Cutover loads three current-user LaunchAgents:
+
+- `com.ai-digest.tick`: calendar collection plus login/wake catch-up;
+- `com.ai-digest.agent-runner`: watches `jobs/` and runs Phases 2–4;
+- `com.ai-digest.recover`: watches `completed/`, runs every 15 minutes, promotes due agent retries,
+  retries Lark publication, and starts a missing daily run after 07:00.
+
+No second macOS account is required. The worker reuses the current user's file-backed Codex login
+without copying it into a job workspace.
+
+## Failure and recovery model
+
+```text
+sealed Phase 1
+    │
+    ▼
+jobs ── Codex transient failure ──► retry_wait ── due ──► jobs
+    │
+    └── success / terminal result ─► completed
+                                      │
+                                      ├── Lark failure ─► publish_pending
+                                      │                     │
+                                      │                     └── due retry
+                                      └── success ────────► archived
+```
+
+- Queue moves are atomic directory renames.
+- Source cursors advance only after their durable batch is committed.
+- Phase 2 batch and Phase 3 package checkpoints survive process interruption.
+- Codex non-zero exits receive bounded retry without classifying Agent prose.
+- Lark retries preserve the same artifact hash and DM idempotency key.
+- `tick`, worker, and recovery each use a non-blocking process lock.
+- `RunAtLoad` repairs missed laptop schedules after login/wake.
+- Immutable application snapshots retain the active build plus two rollback builds.
+
+The operational runbook is in [Operations and recovery](docs/operations.md).
 
 ## Commands
 
 ```bash
 uv run ai-digest doctor
-uv run ai-digest collect --source arxiv --source huggingface
+uv run ai-digest collect [--source NAME] [--verbose]
 uv run ai-digest phase1
-uv run ai-digest route /path/to/run
-uv run ai-digest research /path/to/run
-uv run ai-digest brief /path/to/run
-uv run ai-digest publish /path/to/run
-uv run ai-digest pipeline              # local development, no publish
-uv run ai-digest pipeline --publish
-uv run ai-digest tick --event daily
-uv run ai-digest tick --event incremental
-uv run ai-digest tick --event papers
-uv run ai-digest tick --event recover
+uv run ai-digest route RUN_DIR
+uv run ai-digest research RUN_DIR
+uv run ai-digest brief RUN_DIR
+uv run ai-digest publish RUN_DIR
+uv run ai-digest pipeline [--publish]
+uv run ai-digest tick --event {daily,incremental,papers,x-list,x-for-you,github,recover}
 uv run ai-digest agent-worker
-uv run ai-digest automation-smoke     # isolated queue + real Codex + publish preflight
+uv run ai-digest automation-smoke [--stage full|prepare|verify]
+uv run ai-digest maintenance --prune-x
 ```
 
-`phase1` writes `PHASE1_COMPLETE` only after all enabled collectors reach `success`, `partial`, or
-`failed` and the typed handoff is immutable. Phase 2 refuses to start without this marker.
+See [CLI and configuration](docs/configuration.md) for command behavior and configuration fields.
+
+## Security and privacy
+
+- External posts, pages, repositories, and papers are untrusted evidence, never instructions.
+- Agent calls use explicit read-only/workspace-write permission profiles.
+- Codex home, SSH files, login Keychains, repository source, and unrelated user files are denied to
+  research workspaces.
+- TwitterAPI.io keys stay in Keychain; personal X cookies stay in an ignored file.
+- Arbitrary metadata fetches reject private, loopback, link-local, and cloud-metadata destinations.
+- Raw source text is local by default; publishing targets a private Wiki.
+
+Please read [SECURITY.md](SECURITY.md) before running personal browser collection or reporting a
+vulnerability.
 
 ## Verification
 
 ```bash
-uv run ruff check src/ai_digest tests
+uv run ruff check src/ai_digest tests scripts
 uv run mypy src/ai_digest
 uv run pytest --cov=ai_digest
+npm ci --ignore-scripts --dry-run
 ```
 
-The core state and Phase 1 modules are coverage-gated at 85%. Live adapters have fixture tests and
-must additionally pass `doctor` and a no-publish smoke run before launchd is installed.
+The coverage gate is 85% for the core state/Phase 1 modules. Live source checks, installed-snapshot
+doctor, a real no-publish automation smoke, and LaunchAgent queue traversal are separate evidence
+levels; a unit test alone is not production sign-off. See [Verification guide](docs/verification.md).
 
-`automation-smoke` uses a separate owner runtime and queue, exercises the sealed handoff,
-real Codex worker, import/reconcile and publish preflight, and never calls Lark. Its fixture includes
-literal U+2028/U+2029 separators to guard the JSONL queue boundary that failed on 2026-08-31.
+## Documentation
 
-## Security
+- [Documentation index](docs/README.md)
+- [Architecture and data contracts](docs/architecture.md)
+- [Source contracts](docs/sources.md)
+- [CLI and configuration](docs/configuration.md)
+- [Setup and rollout](docs/setup.md)
+- [Operations and recovery](docs/operations.md)
+- [Verification guide](docs/verification.md)
+- [Wiki information architecture](docs/wiki.md)
+- [Security policy](SECURITY.md)
+- [Contributing](CONTRIBUTING.md)
+- [Changelog](CHANGELOG.md)
 
-External posts, README text and webpages are untrusted evidence, never instructions. Phase 2–4 run
-under the current macOS user with a custom Codex permission profile: only the current run workspace
-is writable, while the repository, Codex credential directory, SSH directory and login Keychains
-are denied. The queue lives under `~/Library/Application Support/ai-digest/queue`; no second macOS
-account or copied Codex login is required. Arbitrary external metadata requests reject private,
-loopback, link-local and cloud metadata addresses.
+## Legacy implementation
 
-The List API key and browser cookies stay in macOS Keychain or ignored local files. For You browser
-automation is explicitly risk-acknowledged, non-required, rate-limited and cooled down after
-repeated failures. Lists never receive the personal X cookie.
+The earlier Claude/Notion/OpenClaw implementation is preserved at the annotated Git tag
+`legacy-v1`. v0.3 does not keep both architectures alive in the same production tree.
 
 ## License
 
-MIT.
+[MIT](LICENSE) © 2026 Zohar Huang.

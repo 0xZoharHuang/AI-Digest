@@ -64,7 +64,7 @@ After inspecting the generated plist paths:
 ```
 
 Apply mode needs no administrator access. It creates a credential-free, versioned application copy
-under `~/Library/Application Support/ai-digest/app`, creates three user LaunchAgent plist files,
+under `~/Library/Application Support/ai-digest/apps/app-<revision>-<timestamp>`, creates three user LaunchAgent plist files,
 and leaves both legacy and V3 schedules unloaded. Inspect and run a complete manual cycle before the
 separate cutover step:
 
