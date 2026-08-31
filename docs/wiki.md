@@ -18,10 +18,21 @@ AI Intelligence Radar
 
 - **Year:** index of month nodes.
 - **Month:** index of daily Brief nodes.
-- **Daily Brief:** source status, research navigation and failures; no second macro rewrite.
+- **Daily Brief:** source status, what was newly observed, what each investigation established, links,
+  and failures; no second macro rewrite or forced reading order.
 - **Main report:** self-contained deep research for one dynamically grouped package.
 - **Subreport:** an optional independent evidence chain or technical/product/business investigation,
   conflicts, and unknowns.
+
+When a package contains several independent events or technical investigations, its main report
+provides the shared mental model and links to natural subreports for each worthwhile deep branch.
+A single coherent paper or project may remain one main report; no page-count quota is imposed.
+
+The reader is technically, commercially and entrepreneurially sophisticated but is not assumed to
+know every specialist vocabulary. Reports retain implementation and evidence depth while explaining
+decisive terms and mechanisms at first use. Paper investigations may use concise algorithm-flow
+ASCII or pseudocode; repository investigations distinguish why the project entered today's radar
+from its technical merit and actual community attention.
 
 A Phase 3 Lead may withhold a fully inspected package when it has no material reader value. Its
 intake/evidence remain local artifacts; the publisher does not create an empty Wiki node.

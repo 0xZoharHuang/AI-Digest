@@ -23,6 +23,8 @@ from ai_digest.v3 import (
     adopt_thread_id,
     build_observation_units,
     materialize_research_packages,
+    phase3_agents_md,
+    phase4_agents_md,
     read_summary_output,
     read_summary_subset,
     unit_batches,
@@ -605,6 +607,15 @@ def test_phase2_thread_identity_must_not_change():
     assert adopt_thread_id("same", "same") == "same"
     with pytest.raises(RuntimeError, match="multiple threads"):
         adopt_thread_id("first", "second")
+
+
+def test_reader_prompts_preserve_scan_then_drill_down_semantics():
+    assert "多个彼此独立的事件" in phase3_agents_md()
+    assert "subreport 仍不设最低数量" in phase3_agents_md()
+    assert "不可能预先熟悉每个细分领域" in phase3_agents_md()
+    assert "source_health 描述采集器运行状态" in phase4_agents_md()
+    assert "不得写“今日没有新增信息" in phase4_agents_md()
+    assert "今天看到的原始入口" in phase4_agents_md()
 
 
 @pytest.mark.asyncio
