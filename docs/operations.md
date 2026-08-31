@@ -36,7 +36,7 @@ clock trigger identity.
 
 ```text
 ~/Library/Application Support/ai-digest/
-├── apps/                 # active + two rollback snapshots
+├── apps/                 # active + protected previous V3 + newest retained snapshot
 ├── backups/              # SQLite pre-migration backups
 ├── logs/
 ├── runs/<date>/attempt-*/
@@ -125,14 +125,44 @@ uv run ai-digest automation-smoke
 ./scripts/install_macos.sh --cutover
 ```
 
-Apply creates a SQLite backup before migration. Cutover loads the new snapshot, then retains the
-active build plus two prior snapshots. Old application code can be rebuilt from Git; runtime evidence
-and backups are outside the pruning boundary.
+Apply creates a SQLite backup before migration, repairs on-disk plists to any safely loaded V3, and
+places the new target only in runtime `pending-launchagents/`. A later failed apply cannot expose an
+older pending target because apply invalidates it before building. Cutover validates the snapshot
+named by the pending tick plist, records a currently loaded immutable V3 as `previous-v3` when one
+exists, and loads the new snapshot. Retention protects both snapshots when there is a reverse target.
+The pruner then adds the newest remaining
+builds until the total retained set reaches three; explicit protections are never dropped merely
+because they exceed that count. All mutating installer modes share one non-blocking runtime lock.
+Before bootout, cutover validates the target Python/package/pruner, renders and lints both target and
+fallback plists, and compares the pending target plists byte for byte. It refuses to interrupt any
+known V1/V3 label that is still active and gates the queues again after bootout. A concurrent queue item, partial bootstrap, unexpected
+Program/WorkingDirectory, or non-zero label exit triggers a best-effort removal of the new labels and
+restoration of the old V3; cutover reports the recovery outcome before returning a failure. Snapshot
+pruning does not run on those failure paths, and V1 is never
+enabled implicitly. Consumers start before the producer: agent-runner, recover, then tick, with a
+bounded health/stability check after each bootstrap. Once all three are healthy, a later pruning error
+is only a retention warning: the healthy new V3 stays active and cutover returns success. Cutover
+attempts to remove pending plists only after success; a cleanup failure is reported as a warning and
+leaves the healthy target active. Runtime evidence and backups are outside the pruning boundary.
 
-To return to the archived legacy LaunchAgents:
+To switch to the recorded previous V3 snapshot:
 
 ```bash
-./scripts/install_macos.sh --rollback
+./scripts/install_macos.sh --rollback-v3
 ```
+
+The switch requires `staging/`, `jobs/`, `retry_wait/`, `completed/`, and `publish_pending/` to be
+empty. It rejects a missing, symlinked, non-snapshot, or out-of-tree target before changing launchd.
+The target snapshot's own three deploy templates are rendered and linted, the queues are checked again
+after bootout, and all loaded labels are verified before a successful switch records the formerly
+active V3 snapshot as the next reverse target. If launchd rejects the target or the reverse-record
+write fails, the installer collects and reports the original-V3 restore result and never enables V1
+implicitly.
+
+Automatic V1 rollback is unsupported. Cutover fails before changing V3 when any live V1 label or
+legacy plist remains; use the [legacy-v1 tag](https://github.com/0xZoharHuang/AI-Digest/tree/legacy-v1)
+to stop or migrate it. The
+deprecated `--rollback` command exits without creating runtime state. V3 rollback does not restore a
+SQLite backup automatically.
 
 Do not use `git reset --hard`, delete `state.db`, or clear the queue as a recovery shortcut.

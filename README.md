@@ -152,12 +152,15 @@ The installer is intentionally two-step:
 
 ```bash
 ./scripts/install_macos.sh          # dry-run only
-./scripts/install_macos.sh --apply  # immutable install; schedules still disabled
+./scripts/install_macos.sh --apply  # immutable install + pending plists; loaded schedule unchanged
 
 uv run ai-digest doctor
 uv run ai-digest automation-smoke
 
 ./scripts/install_macos.sh --cutover
+
+# Switch back to the recorded previous immutable V3 snapshot.
+./scripts/install_macos.sh --rollback-v3
 ```
 
 Cutover loads three current-user LaunchAgents:
@@ -193,7 +196,18 @@ jobs ── Codex transient failure ──► retry_wait ── due ──► jo
 - Lark retries preserve the same artifact hash and DM idempotency key.
 - `tick`, worker, and recovery each use a non-blocking process lock.
 - `RunAtLoad` repairs missed laptop schedules after login/wake.
-- Immutable application snapshots retain the active build plus two rollback builds.
+- Before cutover, the installer records a currently loaded immutable V3 snapshot when one exists.
+  Retention protects that reverse target when present, then keeps the newest snapshots until the
+  active/protected set reaches three builds. On queue races, failed bootstraps, wrong loaded paths, and non-zero exits, cutover
+  attempts to restore the safely loaded V3 and reports the outcome before pruning. Once the new labels
+  are healthy, pruning failure is only a warning and the new V3 remains active. `--rollback-v3`
+  switches between the active and recorded previous V3
+  snapshots without enabling the legacy schedule. Automatic V1 rollback is unsupported; follow the
+  [legacy-v1 tag](https://github.com/0xZoharHuang/AI-Digest/tree/legacy-v1) to stop or migrate it before cutover.
+- Apply, cutover, and V3 rollback share one non-blocking runtime installer lock. Apply repairs
+  on-disk plists to the safely loaded V3 for login continuity, invalidates stale pending targets, and
+  stages the new credential-free plists under the runtime. Only cutover installs those pending plists
+  into `~/Library/LaunchAgents`; failed cutover keeps them for a retry.
 
 The operational runbook is in [Operations and recovery](docs/operations.md).
 

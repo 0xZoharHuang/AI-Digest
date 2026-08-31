@@ -5,6 +5,15 @@ versioning for public releases.
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve the currently loaded immutable V3 snapshot during cutover, attempt and report its recovery
+  when a replacement LaunchAgent bootstrap fails, and support an explicit reversible
+  `--rollback-v3` switch without falling through to the legacy V1 schedule.
+- Keep new LaunchAgent plists pending until direct health checks pass, isolate stale on-disk V3 plists
+  during apply, serialize installer mutations, and reject legacy V1 schedules for manual migration
+  instead of attempting an automatic V1 rollback.
+
 ## [0.4.0] — 2026-08-31
 
 ### Added

@@ -64,16 +64,19 @@ After inspecting the generated plist paths:
 ```
 
 Apply mode needs no administrator access. It creates a credential-free, versioned application copy
-under `~/Library/Application Support/ai-digest/apps/app-<revision>-<timestamp>`, creates three user LaunchAgent plist files,
-and leaves both legacy and V3 schedules unloaded. Inspect and run a complete manual cycle before the
-separate cutover step:
+under `~/Library/Application Support/ai-digest/apps/app-<revision>-<timestamp>` and stages its three
+credential-free plists under the runtime's `pending-launchagents/`; it does not replace the loaded
+schedule. If a safe V3 is already loaded, apply first repairs the on-disk LaunchAgent files to that
+loaded snapshot so a login before cutover cannot activate the pending build. Starting a new apply
+invalidates an older pending target. Inspect and run a complete manual cycle before the separate
+cutover step. Apply, cutover, and V3 rollback share a non-blocking runtime installer lock.
 
 ```bash
 ./scripts/install_macos.sh --cutover
 ```
 
-Cutover unloads the two legacy LaunchAgents, archives their exact plist files, and bootstraps three
-V3 user LaunchAgents:
+Cutover refuses to proceed while any legacy V1 label or plist remains, then bootstraps three V3 user
+LaunchAgents:
 
 - `com.ai-digest.tick` runs at login and calendar slots, performing due collection or catch-up.
 - `com.ai-digest.recover` watches `completed/`, runs at login and every 15 minutes, promotes due
@@ -83,12 +86,43 @@ V3 user LaunchAgents:
   Codex sandbox.
 
 The installer creates `staging/`, `jobs/`, `retry_wait/`, `completed/`, `publish_pending/`,
-`archived/`, `failed/` and `logs/` below the current user's runtime directory. Roll back the
-schedules and restore the latest archived V1 plist files with
-`./scripts/install_macos.sh --rollback`.
-After a successful cutover, immutable application snapshots are pruned to the active build plus two
-local rollback builds; source evidence, runs, blobs, state backups and Wiki data are never part of
-that pruning boundary. `doctor` fails readiness when the runtime volume has less than 5 GiB free.
+`archived/`, `failed/` and `logs/` below the current user's runtime directory. Before replacing a
+loaded V3 schedule, cutover reads the loaded tick service's WorkingDirectory, accepts it only when it
+is a real immutable child of `apps/`, and atomically records it in the runtime as `previous-v3`.
+When no V3 is loaded, a fresh cutover has no reverse target. Snapshot pruning protects the new active
+build and any recorded reverse target, then adds the newest remaining builds until three snapshots
+are retained. Before stopping a safely loaded
+V3 snapshot, cutover also renders and lints both the target and fallback plists, verifies the target
+Python/package/pruner, and confirms the pending plists are byte-identical to the target rendering.
+It checks the active queues again after stopping the old services. If a queue changed, or any new
+LaunchAgent fails to bootstrap or exits non-zero, cutover attempts to remove the partial new services
+and restore the old V3 plists and services, reports the recovery outcome, exits non-zero, and does not
+prune snapshots or enable V1. Snapshot
+pruning happens only after agent-runner, recover, then tick are started and each reports the expected
+Program/WorkingDirectory plus at least one run. A zero exit succeeds immediately; a running process
+must remain running through a bounded stability window, while a non-zero exit fails immediately. A
+pruning failure is reported as a retention warning while the already healthy new V3 remains active;
+it is not reported as a failed service cutover. Successful cutover attempts to remove the pending
+plist set; cleanup failure is only a warning and preserves the healthy target. Failed cutover keeps
+the pending target for a retry.
+
+With all active queues empty, switch to the recorded previous V3 build using its own checked-in plist
+templates:
+
+```bash
+./scripts/install_macos.sh --rollback-v3
+```
+
+The command validates and renders all three target plists before stopping the current V3 services,
+checks the queues again after bootout, verifies all three loaded labels, and records the formerly
+active build as the next reverse target only after a successful switch. It never falls through to V1.
+Automatic V1 rollback is deliberately unsupported. Cutover refuses any live V1 label or legacy plist;
+follow the [legacy-v1 tag](https://github.com/0xZoharHuang/AI-Digest/tree/legacy-v1) to stop or migrate
+that schedule before continuing. The
+deprecated `--rollback` command exits before creating a lock or changing runtime files. V3 rollback
+does not restore `state.db`; source evidence, runs, blobs, state backups and Wiki data remain outside
+snapshot pruning.
+`doctor` fails readiness when the runtime volume has less than 5 GiB free.
 
 The calendar job polls X Lists, GitHub and HN at 01:00/13:00/19:00, prefetches dated arXiv/HF
 papers at 13:30 (with a 19:00 retry), runs the complete daily collection
