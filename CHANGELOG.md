@@ -15,6 +15,8 @@ versioning for public releases.
   instead of attempting an automatic V1 rollback.
 - Continue a partial Phase 2 repair part with bounded, missing-ID-only completion turns instead of
   terminating a large daily run after the first incomplete repair response.
+- Make new Phase 2 batches assignment-only (`unit_id` plus `group_id`) while deriving internal
+  navigation previews mechanically from Phase 1 and preserving legacy summary checkpoints on resume.
 
 ## [0.4.0] — 2026-08-31
 
