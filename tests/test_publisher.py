@@ -122,9 +122,45 @@ def test_lark_publisher_builds_tree_rewrites_links_and_is_idempotent(tmp_path):
     assert len(fake.messages) == 2
     assert fake.messages[0][1] != fake.messages[1][1]
     assert any("https://lark.test/" in content for _, content in fake.writes)
-    assert third.navigation_version == 2
+    assert third.navigation_version == 3
     assert any("日报索引" in content for _, content in fake.writes)
+    day_token = third.nodes["day"].node_token
+    day_writes = [content for token, content in fake.writes if token == day_token]
+    assert day_writes[-1].startswith(
+        "> 导航："
+    ) and "# 2026-08-30 · AI Intelligence Brief" in day_writes[-1]
+    year_node = third.nodes["year"]
+    month_node = third.nodes["month"]
+    assert (None, "2026 · AI Intelligence Radar") in fake.nodes
+    assert (year_node.node_token, "2026-08 · 日报索引") in fake.nodes
+    assert (
+        month_node.node_token,
+        "2026-08-30 · AI Intelligence Brief",
+    ) in fake.nodes
     assert fake.deleted == ["node-stale"]
+
+
+def test_cached_node_is_reused_when_markdown_import_changed_its_title():
+    publisher = LarkPublisher(LarkConfig(space_id="space", receiver_open_id="user"))
+    fake = FakeLark()
+    publisher.cli = fake  # type: ignore[assignment]
+    cached = fake.ensure_node("Today", "month")
+    cached.title = "今日研究导航"
+    cached.content_hash = "known"
+    cached.status = "written"
+
+    restored = publisher._ensure_cached_node(
+        "2026-09-01 · AI Intelligence Brief",
+        "month",
+        cached,
+    )
+
+    assert restored.node_token == cached.node_token
+    assert restored.obj_token == cached.obj_token
+    assert restored.title == "2026-09-01 · AI Intelligence Brief"
+    assert restored.content_hash == "known"
+    assert restored.status == "written"
+    assert len(fake.nodes) == 1
 
 
 def test_lark_envelope_parser_ignores_progress_lines():
