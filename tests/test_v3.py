@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+import ai_digest.v3 as v3_module
 from ai_digest.codex_runner import CodexResult
 from ai_digest.config import RuntimeConfig
 from ai_digest.models import (
@@ -19,6 +20,7 @@ from ai_digest.models import (
 )
 from ai_digest.store import load_jsonl
 from ai_digest.v3 import (
+    PHASE2_LEGACY_PROMPT_VERSION,
     V3Phases,
     adopt_thread_id,
     append_run_status,
@@ -26,7 +28,9 @@ from ai_digest.v3 import (
     materialize_research_packages,
     package_schema,
     phase2_agents_md,
+    phase2_batch_input_hash,
     phase2_finalize_prompt,
+    phase2_generation_input_hash,
     phase3_agents_md,
     phase4_agents_md,
     read_summary_output,
@@ -175,6 +179,153 @@ def test_summary_output_is_recoverable_without_accepting_partial(tmp_path):
     assert subset is not None
     assert [value.unit_id for value in subset[0]] == ["u_a"]
     assert read_summary_output(output, {"u_a", "u_b"}) is None
+
+
+def test_assignment_only_output_uses_mechanical_phase1_preview(tmp_path):
+    output = tmp_path / "assignments.json"
+    output.write_text(
+        json.dumps(
+            {
+                "summaries": [
+                    {"unit_id": "u_a", "group_id": "robotics"},
+                ],
+                "working_map": "# map\n\n- robotics：机器人",
+            }
+        )
+    )
+    unit = ObservationUnit(
+        unit_id="u_a",
+        entity_key="item:a",
+        item_ids=["a"],
+        sources=["github"],
+        summary="  Repository   added a reliable robot runtime.  ",
+    )
+    parsed = read_summary_output(output, {"u_a"}, {"u_a": unit})
+    assert parsed is not None
+    values, _working_map = parsed
+    assert values[0].summary_zh == "Repository added a reliable robot runtime."
+    assert values[0].group_id == "robotics"
+
+
+@pytest.mark.asyncio
+async def test_assignment_only_batches_resume_legacy_summary_checkpoints(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(v3_module, "PHASE2_BATCH_MAX_UNITS", 2)
+    run = _sealed_run(tmp_path, ("1", "2", "3"))
+    interests_path = run / "interests.md"
+    interests_path.write_text("robotics\n")
+    interests = interests_path.read_text()
+    now = datetime(2026, 8, 31, tzinfo=UTC)
+    units = build_observation_units(
+        {item.item_id: item for item in [_source_item(str(i), now) for i in range(1, 4)]}
+    )
+    batches = unit_batches(units)
+    assert [len(batch) for batch in batches] == [2, 1]
+    runtime = RuntimeConfig(
+        runtime_root=tmp_path,
+        shared_runtime_root=tmp_path / "queue",
+    )
+    root = run / "02_routing"
+    work_root = root / "unit-packages-v1"
+    batch_root = work_root / "batches" / "batch-0001"
+    batch_root.mkdir(parents=True)
+    thread_id = "mixed-contract-thread"
+    (work_root / "session.json").write_text(json.dumps({"thread_id": thread_id}))
+    legacy_generation_hash = phase2_generation_input_hash(
+        units,
+        interests,
+        model=runtime.codex.router_model,
+        reasoning=runtime.codex.router_reasoning,
+        prompt_version=PHASE2_LEGACY_PROMPT_VERSION,
+    )
+    (work_root / "generation_input.json").write_text(
+        json.dumps({"hash": legacy_generation_hash})
+    )
+    working_map = "# Working map\n\n尚未开始理解和归类当天材料。\n"
+    legacy_batch_hash = phase2_batch_input_hash(
+        batches[0],
+        interests,
+        working_map,
+        number=1,
+        total=2,
+        model=runtime.codex.router_model,
+        reasoning=runtime.codex.router_reasoning,
+        prompt_version=PHASE2_LEGACY_PROMPT_VERSION,
+    )
+    (batch_root / "input.json").write_text(json.dumps({"hash": legacy_batch_hash}))
+    legacy_output = batch_root / f"summary_output.{legacy_batch_hash[:16]}.json"
+    legacy_output.write_text(
+        json.dumps(
+            {
+                "summaries": [
+                    {
+                        "unit_id": unit.unit_id,
+                        "summary_zh": "旧合同摘要",
+                        "group_id": "robotics",
+                    }
+                    for unit in batches[0]
+                ],
+                "working_map": "# Map\n\n- robotics：机器人",
+            }
+        )
+    )
+    (batch_root / "codex.json").write_text(
+        json.dumps(
+            {
+                "thread_id": thread_id,
+                "input_hash": legacy_batch_hash,
+                "exit_code": 0,
+            }
+        )
+    )
+
+    class MixedContractRunner:
+        calls: list[tuple[str, str | None]] = []
+
+        async def run(self, **kwargs):  # type: ignore[no-untyped-def]
+            workspace = kwargs["workspace"]
+            output = kwargs["output_file"]
+            self.calls.append((workspace.name, kwargs.get("resume_thread_id")))
+            if workspace.name == "batch-0002":
+                rows = load_jsonl(workspace / "units.jsonl")
+                payload = {
+                    "summaries": [
+                        {"unit_id": row["unit_id"], "group_id": "robotics"}
+                        for row in rows
+                    ],
+                    "working_map": "# Map\n\n- robotics：机器人",
+                }
+            else:
+                payload = {
+                    "packages": [
+                        {
+                            "package_id": "robotics",
+                            "label_zh": "机器人",
+                            "scope_note_zh": "机器人材料。",
+                            "group_ids": ["robotics"],
+                        }
+                    ]
+                }
+            output.write_text(json.dumps(payload, ensure_ascii=False))
+            return CodexResult(exit_code=0, thread_id=thread_id)
+
+    runner = MixedContractRunner()
+    await V3Phases(runtime, runner).route(run, interests_path=interests_path)  # type: ignore[arg-type]
+    assert runner.calls == [
+        ("batch-0002", thread_id),
+        ("finalize", thread_id),
+    ]
+    catalog = [
+        Phase2CatalogEntry.model_validate(row)
+        for row in load_jsonl(root / "catalog.jsonl")
+    ]
+    assert len(catalog) == 3
+    assert [value.summary_zh for value in catalog[:2]] == [
+        "旧合同摘要",
+        "旧合同摘要",
+    ]
+    assert catalog[2].summary_zh == "robot update 3"
 
 
 def test_packages_cover_every_unit_once_and_match_catalog():
@@ -789,7 +940,7 @@ def test_reader_prompts_preserve_scan_then_drill_down_semantics():
     assert "不得为凑齐行数" in phase2_agents_md()
     assert "可供文件 checkpoint 独立恢复的完整地图" in phase2_agents_md()
     assert "全部可用文本" in phase2_agents_md()
-    assert "仅链接”" in phase2_agents_md()
+    assert "不得只看链接" in phase2_agents_md()
     assert "认知负载优先于 package 数更少" in phase2_finalize_prompt()
     assert "多个彼此独立的事件" in phase3_agents_md()
     assert "subreport 仍不设最低数量" in phase3_agents_md()
@@ -829,6 +980,8 @@ def test_phase2_schemas_constrain_only_system_owned_ids():
     assert "minItems" not in summaries
     assert "maxItems" not in summaries
     assert summaries["items"]["properties"]["unit_id"]["enum"] == ["u_a", "u_b"]
+    assert summaries["items"]["required"] == ["unit_id", "group_id"]
+    assert "summary_zh" not in summaries["items"]["properties"]
 
     groups = package_schema({"group_b", "group_a"})["properties"]["packages"]
     group_ids = groups["items"]["properties"]["group_ids"]

@@ -80,12 +80,16 @@ Deterministic unitization groups only provably identical entities: an X post/con
 repo, arXiv paper, HN story or canonical article. Semantic similarity never deletes evidence.
 
 One new Codex thread is created for each day and resumed across bounded batches of at most 160 units
-and 256 KiB projection. Each batch returns exactly one factual Chinese summary per unit plus a compact
-working map:
+and 256 KiB projection. Each batch reads every unit but returns only exact semantic membership plus a
+compact group-level working map:
 
 ```json
-{"unit_id":"u_...","summary_zh":"...","group_id":"dynamic-topic-key"}
+{"unit_id":"u_...","group_id":"dynamic-topic-key"}
 ```
+
+The application derives internal catalog previews mechanically from the retained Phase 1 projection;
+Phase 2 does not rewrite, translate or polish thousands of per-unit summaries. Historical summary
+checkpoints remain readable when an interrupted run resumes across this contract change.
 
 Phase 2 does not decide importance, research depth, questions or conclusions. The application
 persists the thread as soon as Codex starts it, hashes every input checkpoint, and rejects mixed
