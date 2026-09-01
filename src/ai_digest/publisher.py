@@ -218,7 +218,7 @@ class LarkCLI:
 
 
 class LarkPublisher:
-    NAVIGATION_VERSION = 2
+    NAVIGATION_VERSION = 3
 
     def __init__(self, config: LarkConfig):
         self.config = config
@@ -267,20 +267,25 @@ class LarkPublisher:
             raise LarkError("lark.space_id and lark.receiver_open_id are required")
         date = run_dir.parent.name
         year, month, _ = date.split("-")
+        year_title = f"{year} · AI Intelligence Radar"
+        month_title = f"{year}-{month} · 日报索引"
+        day_title = f"{date} · AI Intelligence Brief"
         try:
-            year_node = _restore_node_state(
-                self.cli.ensure_node(year), manifest.nodes.get("year")
+            year_node = self._ensure_cached_node(
+                year_title,
+                None,
+                manifest.nodes.get("year"),
             )
             manifest.nodes["year"] = year_node
-            month_node = _restore_node_state(
-                self.cli.ensure_node(f"{year}-{month}", year_node.node_token),
+            month_node = self._ensure_cached_node(
+                month_title,
+                year_node.node_token,
                 manifest.nodes.get("month"),
             )
             manifest.nodes["month"] = month_node
-            day_node = _restore_node_state(
-                self.cli.ensure_node(
-                    f"{date} · AI Intelligence Brief", month_node.node_token
-                ),
+            day_node = self._ensure_cached_node(
+                day_title,
+                month_node.node_token,
                 manifest.nodes.get("day"),
             )
             manifest.nodes["day"] = day_node
@@ -380,6 +385,7 @@ class LarkPublisher:
             for package_id, subreport_urls in brief_subreport_urls.items():
                 brief = _rewrite_subreport_links(brief, package_id, subreport_urls)
             _assert_no_internal_links(brief)
+            brief = _replace_markdown_title(brief, day_title)
             brief = _page_breadcrumb(
                 [(year, year_node.url), (f"{year}-{month}", month_node.url)]
             ) + brief
@@ -462,6 +468,22 @@ class LarkPublisher:
         atomic_write_json(manifest_path, manifest.model_dump(mode="json"))
         return manifest
 
+    def _ensure_cached_node(
+        self,
+        title: str,
+        parent_token: str | None,
+        cached: PublishNode | None,
+    ) -> PublishNode:
+        """Reuse a known node even when a prior Markdown import changed its title."""
+
+        if cached is not None:
+            for row in self.cli.list_nodes(parent_token):
+                node_token = str(row.get("node_token") or row.get("wiki_token") or "")
+                obj_token = str(row.get("obj_token") or row.get("document_id") or "")
+                if node_token == cached.node_token and obj_token == cached.obj_token:
+                    return cached.model_copy(update={"title": title})
+        return _restore_node_state(self.cli.ensure_node(title, parent_token), cached)
+
     def _delete_stale_content_nodes(
         self,
         manifest: PublishManifest,
@@ -492,12 +514,12 @@ class LarkPublisher:
             self.cli.list_nodes(month_node.node_token), self.config.wiki_base_url
         )
         year_content = _navigation_index(
-            f"{year_node.title} · AI Intelligence Radar",
+            year_node.title,
             "月份",
             month_children,
         )
         month_content = _navigation_index(
-            f"{month_node.title} · 日报索引",
+            month_node.title,
             "日报",
             day_children,
         )
@@ -755,6 +777,24 @@ def _markdown_title(content: str) -> str | None:
         (line.removeprefix("# ").strip() for line in content.splitlines() if line.startswith("# ")),
         None,
     )
+
+
+def _replace_markdown_title(content: str, title: str) -> str:
+    """Make the first H1 match the stable Wiki node title."""
+
+    lines = content.splitlines()
+    for index, line in enumerate(lines):
+        if not line.strip():
+            continue
+        if line.startswith("# "):
+            lines[index] = f"# {title}"
+        else:
+            lines[index:index] = [f"# {title}", ""]
+        break
+    else:
+        lines = [f"# {title}"]
+    suffix = "\n" if content.endswith("\n") else ""
+    return "\n".join(lines) + suffix
 
 
 def _rewrite_report_links(content: str, report_urls: dict[str, str]) -> str:
