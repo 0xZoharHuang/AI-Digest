@@ -15,6 +15,7 @@ from ai_digest.models import (
     Phase2CatalogEntry,
     Phase2PackagePlan,
     Phase2Summary,
+    ResearchEvidenceEntry,
     ResearchPackage,
     SourceItem,
 )
@@ -203,6 +204,20 @@ def test_assignment_only_output_uses_mechanical_phase1_preview(tmp_path):
     values, _working_map = parsed
     assert values[0].summary_zh == "Repository added a reliable robot runtime."
     assert values[0].group_id == "robotics"
+
+
+def test_evidence_optional_text_accepts_explicit_null():
+    value = ResearchEvidenceEntry.model_validate(
+        {
+            "claim": "A bounded claim",
+            "status": "source_claim",
+            "evidence": ["https://example.com/source"],
+            "scope": None,
+            "conflict": None,
+        }
+    )
+    assert value.scope == ""
+    assert value.conflict == ""
 
 
 @pytest.mark.asyncio
