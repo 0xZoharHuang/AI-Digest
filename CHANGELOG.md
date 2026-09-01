@@ -18,6 +18,8 @@ versioning for public releases.
 - Make new Phase 2 batches an exact required-key assignment map (`unit_id` to `group_id`) while
   deriving internal navigation previews mechanically from Phase 1 and preserving legacy summary and
   list-assignment checkpoints on resume.
+- Normalize explicit `null` values in optional Phase 3 evidence scope/conflict fields so otherwise
+  complete research artifacts are validated and published instead of downgraded to a package failure.
 
 ## [0.4.0] — 2026-08-31
 

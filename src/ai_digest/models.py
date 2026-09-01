@@ -267,6 +267,11 @@ class ResearchEvidenceEntry(BaseModel):
             return [value.strip()]
         return value
 
+    @field_validator("scope", "conflict", mode="before")
+    @classmethod
+    def optional_evidence_text_accepts_null(cls, value: Any) -> Any:
+        return "" if value is None else value
+
     @field_validator("claim")
     @classmethod
     def claim_is_not_blank(cls, value: str) -> str:
