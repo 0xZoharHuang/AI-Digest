@@ -84,8 +84,18 @@ and 256 KiB projection. Each batch reads every unit but returns only exact seman
 compact group-level working map:
 
 ```json
-{"unit_id":"u_...","group_id":"dynamic-topic-key"}
+{
+  "assignments": {
+    "u_...": "dynamic-topic-key",
+    "u_...2": "another-topic-key"
+  },
+  "working_map": "group-level semantic boundaries"
+}
 ```
+
+Every unit ID in the bounded batch is a required object key. This preserves Agent-owned semantic
+classification while making exact structural coverage a schema property instead of relying on a
+variable-length list and follow-up repair calls.
 
 The application derives internal catalog previews mechanically from the retained Phase 1 projection;
 Phase 2 does not rewrite, translate or polish thousands of per-unit summaries. Historical summary

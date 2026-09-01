@@ -20,7 +20,7 @@ from ai_digest.models import (
 )
 from ai_digest.store import load_jsonl
 from ai_digest.v3 import (
-    PHASE2_LEGACY_PROMPT_VERSION,
+    PHASE2_LEGACY_PROMPT_VERSIONS,
     V3Phases,
     adopt_thread_id,
     append_run_status,
@@ -186,9 +186,7 @@ def test_assignment_only_output_uses_mechanical_phase1_preview(tmp_path):
     output.write_text(
         json.dumps(
             {
-                "summaries": [
-                    {"unit_id": "u_a", "group_id": "robotics"},
-                ],
+                "assignments": {"u_a": "robotics"},
                 "working_map": "# map\n\n- robotics：机器人",
             }
         )
@@ -208,8 +206,9 @@ def test_assignment_only_output_uses_mechanical_phase1_preview(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_version", PHASE2_LEGACY_PROMPT_VERSIONS)
 async def test_assignment_only_batches_resume_legacy_summary_checkpoints(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, legacy_version
 ):
     monkeypatch.setattr(v3_module, "PHASE2_BATCH_MAX_UNITS", 2)
     run = _sealed_run(tmp_path, ("1", "2", "3"))
@@ -237,7 +236,7 @@ async def test_assignment_only_batches_resume_legacy_summary_checkpoints(
         interests,
         model=runtime.codex.router_model,
         reasoning=runtime.codex.router_reasoning,
-        prompt_version=PHASE2_LEGACY_PROMPT_VERSION,
+        prompt_version=legacy_version,
     )
     (work_root / "generation_input.json").write_text(
         json.dumps({"hash": legacy_generation_hash})
@@ -251,7 +250,7 @@ async def test_assignment_only_batches_resume_legacy_summary_checkpoints(
         total=2,
         model=runtime.codex.router_model,
         reasoning=runtime.codex.router_reasoning,
-        prompt_version=PHASE2_LEGACY_PROMPT_VERSION,
+        prompt_version=legacy_version,
     )
     (batch_root / "input.json").write_text(json.dumps({"hash": legacy_batch_hash}))
     legacy_output = batch_root / f"summary_output.{legacy_batch_hash[:16]}.json"
@@ -290,10 +289,9 @@ async def test_assignment_only_batches_resume_legacy_summary_checkpoints(
             if workspace.name == "batch-0002":
                 rows = load_jsonl(workspace / "units.jsonl")
                 payload = {
-                    "summaries": [
-                        {"unit_id": row["unit_id"], "group_id": "robotics"}
-                        for row in rows
-                    ],
+                    "assignments": {
+                        row["unit_id"]: "robotics" for row in rows
+                    },
                     "working_map": "# Map\n\n- robotics：机器人",
                 }
             else:
@@ -937,7 +935,7 @@ def test_reader_prompts_preserve_scan_then_drill_down_semantics():
     assert "不能因为材料偏离兴趣" in phase2_agents_md()
     assert "outside_reader_scope" not in phase2_agents_md()
     assert "low_signal_misc" not in phase2_agents_md()
-    assert "不得为凑齐行数" in phase2_agents_md()
+    assert "不得为凑齐键值" in phase2_agents_md()
     assert "可供文件 checkpoint 独立恢复的完整地图" in phase2_agents_md()
     assert "全部可用文本" in phase2_agents_md()
     assert "不得只看链接" in phase2_agents_md()
@@ -976,12 +974,10 @@ def test_run_status_uses_reader_language(tmp_path):
 
 
 def test_phase2_schemas_constrain_only_system_owned_ids():
-    summaries = summary_schema({"u_b", "u_a"})["properties"]["summaries"]
-    assert "minItems" not in summaries
-    assert "maxItems" not in summaries
-    assert summaries["items"]["properties"]["unit_id"]["enum"] == ["u_a", "u_b"]
-    assert summaries["items"]["required"] == ["unit_id", "group_id"]
-    assert "summary_zh" not in summaries["items"]["properties"]
+    assignments = summary_schema({"u_b", "u_a"})["properties"]["assignments"]
+    assert assignments["required"] == ["u_a", "u_b"]
+    assert set(assignments["properties"]) == {"u_a", "u_b"}
+    assert assignments["additionalProperties"] is False
 
     groups = package_schema({"group_b", "group_a"})["properties"]["packages"]
     group_ids = groups["items"]["properties"]["group_ids"]
