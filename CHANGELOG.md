@@ -13,6 +13,8 @@ versioning for public releases.
 - Keep new LaunchAgent plists pending until direct health checks pass, isolate stale on-disk V3 plists
   during apply, serialize installer mutations, and reject legacy V1 schedules for manual migration
   instead of attempting an automatic V1 rollback.
+- Continue a partial Phase 2 repair part with bounded, missing-ID-only completion turns instead of
+  terminating a large daily run after the first incomplete repair response.
 
 ## [0.4.0] — 2026-08-31
 

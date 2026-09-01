@@ -31,6 +31,7 @@ PHASE2_BATCH_MAX_UNITS = 160
 PHASE2_BATCH_MAX_BYTES = 256 * 1024
 PHASE2_REPAIR_MAX_UNITS = 40
 PHASE2_REPAIR_MAX_BYTES = 64 * 1024
+PHASE2_REPAIR_COMPLETION_ATTEMPTS = 2
 PACKAGE_MAX_COUNT = 15
 CATALOG_SHARD_MAX_UNITS = 160
 CATALOG_SHARD_MAX_BYTES = 256 * 1024
@@ -327,11 +328,13 @@ class V3Phases:
                     part_output = part_root / f"summary_output.{part_hash[:16]}.json"
                     part_checkpoint = _read_json(part_root / "codex.json", {})
                     part_cached = None
+                    part_partial = None
                     if (
                         part_checkpoint.get("input_hash") == part_hash
                         and part_checkpoint.get("thread_id") == thread_id
                     ):
                         part_cached = read_summary_output(part_output, part_ids)
+                        part_partial = read_summary_subset(part_output, part_ids)
                     if part_cached is None and phase2_has_later_repair_checkpoint(
                         repair_root, part_number
                     ):
@@ -361,11 +364,159 @@ class V3Phases:
                         )
                         _raise_if_retryable("Phase 2 summary repair", repair)
                         part_cached = read_summary_output(part_output, part_ids)
+                        part_partial = read_summary_subset(part_output, part_ids)
                         part_summary = codex_summary(repair)
                         part_summary["input_hash"] = part_hash
                         atomic_write_json(part_root / "codex.json", part_summary)
                     else:
                         part_summary = {**part_checkpoint, "reused": True}
+                    if part_cached is None:
+                        existing_values, completion_map = part_partial or ([], repair_map)
+                        completed_part_ids = {value.unit_id for value in existing_values}
+                        completion_values: list[Phase2Summary] = []
+                        completion_summaries: list[dict[str, Any]] = []
+                        completion_root = part_root / "completion"
+                        for completion_attempt in range(
+                            1, PHASE2_REPAIR_COMPLETION_ATTEMPTS + 1
+                        ):
+                            remaining_ids = part_ids - completed_part_ids
+                            if not remaining_ids:
+                                break
+                            attempt_root = (
+                                completion_root / f"attempt-{completion_attempt:02d}"
+                            )
+                            attempt_root.mkdir(parents=True, exist_ok=True)
+                            attempt_units = [
+                                unit
+                                for unit in repair_batch
+                                if unit.unit_id in remaining_ids
+                            ]
+                            atomic_write_jsonl(
+                                attempt_root / "units.jsonl",
+                                (unit.model_dump(mode="json") for unit in attempt_units),
+                            )
+                            atomic_write_text(attempt_root / "interests.md", interests)
+                            atomic_write_text(
+                                attempt_root / "working_map.md", completion_map
+                            )
+                            atomic_write_json(
+                                attempt_root / "summary.schema.json",
+                                summary_schema(remaining_ids),
+                            )
+                            atomic_write_text(
+                                attempt_root / "AGENTS.md", phase2_agents_md()
+                            )
+                            attempt_hash = phase2_batch_input_hash(
+                                attempt_units,
+                                interests,
+                                completion_map,
+                                number=(
+                                    number * 100_000
+                                    + part_number * 100
+                                    + completion_attempt
+                                ),
+                                total=PHASE2_REPAIR_COMPLETION_ATTEMPTS,
+                                model=self.runtime.codex.router_model,
+                                reasoning=self.runtime.codex.router_reasoning,
+                            )
+                            attempt_output = (
+                                attempt_root
+                                / f"summary_output.{attempt_hash[:16]}.json"
+                            )
+                            attempt_checkpoint = _read_json(
+                                attempt_root / "codex.json", {}
+                            )
+                            attempt_partial = None
+                            if (
+                                attempt_checkpoint.get("input_hash") == attempt_hash
+                                and attempt_checkpoint.get("thread_id") == thread_id
+                            ):
+                                attempt_partial = read_summary_subset(
+                                    attempt_output, remaining_ids
+                                )
+                            if (
+                                attempt_partial is None
+                                and phase2_has_later_completion_checkpoint(
+                                    completion_root, completion_attempt
+                                )
+                            ):
+                                abandon_phase2_generation(
+                                    root,
+                                    work_root,
+                                    "repair_completion_checkpoint_rewind_required",
+                                )
+                                return await self.route(run_dir, interests_path)
+                            if attempt_partial is None:
+                                completion = await run_phase2_turn(
+                                    self.runner,
+                                    workspace=attempt_root,
+                                    prompt=(
+                                        "这是结构恢复的聚焦补齐。只处理 units.jsonl 中仍缺失的 "
+                                        f"{len(remaining_ids)} 个 units；每条必须输出摘要和 "
+                                        "group_id，不得重复已经完成的 units。"
+                                    ),
+                                    model=self.runtime.codex.router_model,
+                                    reasoning=self.runtime.codex.router_reasoning,
+                                    sandbox="read-only",
+                                    output_file=attempt_output,
+                                    output_schema=attempt_root / "summary.schema.json",
+                                    resume_thread_id=thread_id,
+                                    thread_checkpoint_path=session_path,
+                                )
+                                thread_id = persist_phase2_thread(
+                                    session_path, thread_id, completion.thread_id
+                                )
+                                _raise_if_retryable(
+                                    "Phase 2 summary repair completion", completion
+                                )
+                                attempt_partial = read_summary_subset(
+                                    attempt_output, remaining_ids
+                                )
+                                attempt_summary = codex_summary(completion)
+                                attempt_summary["input_hash"] = attempt_hash
+                                atomic_write_json(
+                                    attempt_root / "codex.json", attempt_summary
+                                )
+                            else:
+                                attempt_summary = {
+                                    **attempt_checkpoint,
+                                    "reused": True,
+                                }
+                            if attempt_partial is None or not attempt_partial[0]:
+                                raise RuntimeError(
+                                    f"Phase 2 batch {number} repair part {part_number} "
+                                    f"completion {completion_attempt} made no progress"
+                                )
+                            attempt_values, completion_map = attempt_partial
+                            new_ids = {value.unit_id for value in attempt_values}
+                            completed_part_ids.update(new_ids)
+                            completion_values.extend(attempt_values)
+                            completion_summaries.append(
+                                {
+                                    **attempt_summary,
+                                    "attempt": completion_attempt,
+                                    "completed": len(new_ids),
+                                }
+                            )
+                        if completed_part_ids != part_ids:
+                            raise RuntimeError(
+                                f"Phase 2 batch {number} repair part {part_number} "
+                                "did not cover its units after focused completion"
+                            )
+                        merged_part_values = [*existing_values, *completion_values]
+                        atomic_write_json(
+                            part_output,
+                            {
+                                "summaries": [
+                                    value.model_dump(mode="json")
+                                    for value in merged_part_values
+                                ],
+                                "working_map": completion_map,
+                            },
+                        )
+                        part_cached = read_summary_output(part_output, part_ids)
+                        if completion_summaries:
+                            part_summary["completion_attempts"] = completion_summaries
                     if part_cached is None:
                         raise RuntimeError(
                             f"Phase 2 batch {number} repair part {part_number} "
@@ -1448,6 +1599,19 @@ def phase2_has_later_repair_checkpoint(repair_root: Path, part_number: int) -> b
         except ValueError:
             continue
         if number > part_number:
+            return True
+    return False
+
+
+def phase2_has_later_completion_checkpoint(
+    completion_root: Path, attempt_number: int
+) -> bool:
+    for path in completion_root.glob("attempt-*/codex.json"):
+        try:
+            number = int(path.parent.name.removeprefix("attempt-"))
+        except ValueError:
+            continue
+        if number > attempt_number:
             return True
     return False
 
