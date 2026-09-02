@@ -25,7 +25,7 @@ from .models import (
 from .store import load_jsonl
 from .utils import atomic_write_json, atomic_write_jsonl, atomic_write_text
 
-PHASE2_ATTENTION_PROMPT_VERSION = "2026-09-02.1"
+PHASE2_ATTENTION_PROMPT_VERSION = "2026-09-02.3"
 PHASE2_ATTENTION_CONTRACT = "attention_editor_v1"
 PHASE2_ATTENTION_BATCH_MAX_UNITS = 160
 PHASE2_ATTENTION_BATCH_MAX_BYTES = 256 * 1024
@@ -38,6 +38,157 @@ class AttentionPhase2:
         self.runner = runner
 
     async def run(
+        self,
+        run_dir: Path,
+        items: dict[str, SourceItem],
+        units: list[ObservationUnit],
+        interests: str,
+    ) -> RoutingOutput:
+        from .phase2_workspace import materialize_final_workspace, status_workspace
+
+        root = run_dir / "02_routing"
+        root.mkdir(parents=True, exist_ok=True)
+        documents = build_phase2_unit_documents(units, items)
+        ordered = stratified_unit_documents(documents)
+        atomic_write_jsonl(
+            root / "units.jsonl",
+            (document.model_dump(mode="json") for document in documents),
+        )
+        atomic_write_json(
+            root / "unit_items.json",
+            {document.unit_id: document.item_ids for document in documents},
+        )
+        generation_hash = attention_generation_hash(
+            documents,
+            interests,
+            model=self.runtime.codex.router_model,
+            reasoning=self.runtime.codex.router_reasoning,
+        )
+        work_root = root / "attention-editor-v1"
+        previous = _read_json(work_root / "generation_input.json", {})
+        if work_root.is_dir() and any(work_root.iterdir()) and (
+            previous.get("hash") != generation_hash
+            or not (work_root / "session.json").is_file()
+        ):
+            abandon_attention_generation(root, work_root)
+        work_root.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(work_root / "generation_input.json", {"hash": generation_hash})
+        batches = bounded_document_batches(ordered)
+        prepare_long_editor_workspace(work_root, documents, batches, interests)
+
+        session_path = work_root / "session.json"
+        thread_id = str(_read_json(session_path, {}).get("thread_id") or "") or None
+        turn_summaries: list[dict[str, Any]] = []
+        receipt: dict[str, Any] | None = None
+        completion_schema = work_root / "completion.schema.json"
+        completion_output = work_root / "completion.json"
+        for attempt in range(1, 4):
+            status = status_workspace(work_root)
+            if status.get("final_valid") is True:
+                receipt = status
+                break
+            prompt = (
+                phase2_attention_long_task_prompt()
+                if attempt == 1 and not thread_id
+                else phase2_attention_continue_prompt(status, attempt)
+            )
+            result = await self.runner.run(
+                workspace=work_root,
+                prompt=prompt,
+                model=self.runtime.codex.router_model,
+                reasoning=self.runtime.codex.router_reasoning,
+                sandbox="workspace-write",
+                output_file=completion_output,
+                output_schema=completion_schema,
+                web_search=False,
+                agents=True,
+                subagent_threads=self.runtime.codex.subagent_threads,
+                resume_thread_id=thread_id,
+                thread_checkpoint_path=session_path,
+            )
+            thread_id = persist_thread_id(session_path, thread_id, result.thread_id)
+            turn_summary = codex_summary(result)
+            turn_summary["attempt"] = attempt
+            turn_summaries.append(turn_summary)
+            try:
+                receipt = materialize_final_workspace(work_root)
+            except RuntimeError:
+                receipt = None
+            if receipt is not None:
+                break
+            _raise_if_retryable("Phase 2 attention editor", result)
+        if receipt is None:
+            status = status_workspace(work_root)
+            raise RuntimeError(
+                "Phase 2 attention editor stopped before validated completion: "
+                + json.dumps(status, ensure_ascii=False, sort_keys=True)
+            )
+
+        for name in (
+            "decisions.jsonl",
+            "decision_history.jsonl",
+            "candidate_units.jsonl",
+            "editor_state.md",
+            "packages.json",
+            "watch.jsonl",
+            "progress.json",
+        ):
+            shutil.copy2(work_root / name, root / name)
+        decisions = {
+            decision.unit_id: decision
+            for decision in (
+                Phase2Decision.model_validate(row)
+                for row in load_jsonl(root / "decisions.jsonl")
+            )
+        }
+        packages = [
+            ResearchPackage.model_validate(value)
+            for value in json.loads((root / "packages.json").read_text(encoding="utf-8"))
+        ]
+        watch = [
+            Phase2WatchSignal.model_validate(value)
+            for value in load_jsonl(root / "watch.jsonl")
+        ]
+        manifest = {
+            "schema_version": 2,
+            "contract": PHASE2_ATTENTION_CONTRACT,
+            "prompt_version": PHASE2_ATTENTION_PROMPT_VERSION,
+            "thread_id": thread_id,
+            "unit_count": len(documents),
+            "batch_count": len(batches),
+            "route_counts": dict(Counter(value.route for value in decisions.values())),
+            "package_count": len(packages),
+            "watch_signal_count": len(watch),
+            "execution_mode": "single_long_editor_turn",
+            "hashes": {
+                name: file_sha256(root / name)
+                for name in (
+                    "units.jsonl",
+                    "decisions.jsonl",
+                    "decision_history.jsonl",
+                    "candidate_units.jsonl",
+                    "editor_state.md",
+                    "packages.json",
+                    "watch.jsonl",
+                )
+            },
+        }
+        atomic_write_json(root / "phase2_manifest.json", manifest)
+        atomic_write_json(
+            root / "codex.json",
+            {
+                "mode": "single_long_attention_editor",
+                "thread_id": thread_id,
+                "batch_count": len(batches),
+                "turns": turn_summaries,
+                "workspace_receipt": receipt,
+            },
+        )
+        validate_attention_artifacts(root)
+        atomic_write_text(root / "PHASE2_COMPLETE", "attention_editor_v1 complete\n")
+        return routing_from_attention(packages, decisions, documents)
+
+    async def _run_turn_per_batch_legacy(
         self,
         run_dir: Path,
         items: dict[str, SourceItem],
@@ -448,6 +599,140 @@ def bounded_document_batches(
     if current:
         batches.append(current)
     return batches
+
+
+def prepare_long_editor_workspace(
+    root: Path,
+    documents: list[Phase2UnitDocument],
+    batches: list[list[Phase2UnitDocument]],
+    interests: str,
+) -> None:
+    atomic_write_jsonl(
+        root / "units.jsonl",
+        (document.model_dump(mode="json") for document in documents),
+    )
+    atomic_write_jsonl(
+        root / "today_index.jsonl",
+        (unit_index_row(document) for document in documents),
+    )
+    atomic_write_text(root / "interests.md", interests)
+    atomic_write_text(root / "AGENTS.md", phase2_attention_agents_md())
+    batch_manifest = []
+    for number, batch in enumerate(batches, start=1):
+        relative = Path("batches") / f"batch-{number:04d}"
+        batch_root = root / relative
+        batch_root.mkdir(parents=True, exist_ok=True)
+        atomic_write_jsonl(
+            batch_root / "units.jsonl",
+            (document.model_dump(mode="json") for document in batch),
+        )
+        atomic_write_json(
+            batch_root / "decision.schema.json",
+            attention_batch_schema({document.unit_id for document in batch}),
+        )
+        atomic_write_json(
+            batch_root / "source_stats.json",
+            {
+                "batch": number,
+                "unit_count": len(batch),
+                "sources": dict(
+                    Counter(source for document in batch for source in document.sources)
+                ),
+            },
+        )
+        batch_manifest.append(
+            {
+                "batch": number,
+                "path": relative.as_posix(),
+                "unit_ids": [document.unit_id for document in batch],
+                "bytes": sum(len(document.model_dump_json().encode()) + 1 for document in batch),
+            }
+        )
+    atomic_write_json(
+        root / "manifest.json",
+        {
+            "schema_version": 1,
+            "contract": PHASE2_ATTENTION_CONTRACT,
+            "prompt_version": PHASE2_ATTENTION_PROMPT_VERSION,
+            "unit_count": len(documents),
+            "batch_count": len(batches),
+            "batches": batch_manifest,
+        },
+    )
+    atomic_write_json(
+        root / "source_stats.json",
+        {
+            "unit_count": len(documents),
+            "sources": dict(
+                Counter(source for document in documents for source in document.sources)
+            ),
+        },
+    )
+    atomic_write_json(
+        root / "final.schema.json",
+        attention_finalize_schema({document.unit_id for document in documents}),
+    )
+    atomic_write_json(
+        root / "completion.schema.json",
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["status", "note"],
+            "properties": {
+                "status": {"enum": ["complete", "blocked"]},
+                "note": {"type": "string"},
+            },
+        },
+    )
+    if not (root / "editor_state.md").exists():
+        atomic_write_text(
+            root / "editor_state.md",
+            "# Daily editor state\n\n尚未开始审阅当天材料。\n",
+        )
+    atomic_write_text(root / "TASK.md", phase2_attention_task_md())
+
+
+def phase2_attention_task_md() -> str:
+    return """# Daily Attention Editing Task
+
+这是一个单次、长时运行的编辑任务。所有批次已在 `manifest.json` 中列出；分页只是文件导航，不是
+多个独立 Agent turn。先读取 `progress.json`，然后从 `next_batch` 开始逐批工作。
+
+对每个 batch：
+
+1. 完整读取 `<batch>/units.jsonl` 的全部 normalized observations。
+2. 按 `<batch>/decision.schema.json` 写 `<batch>/decisions.json`。其中 decision map 必须精确包含本批
+   全部 unit_id；research/watch 写 cluster_hint 与 trigger_zh，archive 两字段留空；需要时写 revisions。
+3. `editor_state` 必须保存当前全日研究候选、Watch、待验证关系与判断边界，不得用“同上”省略。
+4. 写入成功的 `<batch>/decisions.json` 本身就是 durable checkpoint；自行用 jq 或其他只读检查确认 JSON
+   与 schema 完整，然后继续下一批。不要等待应用发下一轮提示。
+
+全部批次完成后，结合完整 `decisions.jsonl`、`candidate_units.jsonl`、`editor_state.md` 和按需检索的
+`units.jsonl`，按 `final.schema.json` 写 `final.json`。退出前确认所有 manifest batches 都已有合法的
+decisions.json，且 packages/watch 分别覆盖最终 research/watch；应用会在进程退出后做权威结构验收。
+
+可以自主派发子 Agent 处理真正独立、有界的扫描，但根 Editor 必须审阅结果、维护统一判断并负责最终
+work orders。子 Agent 不应各自建立不兼容的分类体系。不要联网，不做 Phase 3 研究。
+"""
+
+
+def phase2_attention_long_task_prompt() -> str:
+    return """完整执行 TASK.md 中的 Daily Attention Editing Task。先读 AGENTS.md、TASK.md、
+interests.md、manifest.json、source_stats.json 和 progress.json。你拥有当天全部批次文件，
+自行组织阅读、必要的子 Agent 和 checkpoint；不要等待应用逐批提示。必须处理所有 normalized 原文、
+完成 research/watch/archive 判断、形成自然且独立的 research work orders 与 Watchlist。每个成功写入的
+batch decisions 文件都是可恢复 checkpoint；应用在你退出后统一验证。最后只返回 completion.schema.json
+要求的状态。"""
+
+
+def phase2_attention_continue_prompt(status: dict[str, Any], attempt: int) -> str:
+    return (
+        f"继续同一个 Daily Attention Editor 任务，这是第 {attempt} 次进程级续接。"
+        "不要重做 progress.json 已确认的批次。读取 progress.json 和现有 editor_state.md，"
+        "从 next_batch 继续；若全部批次已完成则修正 final.json。应用会在退出后再次做权威验收。"
+        "当前应用观察到的状态：\n"
+        + json.dumps(status, ensure_ascii=False, sort_keys=True)
+    )
 
 
 def attention_batch_schema(unit_ids: set[str]) -> dict[str, Any]:

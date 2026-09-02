@@ -24,6 +24,7 @@ from ai_digest.phase2_attention import (
     validate_attention_artifacts,
     validate_attention_selection,
 )
+from ai_digest.phase2_workspace import sync_workspace
 from ai_digest.store import load_jsonl
 from ai_digest.v3 import V3Phases
 
@@ -208,26 +209,29 @@ class AttentionRunner:
         self.calls.append(
             (workspace.name, kwargs.get("resume_thread_id"), kwargs.get("agents", False))
         )
-        if workspace.name == "batch-0002" and self.fail_batch_two_once:
-            self.fail_batch_two_once = False
-            return CodexResult(
-                exit_code=1,
-                thread_id="attention-thread",
-                error_class="authentication",
-                error="temporary auth failure",
-            )
-        if workspace.name.startswith("batch-"):
-            rows = load_jsonl(workspace / "units.jsonl")
+        manifest = json.loads((workspace / "manifest.json").read_text())
+        progress = sync_workspace(workspace)
+        start = int(progress["processed_batches"])
+        stop = start + 1 if self.fail_batch_two_once else len(manifest["batches"])
+        for batch in manifest["batches"][start:stop]:
+            batch_root = workspace / batch["path"]
+            rows = load_jsonl(batch_root / "units.jsonl")
             decisions = {}
             for row in rows:
                 text = row["observations"][0]["payload"]["text"]
-                route = "research" if "research" in text else "watch" if "watch" in text else "archive"
+                route = (
+                    "research"
+                    if "research" in text
+                    else "watch"
+                    if "watch" in text
+                    else "archive"
+                )
                 decisions[row["unit_id"]] = {
                     "route": route,
                     "cluster_hint": "candidate" if route != "archive" else "",
                     "trigger_zh": "存在具体信号" if route != "archive" else "",
                 }
-            output.write_text(
+            (batch_root / "decisions.json").write_text(
                 json.dumps(
                     {
                         "decisions": decisions,
@@ -237,39 +241,48 @@ class AttentionRunner:
                     ensure_ascii=False,
                 )
             )
-        else:
-            decisions = load_jsonl(workspace / "decisions.jsonl")
-            research = [row["unit_id"] for row in decisions if row["route"] == "research"]
-            watch = [row["unit_id"] for row in decisions if row["route"] == "watch"]
-            output.write_text(
-                json.dumps(
-                    {
-                        "packages": [
-                            {
-                                "package_id": "candidate",
-                                "label_zh": "独立候选",
-                                "scope_note_zh": "同一具体研究对象。",
-                                "unit_ids": research,
-                            }
-                        ]
-                        if research
-                        else [],
-                        "watch": [
-                            {
-                                "signal_id": "candidate-watch",
-                                "title_zh": "候选观察",
-                                "note_zh": "证据仍不足。",
-                                "unit_ids": watch,
-                            }
-                        ]
-                        if watch
-                        else [],
-                        "final_revisions": [],
-                        "editor_state": "# Final editor state",
-                    },
-                    ensure_ascii=False,
-                )
+            sync_workspace(workspace)
+        if self.fail_batch_two_once:
+            self.fail_batch_two_once = False
+            return CodexResult(
+                exit_code=1,
+                thread_id="attention-thread",
+                error_class="authentication",
+                error="temporary auth failure",
             )
+        decisions = load_jsonl(workspace / "decisions.jsonl")
+        research = [row["unit_id"] for row in decisions if row["route"] == "research"]
+        watch = [row["unit_id"] for row in decisions if row["route"] == "watch"]
+        (workspace / "final.json").write_text(
+            json.dumps(
+                {
+                    "packages": [
+                        {
+                            "package_id": "candidate",
+                            "label_zh": "独立候选",
+                            "scope_note_zh": "同一具体研究对象。",
+                            "unit_ids": research,
+                        }
+                    ]
+                    if research
+                    else [],
+                    "watch": [
+                        {
+                            "signal_id": "candidate-watch",
+                            "title_zh": "候选观察",
+                            "note_zh": "证据仍不足。",
+                            "unit_ids": watch,
+                        }
+                    ]
+                    if watch
+                    else [],
+                    "final_revisions": [],
+                    "editor_state": "# Final editor state",
+                },
+                ensure_ascii=False,
+            )
+        )
+        output.write_text(json.dumps({"status": "complete", "note": "done"}))
         return CodexResult(exit_code=0, thread_id="attention-thread")
 
 
@@ -303,19 +316,14 @@ async def test_attention_editor_reuses_one_thread_and_resumes_batches(
     with pytest.raises(RetryableCodexError):
         await V3Phases(runtime, first_runner).route(run, run / "interests.md")  # type: ignore[arg-type]
 
-    assert first_runner.calls == [
-        ("batch-0001", None, True),
-        ("batch-0002", "attention-thread", True),
-    ]
+    assert first_runner.calls == [("attention-editor-v1", None, True)]
     second_runner = AttentionRunner()
     routing = await V3Phases(runtime, second_runner).route(  # type: ignore[arg-type]
         run, run / "interests.md"
     )
 
     assert second_runner.calls == [
-        ("batch-0002", "attention-thread", True),
-        ("batch-0003", "attention-thread", True),
-        ("finalize", "attention-thread", True),
+        ("attention-editor-v1", "attention-thread", True),
     ]
     root = run / "02_routing"
     validate_attention_artifacts(root)
