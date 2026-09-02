@@ -19,17 +19,16 @@ from ai_digest.models import (
 )
 from ai_digest.phase2_attention import (
     build_phase2_unit_documents,
-    read_attention_batch_output,
     stratified_unit_documents,
     validate_attention_artifacts,
     validate_attention_selection,
+    validate_editor_outputs,
 )
-from ai_digest.phase2_workspace import sync_workspace
 from ai_digest.store import load_jsonl
 from ai_digest.v3 import V3Phases
 
 
-def _item(item_id: str, source: str, text: str, *, entity: str | None = None) -> SourceItem:
+def _item(item_id: str, source: str, text: str) -> SourceItem:
     now = datetime(2026, 9, 2, tzinfo=UTC)
     return SourceItem(
         item_id=item_id,
@@ -40,7 +39,7 @@ def _item(item_id: str, source: str, text: str, *, entity: str | None = None) ->
         first_observed_at=now,
         handoff_at=now,
         ready_at=now,
-        entity_key=entity or f"entity:{item_id}",
+        entity_key=f"entity:{item_id}",
         payload={"title": text[:80], "text": text},
     )
 
@@ -73,7 +72,6 @@ def test_phase2_unit_documents_preserve_normalized_source_without_truncation():
     document = build_phase2_unit_documents([unit], {item.item_id: item})[0]
 
     assert document.observations[0].payload["text"] == text
-    assert document.model_dump_json().endswith('"expires_at":null}]}')
     assert "-end" in document.model_dump_json()
 
 
@@ -99,60 +97,6 @@ def test_phase2_documents_are_interleaved_across_sources():
     ]
 
 
-def test_batch_output_requires_exact_current_ids_and_allows_prior_revision(tmp_path):
-    output = tmp_path / "output.json"
-    output.write_text(
-        json.dumps(
-            {
-                "decisions": {
-                    "u_00000000000000000002": {
-                        "route": "research",
-                        "cluster_hint": "robot-runtime",
-                        "trigger_zh": "出现完整实现与复现实验",
-                    }
-                },
-                "revisions": [
-                    {
-                        "unit_id": "u_00000000000000000001",
-                        "new_route": "watch",
-                        "cluster_hint": "robot-runtime",
-                        "trigger_zh": "后续出现第二个来源",
-                        "reason_zh": "本批代码仓库补足了早期声明",
-                    }
-                ],
-                "editor_state": "# state",
-            },
-            ensure_ascii=False,
-        )
-    )
-
-    parsed = read_attention_batch_output(
-        output,
-        current_ids={"u_00000000000000000002"},
-        prior_ids={"u_00000000000000000001"},
-        batch_number=2,
-    )
-
-    assert parsed is not None
-    decisions, revisions, state = parsed
-    assert decisions[0].route == "research"
-    assert revisions[0].new_route == "watch"
-    assert state == "# state\n"
-
-    value = json.loads(output.read_text())
-    value["decisions"] = {}
-    output.write_text(json.dumps(value))
-    assert (
-        read_attention_batch_output(
-            output,
-            current_ids={"u_00000000000000000002"},
-            prior_ids={"u_00000000000000000001"},
-            batch_number=2,
-        )
-        is None
-    )
-
-
 def test_attention_selection_has_no_package_count_or_size_policy():
     decisions: dict[str, Phase2Decision] = {}
     packages = []
@@ -163,8 +107,6 @@ def test_attention_selection_has_no_package_count_or_size_policy():
             route="research",
             cluster_hint=f"subject-{index}",
             trigger_zh="值得独立研究",
-            decided_batch=1,
-            last_revised_batch=1,
         )
         packages.append(
             ResearchPackage(
@@ -180,8 +122,6 @@ def test_attention_selection_has_no_package_count_or_size_policy():
         route="watch",
         cluster_hint="early-signal",
         trigger_zh="证据仍不足",
-        decided_batch=1,
-        last_revised_batch=1,
     )
 
     validate_attention_selection(
@@ -198,91 +138,97 @@ def test_attention_selection_has_no_package_count_or_size_policy():
     )
 
 
-class AttentionRunner:
-    def __init__(self, *, fail_batch_two_once: bool = False):
-        self.calls: list[tuple[str, str | None, bool]] = []
-        self.fail_batch_two_once = fail_batch_two_once
+def _write_final_outputs(root: Path, *, partial: bool = False) -> None:
+    documents = [
+        Phase2UnitDocument.model_validate(row)
+        for row in load_jsonl(root / "units.jsonl")
+    ]
+    decision_rows = []
+    for index, document in enumerate(documents):
+        if partial and index:
+            break
+        text = document.observations[0].payload["text"]
+        route = (
+            "research"
+            if "research" in text
+            else "watch"
+            if "watch" in text
+            else "archive"
+        )
+        decision_rows.append(
+            {
+                "unit_id": document.unit_id,
+                "route": route,
+                "cluster_hint": "candidate" if route != "archive" else "",
+                "trigger_zh": "存在具体信号" if route != "archive" else "",
+            }
+        )
+    with (root / "decisions.jsonl").open("w", encoding="utf-8") as handle:
+        for row in decision_rows:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    research = [row["unit_id"] for row in decision_rows if row["route"] == "research"]
+    watch = [row["unit_id"] for row in decision_rows if row["route"] == "watch"]
+    (root / "packages.json").write_text(
+        json.dumps(
+            [
+                {
+                    "package_id": "candidate",
+                    "label_zh": "独立候选",
+                    "scope_note_zh": "同一具体研究对象。",
+                    "unit_ids": research,
+                }
+            ]
+            if research
+            else [],
+            ensure_ascii=False,
+        )
+    )
+    (root / "watch.jsonl").write_text(
+        (
+            json.dumps(
+                {
+                    "signal_id": "candidate-watch",
+                    "title_zh": "候选观察",
+                    "note_zh": "证据仍不足。",
+                    "unit_ids": watch,
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+        if watch
+        else ""
+    )
+    (root / "editor_state.md").write_text("# Final editor state\n")
+
+
+class LongEditorRunner:
+    def __init__(self, *, fail_once: bool = False):
+        self.calls: list[tuple[str, str | None, bool, str]] = []
+        self.fail_once = fail_once
 
     async def run(self, **kwargs):  # type: ignore[no-untyped-def]
         workspace: Path = kwargs["workspace"]
-        output: Path = kwargs["output_file"]
         self.calls.append(
-            (workspace.name, kwargs.get("resume_thread_id"), kwargs.get("agents", False))
-        )
-        manifest = json.loads((workspace / "manifest.json").read_text())
-        progress = sync_workspace(workspace)
-        start = int(progress["processed_batches"])
-        stop = start + 1 if self.fail_batch_two_once else len(manifest["batches"])
-        for batch in manifest["batches"][start:stop]:
-            batch_root = workspace / batch["path"]
-            rows = load_jsonl(batch_root / "units.jsonl")
-            decisions = {}
-            for row in rows:
-                text = row["observations"][0]["payload"]["text"]
-                route = (
-                    "research"
-                    if "research" in text
-                    else "watch"
-                    if "watch" in text
-                    else "archive"
-                )
-                decisions[row["unit_id"]] = {
-                    "route": route,
-                    "cluster_hint": "candidate" if route != "archive" else "",
-                    "trigger_zh": "存在具体信号" if route != "archive" else "",
-                }
-            (batch_root / "decisions.json").write_text(
-                json.dumps(
-                    {
-                        "decisions": decisions,
-                        "revisions": [],
-                        "editor_state": "# Editor state\n\n- candidate",
-                    },
-                    ensure_ascii=False,
-                )
+            (
+                workspace.name,
+                kwargs.get("resume_thread_id"),
+                kwargs.get("agents", False),
+                kwargs["sandbox"],
             )
-            sync_workspace(workspace)
-        if self.fail_batch_two_once:
-            self.fail_batch_two_once = False
+        )
+        _write_final_outputs(workspace, partial=self.fail_once)
+        if self.fail_once:
+            self.fail_once = False
             return CodexResult(
                 exit_code=1,
                 thread_id="attention-thread",
                 error_class="authentication",
                 error="temporary auth failure",
             )
-        decisions = load_jsonl(workspace / "decisions.jsonl")
-        research = [row["unit_id"] for row in decisions if row["route"] == "research"]
-        watch = [row["unit_id"] for row in decisions if row["route"] == "watch"]
-        (workspace / "final.json").write_text(
-            json.dumps(
-                {
-                    "packages": [
-                        {
-                            "package_id": "candidate",
-                            "label_zh": "独立候选",
-                            "scope_note_zh": "同一具体研究对象。",
-                            "unit_ids": research,
-                        }
-                    ]
-                    if research
-                    else [],
-                    "watch": [
-                        {
-                            "signal_id": "candidate-watch",
-                            "title_zh": "候选观察",
-                            "note_zh": "证据仍不足。",
-                            "unit_ids": watch,
-                        }
-                    ]
-                    if watch
-                    else [],
-                    "final_revisions": [],
-                    "editor_state": "# Final editor state",
-                },
-                ensure_ascii=False,
-            )
+        kwargs["output_file"].write_text(
+            json.dumps({"status": "complete", "note": "done"})
         )
-        output.write_text(json.dumps({"status": "complete", "note": "done"}))
         return CodexResult(exit_code=0, thread_id="attention-thread")
 
 
@@ -304,40 +250,57 @@ def _sealed_run(tmp_path: Path) -> Path:
 
 
 @pytest.mark.asyncio
-async def test_attention_editor_reuses_one_thread_and_resumes_batches(
+async def test_attention_editor_uses_one_long_task_and_resumes_same_thread(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(attention_module, "PHASE2_ATTENTION_BATCH_MAX_UNITS", 1)
     monkeypatch.setattr(attention_module, "PHASE2_ATTENTION_BATCH_MAX_BYTES", 1_000_000)
     run = _sealed_run(tmp_path)
     runtime = RuntimeConfig(runtime_root=tmp_path, shared_runtime_root=tmp_path / "queue")
-    first_runner = AttentionRunner(fail_batch_two_once=True)
+    first_runner = LongEditorRunner(fail_once=True)
 
     with pytest.raises(RetryableCodexError):
-        await V3Phases(runtime, first_runner).route(run, run / "interests.md")  # type: ignore[arg-type]
+        await V3Phases(runtime, first_runner).route(  # type: ignore[arg-type]
+            run, run / "interests.md"
+        )
+    assert first_runner.calls == [
+        ("attention-editor-v1", None, True, "workspace-write")
+    ]
 
-    assert first_runner.calls == [("attention-editor-v1", None, True)]
-    second_runner = AttentionRunner()
+    second_runner = LongEditorRunner()
     routing = await V3Phases(runtime, second_runner).route(  # type: ignore[arg-type]
         run, run / "interests.md"
     )
-
     assert second_runner.calls == [
-        ("attention-editor-v1", "attention-thread", True),
+        ("attention-editor-v1", "attention-thread", True, "workspace-write")
     ]
     root = run / "02_routing"
     validate_attention_artifacts(root)
     manifest = json.loads((root / "phase2_manifest.json").read_text())
-    assert manifest["contract"] == "attention_editor_v1"
+    assert manifest["execution_mode"] == "single_long_editor_task"
     assert manifest["route_counts"] == {"archive": 1, "research": 1, "watch": 1}
+    assert manifest["batch_count"] == 3
     assert len(load_jsonl(root / "decisions.jsonl")) == 3
     assert len(load_jsonl(root / "candidate_units.jsonl")) == 2
     assert "a" * 3000 in (root / "units.jsonl").read_text()
     assert {assignment.d for assignment in routing.assignments} == {"r", "w", "n"}
 
-    cached_runner = AttentionRunner()
+    cached_runner = LongEditorRunner()
     cached = await V3Phases(runtime, cached_runner).route(  # type: ignore[arg-type]
         run, run / "interests.md"
     )
     assert cached_runner.calls == []
     assert cached == routing
+
+
+def test_editor_output_validator_rejects_incomplete_decisions(tmp_path):
+    documents = [_document("u_00000000000000000001", "arxiv")]
+    root = tmp_path
+    with (root / "units.jsonl").open("w") as handle:
+        handle.write(documents[0].model_dump_json() + "\n")
+    _write_final_outputs(root, partial=True)
+    validate_editor_outputs(root, documents)
+
+    (root / "decisions.jsonl").write_text("")
+    with pytest.raises(RuntimeError, match="coverage mismatch"):
+        validate_editor_outputs(root, documents)

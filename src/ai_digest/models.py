@@ -148,8 +148,6 @@ class Phase2Decision(BaseModel):
     route: Literal["research", "watch", "archive"]
     cluster_hint: str = ""
     trigger_zh: str = ""
-    decided_batch: int = Field(ge=1)
-    last_revised_batch: int = Field(ge=1)
 
     @field_validator("cluster_hint", "trigger_zh")
     @classmethod
@@ -161,29 +159,6 @@ class Phase2Decision(BaseModel):
             not self.cluster_hint or not self.trigger_zh
         ):
             raise ValueError("research/watch decisions require cluster_hint and trigger_zh")
-
-
-class Phase2DecisionRevision(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    unit_id: str
-    new_route: Literal["research", "watch", "archive"]
-    cluster_hint: str = ""
-    trigger_zh: str = ""
-    reason_zh: str
-
-    @field_validator("cluster_hint", "trigger_zh", "reason_zh")
-    @classmethod
-    def revision_text_is_trimmed(cls, value: str) -> str:
-        return value.strip()
-
-    def model_post_init(self, __context: Any) -> None:
-        if not self.reason_zh:
-            raise ValueError("decision revision requires reason_zh")
-        if self.new_route in {"research", "watch"} and (
-            not self.cluster_hint or not self.trigger_zh
-        ):
-            raise ValueError("research/watch revisions require cluster_hint and trigger_zh")
 
 
 class Phase2WatchSignal(BaseModel):
