@@ -1,0 +1,335 @@
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+
+import ai_digest.phase2_attention as attention_module
+from ai_digest.codex_runner import CodexResult, RetryableCodexError
+from ai_digest.config import RuntimeConfig
+from ai_digest.models import (
+    ObservationUnit,
+    Phase2Decision,
+    Phase2UnitDocument,
+    Phase2WatchSignal,
+    ResearchPackage,
+    SourceItem,
+)
+from ai_digest.phase2_attention import (
+    build_phase2_unit_documents,
+    read_attention_batch_output,
+    stratified_unit_documents,
+    validate_attention_artifacts,
+    validate_attention_selection,
+)
+from ai_digest.store import load_jsonl
+from ai_digest.v3 import V3Phases
+
+
+def _item(item_id: str, source: str, text: str, *, entity: str | None = None) -> SourceItem:
+    now = datetime(2026, 9, 2, tzinfo=UTC)
+    return SourceItem(
+        item_id=item_id,
+        item_type="test",
+        source=source,
+        surface="test",
+        occurred_at=now,
+        first_observed_at=now,
+        handoff_at=now,
+        ready_at=now,
+        entity_key=entity or f"entity:{item_id}",
+        payload={"title": text[:80], "text": text},
+    )
+
+
+def _document(unit_id: str, source: str) -> Phase2UnitDocument:
+    item = _item(f"{source}:{unit_id}", source, f"full text {unit_id}")
+    return Phase2UnitDocument(
+        unit_id=unit_id,
+        entity_key=f"entity:{unit_id}",
+        item_ids=[item.item_id],
+        sources=[source],
+        occurred_at=item.occurred_at,
+        observations=[item],
+    )
+
+
+def test_phase2_unit_documents_preserve_normalized_source_without_truncation():
+    text = "begin-" + "x" * 6000 + "-end"
+    item = _item("x_list:1", "x_list", text)
+    unit = ObservationUnit(
+        unit_id="u_00000000000000000001",
+        entity_key="x:1",
+        item_ids=[item.item_id],
+        sources=[item.source],
+        occurred_at=item.occurred_at,
+        summary="legacy preview",
+        projection={"observations": [{"text": text[:1200]}]},
+    )
+
+    document = build_phase2_unit_documents([unit], {item.item_id: item})[0]
+
+    assert document.observations[0].payload["text"] == text
+    assert document.model_dump_json().endswith('"expires_at":null}]}')
+    assert "-end" in document.model_dump_json()
+
+
+def test_phase2_documents_are_interleaved_across_sources():
+    documents = [
+        _document("u_00000000000000000001", "arxiv"),
+        _document("u_00000000000000000002", "arxiv"),
+        _document("u_00000000000000000003", "github"),
+        _document("u_00000000000000000004", "github"),
+        _document("u_00000000000000000005", "x_list"),
+        _document("u_00000000000000000006", "x_list"),
+    ]
+
+    ordered = stratified_unit_documents(documents)
+
+    assert [value.sources[0] for value in ordered] == [
+        "arxiv",
+        "github",
+        "x_list",
+        "arxiv",
+        "github",
+        "x_list",
+    ]
+
+
+def test_batch_output_requires_exact_current_ids_and_allows_prior_revision(tmp_path):
+    output = tmp_path / "output.json"
+    output.write_text(
+        json.dumps(
+            {
+                "decisions": {
+                    "u_00000000000000000002": {
+                        "route": "research",
+                        "cluster_hint": "robot-runtime",
+                        "trigger_zh": "出现完整实现与复现实验",
+                    }
+                },
+                "revisions": [
+                    {
+                        "unit_id": "u_00000000000000000001",
+                        "new_route": "watch",
+                        "cluster_hint": "robot-runtime",
+                        "trigger_zh": "后续出现第二个来源",
+                        "reason_zh": "本批代码仓库补足了早期声明",
+                    }
+                ],
+                "editor_state": "# state",
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    parsed = read_attention_batch_output(
+        output,
+        current_ids={"u_00000000000000000002"},
+        prior_ids={"u_00000000000000000001"},
+        batch_number=2,
+    )
+
+    assert parsed is not None
+    decisions, revisions, state = parsed
+    assert decisions[0].route == "research"
+    assert revisions[0].new_route == "watch"
+    assert state == "# state\n"
+
+    value = json.loads(output.read_text())
+    value["decisions"] = {}
+    output.write_text(json.dumps(value))
+    assert (
+        read_attention_batch_output(
+            output,
+            current_ids={"u_00000000000000000002"},
+            prior_ids={"u_00000000000000000001"},
+            batch_number=2,
+        )
+        is None
+    )
+
+
+def test_attention_selection_has_no_package_count_or_size_policy():
+    decisions: dict[str, Phase2Decision] = {}
+    packages = []
+    for index in range(20):
+        unit_id = f"u_{index:020x}"
+        decisions[unit_id] = Phase2Decision(
+            unit_id=unit_id,
+            route="research",
+            cluster_hint=f"subject-{index}",
+            trigger_zh="值得独立研究",
+            decided_batch=1,
+            last_revised_batch=1,
+        )
+        packages.append(
+            ResearchPackage(
+                package_id=f"subject-{index}",
+                label_zh=f"对象 {index}",
+                scope_note_zh="独立低层研究对象。",
+                unit_ids=[unit_id],
+            )
+        )
+    watch_id = "u_ffffffffffffffffffff"
+    decisions[watch_id] = Phase2Decision(
+        unit_id=watch_id,
+        route="watch",
+        cluster_hint="early-signal",
+        trigger_zh="证据仍不足",
+        decided_batch=1,
+        last_revised_batch=1,
+    )
+
+    validate_attention_selection(
+        decisions,
+        packages,
+        [
+            Phase2WatchSignal(
+                signal_id="early-signal",
+                title_zh="早期信号",
+                note_zh="保留观察。",
+                unit_ids=[watch_id],
+            )
+        ],
+    )
+
+
+class AttentionRunner:
+    def __init__(self, *, fail_batch_two_once: bool = False):
+        self.calls: list[tuple[str, str | None, bool]] = []
+        self.fail_batch_two_once = fail_batch_two_once
+
+    async def run(self, **kwargs):  # type: ignore[no-untyped-def]
+        workspace: Path = kwargs["workspace"]
+        output: Path = kwargs["output_file"]
+        self.calls.append(
+            (workspace.name, kwargs.get("resume_thread_id"), kwargs.get("agents", False))
+        )
+        if workspace.name == "batch-0002" and self.fail_batch_two_once:
+            self.fail_batch_two_once = False
+            return CodexResult(
+                exit_code=1,
+                thread_id="attention-thread",
+                error_class="authentication",
+                error="temporary auth failure",
+            )
+        if workspace.name.startswith("batch-"):
+            rows = load_jsonl(workspace / "units.jsonl")
+            decisions = {}
+            for row in rows:
+                text = row["observations"][0]["payload"]["text"]
+                route = "research" if "research" in text else "watch" if "watch" in text else "archive"
+                decisions[row["unit_id"]] = {
+                    "route": route,
+                    "cluster_hint": "candidate" if route != "archive" else "",
+                    "trigger_zh": "存在具体信号" if route != "archive" else "",
+                }
+            output.write_text(
+                json.dumps(
+                    {
+                        "decisions": decisions,
+                        "revisions": [],
+                        "editor_state": "# Editor state\n\n- candidate",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        else:
+            decisions = load_jsonl(workspace / "decisions.jsonl")
+            research = [row["unit_id"] for row in decisions if row["route"] == "research"]
+            watch = [row["unit_id"] for row in decisions if row["route"] == "watch"]
+            output.write_text(
+                json.dumps(
+                    {
+                        "packages": [
+                            {
+                                "package_id": "candidate",
+                                "label_zh": "独立候选",
+                                "scope_note_zh": "同一具体研究对象。",
+                                "unit_ids": research,
+                            }
+                        ]
+                        if research
+                        else [],
+                        "watch": [
+                            {
+                                "signal_id": "candidate-watch",
+                                "title_zh": "候选观察",
+                                "note_zh": "证据仍不足。",
+                                "unit_ids": watch,
+                            }
+                        ]
+                        if watch
+                        else [],
+                        "final_revisions": [],
+                        "editor_state": "# Final editor state",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        return CodexResult(exit_code=0, thread_id="attention-thread")
+
+
+def _sealed_run(tmp_path: Path) -> Path:
+    run = tmp_path / "runs" / "2026-09-02" / "attempt-0001"
+    phase1 = run / "01_phase1"
+    phase1.mkdir(parents=True)
+    items = [
+        _item("arxiv:1", "arxiv", "research full original " + "a" * 3000),
+        _item("github:2", "github", "archive ordinary repository " + "b" * 3000),
+        _item("x_list:3", "x_list", "watch early claim " + "c" * 3000),
+    ]
+    for item in items:
+        with (phase1 / f"{item.source}.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(item.model_dump_json() + "\n")
+    (phase1 / "PHASE1_COMPLETE").write_text("complete\n")
+    (run / "interests.md").write_text("AI systems and robotics\n")
+    return run
+
+
+@pytest.mark.asyncio
+async def test_attention_editor_reuses_one_thread_and_resumes_batches(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(attention_module, "PHASE2_ATTENTION_BATCH_MAX_UNITS", 1)
+    monkeypatch.setattr(attention_module, "PHASE2_ATTENTION_BATCH_MAX_BYTES", 1_000_000)
+    run = _sealed_run(tmp_path)
+    runtime = RuntimeConfig(runtime_root=tmp_path, shared_runtime_root=tmp_path / "queue")
+    first_runner = AttentionRunner(fail_batch_two_once=True)
+
+    with pytest.raises(RetryableCodexError):
+        await V3Phases(runtime, first_runner).route(run, run / "interests.md")  # type: ignore[arg-type]
+
+    assert first_runner.calls == [
+        ("batch-0001", None, True),
+        ("batch-0002", "attention-thread", True),
+    ]
+    second_runner = AttentionRunner()
+    routing = await V3Phases(runtime, second_runner).route(  # type: ignore[arg-type]
+        run, run / "interests.md"
+    )
+
+    assert second_runner.calls == [
+        ("batch-0002", "attention-thread", True),
+        ("batch-0003", "attention-thread", True),
+        ("finalize", "attention-thread", True),
+    ]
+    root = run / "02_routing"
+    validate_attention_artifacts(root)
+    manifest = json.loads((root / "phase2_manifest.json").read_text())
+    assert manifest["contract"] == "attention_editor_v1"
+    assert manifest["route_counts"] == {"archive": 1, "research": 1, "watch": 1}
+    assert len(load_jsonl(root / "decisions.jsonl")) == 3
+    assert len(load_jsonl(root / "candidate_units.jsonl")) == 2
+    assert "a" * 3000 in (root / "units.jsonl").read_text()
+    assert {assignment.d for assignment in routing.assignments} == {"r", "w", "n"}
+
+    cached_runner = AttentionRunner()
+    cached = await V3Phases(runtime, cached_runner).route(  # type: ignore[arg-type]
+        run, run / "interests.md"
+    )
+    assert cached_runner.calls == []
+    assert cached == routing

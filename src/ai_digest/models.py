@@ -128,6 +128,80 @@ class ObservationUnit(BaseModel):
     projection: dict[str, Any] = Field(default_factory=dict)
 
 
+class Phase2UnitDocument(BaseModel):
+    """Lossless Phase 2 view over normalized Phase 1 observations."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    unit_id: str
+    entity_key: str
+    item_ids: list[str]
+    sources: list[str]
+    occurred_at: datetime | None = None
+    observations: list[SourceItem] = Field(min_length=1)
+
+
+class Phase2Decision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    unit_id: str
+    route: Literal["research", "watch", "archive"]
+    cluster_hint: str = ""
+    trigger_zh: str = ""
+    decided_batch: int = Field(ge=1)
+    last_revised_batch: int = Field(ge=1)
+
+    @field_validator("cluster_hint", "trigger_zh")
+    @classmethod
+    def decision_text_is_trimmed(cls, value: str) -> str:
+        return value.strip()
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.route in {"research", "watch"} and (
+            not self.cluster_hint or not self.trigger_zh
+        ):
+            raise ValueError("research/watch decisions require cluster_hint and trigger_zh")
+
+
+class Phase2DecisionRevision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    unit_id: str
+    new_route: Literal["research", "watch", "archive"]
+    cluster_hint: str = ""
+    trigger_zh: str = ""
+    reason_zh: str
+
+    @field_validator("cluster_hint", "trigger_zh", "reason_zh")
+    @classmethod
+    def revision_text_is_trimmed(cls, value: str) -> str:
+        return value.strip()
+
+    def model_post_init(self, __context: Any) -> None:
+        if not self.reason_zh:
+            raise ValueError("decision revision requires reason_zh")
+        if self.new_route in {"research", "watch"} and (
+            not self.cluster_hint or not self.trigger_zh
+        ):
+            raise ValueError("research/watch revisions require cluster_hint and trigger_zh")
+
+
+class Phase2WatchSignal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    signal_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,79}$")
+    title_zh: str
+    note_zh: str
+    unit_ids: list[str] = Field(min_length=1)
+
+    @field_validator("title_zh", "note_zh")
+    @classmethod
+    def watch_text_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("watch signal text must not be blank")
+        return value.strip()
+
+
 class Phase2Annotation(BaseModel):
     """Read-only compatibility model for V3 routing artifacts."""
 

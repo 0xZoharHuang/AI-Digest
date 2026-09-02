@@ -24,6 +24,11 @@ from .models import (
     RoutingOutput,
     SourceItem,
 )
+from .phase2_attention import (
+    PHASE2_ATTENTION_CONTRACT,
+    AttentionPhase2,
+    load_attention_routing,
+)
 from .store import load_jsonl
 from .utils import atomic_write_json, atomic_write_jsonl, atomic_write_text
 
@@ -133,6 +138,34 @@ class V3Phases:
         self.runner = runner
 
     async def route(
+        self, run_dir: Path, interests_path: Path | None = None
+    ) -> RoutingOutput:
+        phase1 = run_dir / "01_phase1"
+        if not (phase1 / "PHASE1_COMPLETE").exists():
+            raise RuntimeError("Phase 1 is not sealed")
+        root = run_dir / "02_routing"
+        root.mkdir(parents=True, exist_ok=True)
+        manifest = _read_json(root / "phase2_manifest.json", {})
+        if (
+            (root / "PHASE2_COMPLETE").exists()
+            and manifest.get("contract") == PHASE2_ATTENTION_CONTRACT
+        ):
+            return load_attention_routing(root)
+        if (root / "PHASE2_COMPLETE").exists():
+            return await self._route_unit_packages_v1(run_dir, interests_path)
+        if (root / "annotations.jsonl").exists() or (root / "batches").is_dir():
+            archive_legacy_phase2_partial(root)
+        items = load_phase1_items(phase1)
+        units = build_observation_units(items)
+        interests = load_interests(interests_path)
+        return await AttentionPhase2(self.runtime, self.runner).run(
+            run_dir,
+            items,
+            units,
+            interests,
+        )
+
+    async def _route_unit_packages_v1(
         self, run_dir: Path, interests_path: Path | None = None
     ) -> RoutingOutput:
         phase1 = run_dir / "01_phase1"

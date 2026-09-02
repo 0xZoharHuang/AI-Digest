@@ -324,7 +324,9 @@ async def test_assignment_only_batches_resume_legacy_summary_checkpoints(
             return CodexResult(exit_code=0, thread_id=thread_id)
 
     runner = MixedContractRunner()
-    await V3Phases(runtime, runner).route(run, interests_path=interests_path)  # type: ignore[arg-type]
+    await V3Phases(runtime, runner)._route_unit_packages_v1(  # type: ignore[arg-type]
+        run, interests_path=interests_path
+    )
     assert runner.calls == [
         ("batch-0002", thread_id),
         ("finalize", thread_id),
@@ -637,7 +639,9 @@ async def test_phase2_uses_one_daily_resumed_thread_and_writes_new_contract(
 
     runner = FakeRunner()
     runtime = RuntimeConfig(runtime_root=tmp_path, shared_runtime_root=tmp_path / "queue")
-    routing = await V3Phases(runtime, runner).route(run)  # type: ignore[arg-type]
+    routing = await V3Phases(runtime, runner)._route_unit_packages_v1(  # type: ignore[arg-type]
+        run
+    )
     assert runner.calls == [None, "thread-one", "thread-one", "thread-one"]
     assert [bundle.bundle_id for bundle in routing.bundles] == ["robotics"]
     root = run / "02_routing"
@@ -648,7 +652,7 @@ async def test_phase2_uses_one_daily_resumed_thread_and_writes_new_contract(
     assert manifest["thread_id"] == "thread-one"
 
     runner.calls.clear()
-    await V3Phases(runtime, runner).route(run)  # type: ignore[arg-type]
+    await V3Phases(runtime, runner)._route_unit_packages_v1(run)  # type: ignore[arg-type]
     assert runner.calls == []
 
 
@@ -699,7 +703,7 @@ async def test_phase2_repairs_incomplete_working_map_on_same_thread(tmp_path):
     await V3Phases(
         RuntimeConfig(runtime_root=tmp_path, shared_runtime_root=tmp_path / "queue"),
         runner,  # type: ignore[arg-type]
-    ).route(run)
+    )._route_unit_packages_v1(run)
     assert runner.calls == [
         ("batch-0001", None),
         ("map-repair", "map-thread"),
@@ -783,7 +787,7 @@ async def test_phase2_repairs_only_missing_rows_in_bounded_same_thread_parts(tmp
     await V3Phases(
         RuntimeConfig(runtime_root=tmp_path, shared_runtime_root=tmp_path / "queue"),
         runner,  # type: ignore[arg-type]
-    ).route(run)
+    )._route_unit_packages_v1(run)
     assert runner.calls == [
         ("batch-0001", None),
         ("part-0001", "repair-thread"),
@@ -865,7 +869,7 @@ async def test_phase2_focused_completion_finishes_partial_repair_part(tmp_path):
     await V3Phases(
         RuntimeConfig(runtime_root=tmp_path, shared_runtime_root=tmp_path / "queue"),
         runner,  # type: ignore[arg-type]
-    ).route(run)
+    )._route_unit_packages_v1(run)
     assert runner.calls == [
         ("batch-0001", None),
         ("part-0001", "focused-repair-thread"),
@@ -935,7 +939,7 @@ async def test_phase2_missing_session_abandons_generation_and_starts_from_batch_
     await V3Phases(
         RuntimeConfig(runtime_root=tmp_path, shared_runtime_root=tmp_path / "queue"),
         runner,  # type: ignore[arg-type]
-    ).route(run)
+    )._route_unit_packages_v1(run)
     assert runner.calls == [None, "fresh-thread"]
     assert (run / "02_routing" / "unit-packages-v1-abandoned-001").is_dir()
 
