@@ -19,6 +19,7 @@ from ai_digest.models import (
 )
 from ai_digest.phase2_attention import (
     build_phase2_unit_documents,
+    phase2_attention_agents_md,
     stratified_unit_documents,
     validate_attention_artifacts,
     validate_attention_selection,
@@ -96,6 +97,15 @@ def test_phase2_documents_are_interleaved_across_sources():
         "x_list",
     ]
 
+
+def test_attention_prompt_makes_archive_a_positive_source_aware_judgment():
+    prompt = phase2_attention_agents_md()
+    assert "首要损失是假阴性" in prompt
+    assert "不能是未入候选集时的默认" in prompt
+    assert "不确定但直接相关时选择 Watch" in prompt
+    assert "全部 observations" in prompt
+    assert "GitHub" in prompt and "Hacker News" in prompt and "X：" in prompt
+    assert "脚本可用于枚举、搜索、连接和检查覆盖" in prompt
 
 def test_attention_selection_has_no_package_count_or_size_policy():
     decisions: dict[str, Phase2Decision] = {}
