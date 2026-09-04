@@ -26,6 +26,7 @@ from .models import (
 )
 from .phase2_attention import (
     PHASE2_ATTENTION_CONTRACT,
+    PHASE2_ATTENTION_LEGACY_CONTRACT,
     AttentionPhase2,
     load_attention_routing,
 )
@@ -148,7 +149,8 @@ class V3Phases:
         manifest = _read_json(root / "phase2_manifest.json", {})
         if (
             (root / "PHASE2_COMPLETE").exists()
-            and manifest.get("contract") == PHASE2_ATTENTION_CONTRACT
+            and manifest.get("contract")
+            in {PHASE2_ATTENTION_CONTRACT, PHASE2_ATTENTION_LEGACY_CONTRACT}
         ):
             return load_attention_routing(root)
         if (root / "PHASE2_COMPLETE").exists():

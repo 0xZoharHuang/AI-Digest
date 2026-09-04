@@ -11,10 +11,9 @@ from ai_digest.codex_runner import CodexResult, RetryableCodexError
 from ai_digest.config import RuntimeConfig
 from ai_digest.models import (
     ObservationUnit,
-    Phase2Decision,
+    Phase2ResearchObject,
+    Phase2RoutingDecision,
     Phase2UnitDocument,
-    Phase2WatchSignal,
-    ResearchPackage,
     SourceItem,
 )
 from ai_digest.phase2_attention import (
@@ -106,46 +105,36 @@ def test_attention_prompt_makes_archive_a_positive_source_aware_judgment():
     assert "全部 observations" in prompt
     assert "GitHub" in prompt and "Hacker News" in prompt and "X：" in prompt
     assert "脚本可用于枚举、搜索、连接和检查覆盖" in prompt
+    assert "Phase 2 不写 scope、研究问题" in prompt
 
-def test_attention_selection_has_no_package_count_or_size_policy():
-    decisions: dict[str, Phase2Decision] = {}
-    packages = []
+
+def test_attention_selection_has_no_object_count_or_size_policy():
+    decisions: dict[str, Phase2RoutingDecision] = {}
+    objects = []
     for index in range(20):
         unit_id = f"u_{index:020x}"
-        decisions[unit_id] = Phase2Decision(
+        object_id = f"subject-{index}"
+        decisions[unit_id] = Phase2RoutingDecision(
             unit_id=unit_id,
             route="research",
-            cluster_hint=f"subject-{index}",
-            trigger_zh="值得独立研究",
+            object_id=object_id,
+            reason_zh="值得继续查看",
         )
-        packages.append(
-            ResearchPackage(
-                package_id=f"subject-{index}",
+        objects.append(
+            Phase2ResearchObject(
+                object_id=object_id,
                 label_zh=f"对象 {index}",
-                scope_note_zh="独立低层研究对象。",
                 unit_ids=[unit_id],
             )
         )
     watch_id = "u_ffffffffffffffffffff"
-    decisions[watch_id] = Phase2Decision(
+    decisions[watch_id] = Phase2RoutingDecision(
         unit_id=watch_id,
         route="watch",
-        cluster_hint="early-signal",
-        trigger_zh="证据仍不足",
+        reason_zh="证据仍不足",
     )
 
-    validate_attention_selection(
-        decisions,
-        packages,
-        [
-            Phase2WatchSignal(
-                signal_id="early-signal",
-                title_zh="早期信号",
-                note_zh="保留观察。",
-                unit_ids=[watch_id],
-            )
-        ],
-    )
+    validate_attention_selection(decisions, objects)
 
 
 def _write_final_outputs(root: Path, *, partial: bool = False) -> None:
@@ -169,22 +158,20 @@ def _write_final_outputs(root: Path, *, partial: bool = False) -> None:
             {
                 "unit_id": document.unit_id,
                 "route": route,
-                "cluster_hint": "candidate" if route != "archive" else "",
-                "trigger_zh": "存在具体信号" if route != "archive" else "",
+                "object_id": "candidate" if route == "research" else "",
+                "reason_zh": "存在具体信号" if route != "archive" else "",
             }
         )
     with (root / "decisions.jsonl").open("w", encoding="utf-8") as handle:
         for row in decision_rows:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     research = [row["unit_id"] for row in decision_rows if row["route"] == "research"]
-    watch = [row["unit_id"] for row in decision_rows if row["route"] == "watch"]
-    (root / "packages.json").write_text(
+    (root / "objects.json").write_text(
         json.dumps(
             [
                 {
-                    "package_id": "candidate",
+                    "object_id": "candidate",
                     "label_zh": "独立候选",
-                    "scope_note_zh": "同一具体研究对象。",
                     "unit_ids": research,
                 }
             ]
@@ -193,23 +180,6 @@ def _write_final_outputs(root: Path, *, partial: bool = False) -> None:
             ensure_ascii=False,
         )
     )
-    (root / "watch.jsonl").write_text(
-        (
-            json.dumps(
-                {
-                    "signal_id": "candidate-watch",
-                    "title_zh": "候选观察",
-                    "note_zh": "证据仍不足。",
-                    "unit_ids": watch,
-                },
-                ensure_ascii=False,
-            )
-            + "\n"
-        )
-        if watch
-        else ""
-    )
-    (root / "editor_state.md").write_text("# Final editor state\n")
 
 
 class LongEditorRunner:
@@ -274,7 +244,7 @@ async def test_attention_editor_uses_one_long_task_and_resumes_same_thread(
             run, run / "interests.md"
         )
     assert first_runner.calls == [
-        ("attention-editor-v1", None, True, "workspace-write")
+        ("attention-editor-v2", None, True, "workspace-write")
     ]
 
     second_runner = LongEditorRunner()
@@ -282,7 +252,7 @@ async def test_attention_editor_uses_one_long_task_and_resumes_same_thread(
         run, run / "interests.md"
     )
     assert second_runner.calls == [
-        ("attention-editor-v1", "attention-thread", True, "workspace-write")
+        ("attention-editor-v2", "attention-thread", True, "workspace-write")
     ]
     root = run / "02_routing"
     validate_attention_artifacts(root)
@@ -290,8 +260,9 @@ async def test_attention_editor_uses_one_long_task_and_resumes_same_thread(
     assert manifest["execution_mode"] == "single_long_editor_task"
     assert manifest["route_counts"] == {"archive": 1, "research": 1, "watch": 1}
     assert manifest["batch_count"] == 3
+    assert manifest["object_count"] == 1
     assert len(load_jsonl(root / "decisions.jsonl")) == 3
-    assert len(load_jsonl(root / "candidate_units.jsonl")) == 2
+    assert json.loads((root / "objects.json").read_text())[0]["object_id"] == "candidate"
     assert "a" * 3000 in (root / "units.jsonl").read_text()
     assert {assignment.d for assignment in routing.assignments} == {"r", "w", "n"}
 

@@ -142,6 +142,8 @@ class Phase2UnitDocument(BaseModel):
 
 
 class Phase2Decision(BaseModel):
+    """Read-only compatibility model for attention_editor_v1."""
+
     model_config = ConfigDict(extra="forbid")
 
     unit_id: str
@@ -161,7 +163,50 @@ class Phase2Decision(BaseModel):
             raise ValueError("research/watch decisions require cluster_hint and trigger_zh")
 
 
+class Phase2RoutingDecision(BaseModel):
+    """Minimal decision contract produced by attention_editor_v2."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    unit_id: str
+    route: Literal["research", "watch", "archive"]
+    object_id: str = ""
+    reason_zh: str = ""
+
+    @field_validator("object_id", "reason_zh")
+    @classmethod
+    def routing_text_is_trimmed(cls, value: str) -> str:
+        return value.strip()
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.route == "research" and (not self.object_id or not self.reason_zh):
+            raise ValueError("research decisions require object_id and reason_zh")
+        if self.route == "watch" and (self.object_id or not self.reason_zh):
+            raise ValueError("watch decisions require reason_zh and no object_id")
+        if self.route == "archive" and (self.object_id or self.reason_zh):
+            raise ValueError("archive decisions must not include editorial text")
+
+
+class Phase2ResearchObject(BaseModel):
+    """Same-object grouping only; Phase 3 owns the research scope."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    object_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,79}$")
+    label_zh: str
+    unit_ids: list[str] = Field(min_length=1)
+
+    @field_validator("label_zh")
+    @classmethod
+    def object_label_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("object label must not be blank")
+        return value.strip()
+
+
 class Phase2WatchSignal(BaseModel):
+    """Read-only compatibility model for attention_editor_v1."""
+
     model_config = ConfigDict(extra="forbid")
 
     signal_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,79}$")
