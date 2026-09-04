@@ -23,7 +23,7 @@ from .models import (
 from .store import load_jsonl
 from .utils import atomic_write_json, atomic_write_jsonl, atomic_write_text
 
-PHASE2_ATTENTION_PROMPT_VERSION = "2026-09-04.6"
+PHASE2_ATTENTION_PROMPT_VERSION = "2026-09-02.5"
 PHASE2_ATTENTION_CONTRACT = "attention_editor_v1"
 PHASE2_ATTENTION_BATCH_MAX_UNITS = 160
 PHASE2_ATTENTION_BATCH_MAX_BYTES = 256 * 1024
@@ -531,12 +531,6 @@ interests.md 描述读者但不是硬过滤器。强新颖性、跨来源聚集�
   直接程度；旧论文重新进入观察不等于今天新发表。
 - Media：是否为实验室/公司一手材料、正文完整度、具体 capability/product/safety 变化和披露口径。
 
-在有足够 normalized 内容可供判断时，`new + 直接命中读者兴趣 + 具体方法/实验/真实系统`
-的论文不能 Archive，除非它是已入选同一对象的可证明重复；正常应为 Research。对直接相关的
-replace/cross 论文，如果 normalized 内容不足以确定修订价值，保留为 Watch 交由后续核查，
-不要仅因它不是 new 而 Archive。这不是要求机械收录所有论文；关键是不能把时间标签
-替代对方法、证据和直接相关性的语义判断。
-
 脚本可用于枚举、搜索、连接和检查覆盖，但禁止用固定关键词或分数选出白名单后把其余 unit 自动
 Archive。必须读取每个 unit 的全部 observations，而不是只读 observations[0]。完成前复核每个活跃来源
 最容易产生假阴性的切片：一手/官方主体、高互动或高增长、新 release/entered lane、直接兴趣命中、
@@ -545,11 +539,6 @@ Archive。必须读取每个 unit 的全部 observations，而不是只读 obser
 一个 package 是可由独立 Phase 3 Lead 完成的低层 research work order，默认对应一篇论文、一个项目、
 一次发布、一组具体声明或一个窄问题。只有多个来源指向同一对象，或不比较就无法回答同一窄问题时才
 合并。不要因同属宽领域、同一天被观察到或想少建页面而强行联系。今天首次观察不等于对象今天发布。
-形成最终 package 前应按论文 ID、canonical URL、产品/项目名和一手来源检查对象同一性：
-同一发布不要拆成重复 work orders，也不要只收评论/回复而 Archive 更强的一手原帖。
-
-`scope_note_zh` 必须真正为 Phase 3 定义这个对象的研究任务：写出 2–4 个对象专属的核查问题、
-关键比较或证据边界。不得对所有 package 套用“核查机制、证据、限制”之类只替换标题的通用模板。
 
 你可自主决定阅读顺序、临时文件、是否派发子 Agent 以及何时修正判断；根 Editor 对最终文件负责。
 editor_state.md 应简短记录各来源使用了什么语义边界、复核了哪些高风险切片、发现了什么潜在盲点；
@@ -567,18 +556,14 @@ def phase2_attention_task_md() -> str:
 1. `decisions.jsonl`：每个 unit 恰好一行，字段只能是 `unit_id`、`route`、`cluster_hint`、`trigger_zh`。
    research/watch 的后两项必须是准确中文；archive 留空。
 2. `packages.json`：JSON 数组。每项包含 package_id、label_zh、scope_note_zh、unit_ids；全部 research
-   units 必须且只能出现一次，不得包含 watch/archive。scope_note_zh 必须写这个对象专属的
-   核查问题、关键比较和证据边界，不能是批量生成的通用模板。
+   units 必须且只能出现一次，不得包含 watch/archive。
 3. `watch.jsonl`：每个信号一行，包含 signal_id、title_zh、note_zh、unit_ids；全部 watch units 必须且
    只能出现一次。
 4. `editor_state.md`：保留最终选择边界、重要未决点和供后续恢复理解的简短状态。
 
 不要输出 decision_history、逐条摘要、重要性分数或宽泛主题分类。完成前自行检查 manifest 中全部 unit
 均有且仅有一个最终 route，package/watch 覆盖与 route 一致，并确认每个活跃 source lane 的一手、高
-互动/增长、直接兴趣、跨来源聚集和随机反例都经过语义复核。结束前至少分别反查 20 条
-Archive 中的直接相关 new paper、高增长/release/entered-lane GitHub、高关注 Launch/Show/official HN、
-一手/official X；如果发现一个像“直接相关且有具体方法或实验”这样的高置信漏项，必须重审同来源
-同风险切片，不是只修那一条。应用只在任务结束后做结构验收；若有错误
+互动/增长、直接兴趣、跨来源聚集和随机反例都经过语义复核。应用只在任务结束后做结构验收；若有错误
 会用同一 thread 返回具体错误供你修复。
 """
 
