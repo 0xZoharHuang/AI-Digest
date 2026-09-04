@@ -17,6 +17,7 @@ from ai_digest.models import (
     SourceItem,
 )
 from ai_digest.phase2_attention import (
+    attention_source_lane,
     build_phase2_unit_documents,
     phase2_attention_agents_md,
     stratified_unit_documents,
@@ -97,6 +98,13 @@ def test_phase2_documents_are_interleaved_across_sources():
     ]
 
 
+def test_phase2_source_lanes_are_broad_and_mechanical():
+    assert attention_source_lane(_document("u_00000000000000000001", "arxiv")) == "papers"
+    assert attention_source_lane(_document("u_00000000000000000002", "huggingface")) == "papers"
+    assert attention_source_lane(_document("u_00000000000000000003", "github")) == "github"
+    assert attention_source_lane(_document("u_00000000000000000004", "x_list")) == "social_media"
+
+
 def test_attention_prompt_makes_archive_a_positive_source_aware_judgment():
     prompt = phase2_attention_agents_md()
     assert "首要损失是假阴性" in prompt
@@ -104,8 +112,10 @@ def test_attention_prompt_makes_archive_a_positive_source_aware_judgment():
     assert "不确定但直接相关时选择 Watch" in prompt
     assert "全部 observations" in prompt
     assert "GitHub" in prompt and "Hacker News" in prompt and "X：" in prompt
-    assert "脚本可用于枚举、搜索、连接和检查覆盖" in prompt
+    assert "脚本可用于枚举、搜索、连接、机械提取字段和验证覆盖" in prompt
     assert "Phase 2 不写 scope、研究问题" in prompt
+    assert "三个一级子 Agent" in prompt
+    assert "不得根据 regex" in prompt
 
 
 def test_attention_selection_has_no_object_count_or_size_policy():
@@ -264,6 +274,9 @@ async def test_attention_editor_uses_one_long_task_and_resumes_same_thread(
     assert len(load_jsonl(root / "decisions.jsonl")) == 3
     assert json.loads((root / "objects.json").read_text())[0]["object_id"] == "candidate"
     assert "a" * 3000 in (root / "units.jsonl").read_text()
+    assert (root / "attention-editor-v2" / "lanes" / "papers").is_dir()
+    assert (root / "attention-editor-v2" / "lanes" / "github").is_dir()
+    assert (root / "attention-editor-v2" / "lanes" / "social_media").is_dir()
     assert {assignment.d for assignment in routing.assignments} == {"r", "w", "n"}
 
     cached_runner = LongEditorRunner()
