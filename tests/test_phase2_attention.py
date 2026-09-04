@@ -103,9 +103,13 @@ def test_attention_prompt_makes_archive_a_positive_source_aware_judgment():
     assert "首要损失是假阴性" in prompt
     assert "不能是未入候选集时的默认" in prompt
     assert "不确定但直接相关时选择 Watch" in prompt
+    assert "new + 直接命中读者兴趣 + 具体方法/实验/真实系统" in prompt
+    assert "replace/cross" in prompt and "保留为 Watch" in prompt
     assert "全部 observations" in prompt
     assert "GitHub" in prompt and "Hacker News" in prompt and "X：" in prompt
     assert "脚本可用于枚举、搜索、连接和检查覆盖" in prompt
+    assert "2–4 个对象专属的核查问题" in prompt
+    assert "不得对所有 package 套用" in prompt
 
 def test_attention_selection_has_no_package_count_or_size_policy():
     decisions: dict[str, Phase2Decision] = {}
