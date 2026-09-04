@@ -338,16 +338,19 @@ def validate_editor_outputs(
         path = root / name
         if path.is_symlink() or not path.is_file():
             raise RuntimeError(f"missing final Phase 2 artifact: {name}")
-    decision_rows = load_jsonl(root / "decisions.jsonl")
-    decision_values = [
-        Phase2RoutingDecision.model_validate(row) for row in decision_rows
-    ]
+    try:
+        decision_rows = load_jsonl(root / "decisions.jsonl")
+        decision_values = [
+            Phase2RoutingDecision.model_validate(row) for row in decision_rows
+        ]
+        objects_raw = json.loads((root / "objects.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError) as error:
+        raise RuntimeError(f"invalid final Phase 2 artifact syntax: {error}") from error
     decision_ids = [value.unit_id for value in decision_values]
     if len(decision_ids) != len(set(decision_ids)):
         raise RuntimeError("decisions.jsonl contains duplicate unit ids")
     decisions = {value.unit_id: value for value in decision_values}
     validate_decision_coverage(documents, decisions)
-    objects_raw = json.loads((root / "objects.json").read_text(encoding="utf-8"))
     if not isinstance(objects_raw, list):
         raise RuntimeError("objects.json must be an array")
     objects = [Phase2ResearchObject.model_validate(value) for value in objects_raw]

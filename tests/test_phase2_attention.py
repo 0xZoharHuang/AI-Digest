@@ -298,3 +298,12 @@ def test_editor_output_validator_rejects_incomplete_decisions(tmp_path):
     (root / "decisions.jsonl").write_text("")
     with pytest.raises(RuntimeError, match="coverage mismatch"):
         validate_editor_outputs(root, documents)
+
+
+def test_editor_output_validator_normalizes_invalid_jsonl(tmp_path):
+    documents = [_document("u_00000000000000000001", "arxiv")]
+    (tmp_path / "decisions.jsonl").write_text('{\n  "unit_id": "broken"\n}\n')
+    (tmp_path / "objects.json").write_text("[]")
+
+    with pytest.raises(RuntimeError, match="invalid final Phase 2 artifact syntax"):
+        validate_editor_outputs(tmp_path, documents)
