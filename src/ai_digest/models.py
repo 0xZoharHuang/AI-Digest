@@ -322,6 +322,32 @@ class ResearchPackage(BaseModel):
         return value.strip()
 
 
+class Phase3Admission(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    daily_agent_limit: int = Field(ge=1)
+    concurrency: int = Field(ge=1)
+    available_object_ids: list[str]
+    selected_object_ids: list[str]
+    not_scheduled_object_ids: list[str]
+
+    def model_post_init(self, __context: Any) -> None:
+        available = self.available_object_ids
+        selected = self.selected_object_ids
+        not_scheduled = self.not_scheduled_object_ids
+        if (
+            len(available) != len(set(available))
+            or len(selected) != len(set(selected))
+            or len(not_scheduled) != len(set(not_scheduled))
+        ):
+            raise ValueError("Phase 3 admission contains duplicate object ids")
+        if selected != available[: self.daily_agent_limit]:
+            raise ValueError("Phase 3 admission must select the ordered prefix")
+        if not_scheduled != available[len(selected) :]:
+            raise ValueError("Phase 3 admission does not preserve unscheduled objects")
+
+
 class Phase2PackagePlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

@@ -7,6 +7,12 @@ versioning for public releases.
 
 ### Changed
 
+- Decouple Phase 2 semantic Research/Watch/Archive decisions from Phase 3 execution capacity. Phase 2
+  retains and priority-orders every Research object; a separate configurable admission step currently
+  runs at most 15 top-level Phase 3 leads without relabeling the remainder.
+- Make the Feishu self-DM an independent operational channel for terminal, partial, and retrying
+  states, with persistent idempotent receipts and recovery retries even when Wiki content cannot be
+  published.
 - Replace the one-context/source-lane Phase 2 path with a high-recall bounded full-record pass, a
   smaller precision pass over retained units, and one higher-capability Editor that owns the
   daily Phase 3 queue, Archive audit and concrete object consolidation.

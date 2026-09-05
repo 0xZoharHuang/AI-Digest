@@ -105,18 +105,20 @@ rebuildable files rather than an opaque workflow state machine.
 
 After both passes are valid, one higher-capability Editor receives Research object candidates with
 their full normalized units and a mechanical `source_signals` view of event/release/growth/engagement
-fields. It decides which objects warrant a full Phase 3 job within the next daily cycle, reviews a
+fields. It decides which objects independently merit Research without seeing downstream cost,
+concurrency, model, or daily capacity; it reviews a
 deterministic per-source Archive sample plus exact-identifier neighbors, and resolves same-object
 evidence across batches and sources. Exact identifiers and canonical URLs are identity evidence;
 lexical similarity, source, time, stars or engagement may select records for inspection but never
-decide a route. Objects not selected for today's Phase 3 remain Watch rather than being discarded.
+decide a route. Every semantic Research object remains Research regardless of its execution position.
 
 The formal output remains deliberately small:
 
 - `decisions.jsonl`: one final `research/watch/archive` decision per unit. Research has a concrete
   object and one-sentence reason; Watch has one sentence; Archive carries no editorial rewrite.
-- `objects.json`: Research objects with all same-object Research units and any explicitly linked
-  Watch support. Each object must contain at least one Research unit.
+- `objects.json`: every Research object, ordered by capacity-independent expected research value,
+  with all same-object Research units and any explicitly linked Watch support. Each object must
+  contain at least one Research unit.
 
 Phase 2 does not write research scope, questions, evidence plans, scores, per-item summaries or
 report structure. Phase 3 owns those decisions. The application validates exact decision coverage,
@@ -124,8 +126,13 @@ object membership, hashes and the final Editor session; historical Phase 2 contr
 
 ## Phase 3 contract
 
-Each selected Phase 2 object is mechanically adapted to the formal Phase 3 package interface; this
-adapter adds no scope or editorial decision. Each package lead receives `AGENTS.md`,
+Phase 3 admission reads the ordered Phase 2 objects and currently selects at most 15 top-level leads
+with concurrency 3. It writes `phase3_admission.json` containing the full ordered list, selected
+prefix, and unscheduled suffix. Unscheduled objects keep their Phase 2 Research route and are not
+automatically carried into later days. Changing the limit or model never changes Phase 2 artifacts.
+
+Each admitted object is mechanically adapted to the formal Phase 3 package interface; this adapter
+adds no scope or editorial decision. Each package lead receives `AGENTS.md`,
 `RESEARCH_METHOD.md`, a readable `PACKAGE.md`, bounded catalog
 shards, per-unit source files, an on-demand daily catalog, bootstrap index and progress checkpoint. It may use up to four
 non-recursive subagents for genuinely independent research directions.
@@ -171,6 +178,11 @@ back-navigation. Only stale content nodes recorded in the same run's publish man
 The idempotency artifact hash includes research quality, `not_published` and Phase 4 quality so a
 quality-state change cannot reuse a stale notification key. Isolated preflight writes a local
 `05_publish/preflight_receipt.json` and makes no Lark call.
+
+Operational notification is independent from content publication. A valid run publishes the Brief
+and sends its result DM; a retryable or terminal failure sends a Feishu status DM even when the Wiki
+tree is not publishable. Every notification has a state-specific idempotency key and durable receipt;
+failed sends are retried by the normal recovery tick.
 
 Every Codex call denies the user's Codex data, SSH directory and login Keychains while granting only
 the current phase workspace. Installation performs a consistent SQLite backup, idempotent schema

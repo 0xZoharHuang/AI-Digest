@@ -35,8 +35,8 @@ from .utils import atomic_write_json, atomic_write_jsonl, atomic_write_text
 
 PHASE2_BOUNDED_CONTRACT = "attention_editor_v3"
 PHASE2_BOUNDED_PROMPT_VERSION = "2026-09-05.2"
-PHASE2_ADJUDICATION_PROMPT_VERSION = "2026-09-05.2"
-PHASE2_FINALIZATION_PROMPT_VERSION = "2026-09-05.3"
+PHASE2_ADJUDICATION_PROMPT_VERSION = "2026-09-05.3"
+PHASE2_FINALIZATION_PROMPT_VERSION = "2026-09-05.4"
 PHASE2_BOUNDED_MAX_UNITS = 96
 PHASE2_BOUNDED_MAX_BYTES = 256 * 1024
 PHASE2_ADJUDICATION_MAX_UNITS = 64
@@ -356,6 +356,7 @@ class BoundedAttentionPhase2:
             "audit_count": len(audit_documents),
             "route_counts": dict(Counter(value.route for value in decisions.values())),
             "object_count": len(objects),
+            "object_order": "semantic_priority_desc",
             "hashes": {
                 name: file_sha256(root / name)
                 for name in ("units.jsonl", "decisions.jsonl", "objects.json")
@@ -942,10 +943,11 @@ def adjudication_batch_prompt(number: int, total: int) -> str:
     relative = f"adjudication/batch-{number:04d}"
     return f"""你是 Phase 2 的精确裁决 Reader。第一遍高召回阅读已把本批记录保留下来；现在读取
 `{relative}/units.jsonl` 中每个 unit 的全部 normalized observations，为每个 unit 恰好给出一次正式候选
-判断。你的目标是保护 Phase 3 的研究容量，同时把不确定但直接相关的材料留在 Watch：
+判断。你的目标是准确区分语义价值，同时把不确定但直接相关的材料留在 Watch。完全不要考虑 Phase 3
+当天有多少 worker、模型价格、并发、时间或用量预算：
 
-- research：今天值得为它启动一个独立 Phase 3 调查的具体对象、发布、能力变化、重要方法、基础设施、
-  安全事件或商业事实。必须有明确对象和足以解释独立调查成本的一句理由。
+- research：若研究资源充足，值得独立核查的具体对象、发布、能力变化、重要方法、基础设施、安全事件
+  或商业事实。必须有明确对象和足以说明其独立信息价值的一句理由。
 - watch：对象具体并与读者直接相关，但主要是单篇窄增量、重复支持、早期项目、证据薄或当前影响不明。
   尽量填写可用于跨来源匹配的 object_key/object_label_zh；不确定时 Watch，而不是 Research 或 Archive。
 - archive：已经正向确认无关、纯重复、无具体内容，或即使真实也不值得继续理解。
@@ -994,25 +996,24 @@ def bounded_finalize_prompt(
 `archive_audit.jsonl` 是 {audit_count} 个按来源随机及机械关注信号抽出的 Archive 复核样本。
 
 先复核 Archive 样本，若发现假阴性，回到 `units.jsonl` 查同对象邻居并修正。随后逐项阅读
-`research_object_candidates.jsonl`，在对象级判断它是否值得今天启动一个独立 Phase 3 工作单：
+`research_object_candidates.jsonl`，在对象级校准其是否具有独立研究价值。Phase 2 必须输出全部语义上
+成立的 Research，完全不得考虑 Phase 3 当天的 agent 数量、并发、模型价格、时间或用量预算：
 
 - 保持 Research：对象与读者核心范围直接相关，且存在重要发布/能力变化、安全或商业事件、异常采用、
   跨来源聚集，或足以改变当前理解的关键方法与实证。
 - 降为 Watch：对象具体且值得保留，但主要是单篇窄增量、一般性方法改进、重复支持、早期低采用项目，
-  或没有足够当前意义来支付一次独立 Phase 3 调查成本。
+  或本身尚没有足够独立信息价值；不能因为当天执行不过来而降级。
 - 只有已确认无关、无具体内容或错误候选才降为 Archive。
 
-Research 没有固定数量配额；但“论文/仓库本身有研究价值”不等于“今天应启动独立 Phase 3”。每个保留的
-Research 对象都必须能说明为什么今天值得占用一个研究工作单。对 Research 对象完成跨来源对象解析：
+Research 没有数量配额。每个保留的 Research 对象都必须能说明其独立研究价值。对全部 Research 对象
+完成跨来源对象解析：
 exact identifier/canonical URL/repo/conversation 可作为确定线索，名称、实体、时间和内容相似只能作为候选，
 必须语义确认；不要因同属宽泛主题而合并，也不要把每条默认做 singleton。
 
-生产中每个 Research 对象都会启动一次带联网证据核查、主报告和可能子报告的完整 Phase 3 Lead；Research
-集合必须能由 3 路并发研究 worker 在下一个日周期前完成。这个约束不是固定数量配额，而是实际交付定义。
-若一个对象虽有学术或工程兴趣，但今天不深研不会实质损害日报价值，应放 Watch。一般单来源、单篇的窄
-方法增量或一般项目更新默认不具备独立工作单价值，除非它直接改变核心 Agent/Physical AI 能力、安全、
-基础设施或商业格局，具有异常采用信号，或包含足以改变当前理解的重要实证。Research 与 Watch 难分时
-选择 Watch，因为 Watch 会完整保留信号供后续观察。
+一般单来源、单篇的窄方法增量或一般项目更新默认不具备独立研究价值，除非它直接改变核心 Agent、
+Physical AI、安全、基础设施或商业格局，具有异常采用信号，或包含足以改变当前理解的重要实证。
+Research 与 Watch 难分时选择 Watch，因为 Watch 会完整保留信号供后续观察；这个边界只能依据内容，
+不能依据下游容量。
 
 逐对象判断时必须同时查看 source_signals 和完整 units，按来源自己的语境理解 event、release、stars/delta、
 HN points/comments、官方作者与跨来源重复。source_signals 只是机械可见性视图，任何单个字段或阈值都不能
@@ -1028,7 +1029,8 @@ HN points/comments、官方作者与跨来源重复。source_signals 只是机�
 1. `decisions.jsonl`：每个 unit 恰好一行，仅含 unit_id、route、object_id、reason_zh。Research 必须指向
    objects.json 且理由一句；Watch 写一句理由，在确属某个 Research 对象的支持材料时可填写该 object_id，
    否则留空；Archive 的 object_id/reason_zh 为空。
-2. `objects.json`：JSON 数组，仅含 object_id、label_zh、unit_ids。每个 Research unit 恰好属于一个具体
+2. `objects.json`：JSON 数组，仅含 object_id、label_zh、unit_ids。包含全部 Research 对象，并按“若资源
+   充足时对目标读者的预期研究价值”从高到低排列；排序不改变任何 route。每个 Research unit 恰好属于一个具体
    对象；带 object_id 的 Watch 支持材料也必须列入同一对象。每个对象至少含一个 Research unit。
    Phase 3 自主决定 scope，不要写研究问题、摘要、分数或报告结构。
 

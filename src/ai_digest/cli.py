@@ -8,7 +8,7 @@ import json
 import os
 import subprocess
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -28,6 +28,7 @@ from .pipeline import (
     run_agent_worker,
     run_local_pipeline,
 )
+from .publisher import notify_run_failure, retry_pending_notifications
 from .smoke import (
     prepare_automation_smoke,
     run_automation_smoke,
@@ -188,6 +189,13 @@ async def async_main(args: argparse.Namespace) -> int:
         console.print(f"{manifest.status.value}: {run_dir}")
         return 0 if manifest.status.value != "failed" else 1
     if args.command == "tick":
+        retried_notifications = retry_pending_notifications(
+            runtime.lark,
+            runtime.runtime_root,
+            runtime.shared_runtime_root,
+        )
+        if retried_notifications:
+            console.print(f"Retried {len(retried_notifications)} run notification(s)")
         requeued = requeue_due_agent_jobs(runtime)
         if requeued:
             console.print(f"Requeued {len(requeued)} transient agent job(s)")
@@ -206,6 +214,14 @@ async def async_main(args: argparse.Namespace) -> int:
                     manifest, run_dir = await phase1.run_daily()
                     if manifest.status.value != "failed":
                         await enqueue_agent_job(runtime, run_dir)
+                    else:
+                        with suppress(Exception):
+                            notify_run_failure(
+                                runtime.lark,
+                                run_dir,
+                                phase="phase1",
+                                detail="Scheduled Phase 1 catch-up produced no usable input",
+                            )
                     console.print(f"catch-up {manifest.status.value}: {run_dir}")
                     return 0 if manifest.status.value != "failed" else 1
             return 0
@@ -244,6 +260,14 @@ async def async_main(args: argparse.Namespace) -> int:
             manifest, run_dir = await phase1.run_daily()
             if manifest.status.value != "failed":
                 await enqueue_agent_job(runtime, run_dir)
+            else:
+                with suppress(Exception):
+                    notify_run_failure(
+                        runtime.lark,
+                        run_dir,
+                        phase="phase1",
+                        detail="Scheduled Phase 1 daily run produced no usable input",
+                    )
         console.print(f"{manifest.status.value}: {run_dir}")
         return 0 if manifest.status.value != "failed" else 1
     if args.command == "agent-worker":

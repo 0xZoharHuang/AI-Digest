@@ -5,13 +5,15 @@ import json
 import re
 import subprocess
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from .artifacts import load_artifact_layout, load_not_published_artifacts
 from .config import LarkConfig, resolve_binary
 from .models import (
     Phase2ResearchObject,
+    Phase3Admission,
     PublishManifest,
     PublishNode,
     ResearchArtifactManifest,
@@ -25,6 +27,14 @@ class LarkError(RuntimeError):
     def __init__(self, message: str, *, retryable: bool = False):
         super().__init__(message)
         self.retryable = retryable
+
+
+NOTIFICATION_RETRY_DELAYS = (
+    timedelta(minutes=5),
+    timedelta(minutes=30),
+    timedelta(hours=2),
+    timedelta(hours=6),
+)
 
 
 class LarkCLI:
@@ -222,6 +232,182 @@ class LarkCLI:
             url=f"{self.config.wiki_base_url.rstrip('/')}/{node_token}",
         )
 
+
+def notify_run_failure(
+    config: LarkConfig,
+    run_dir: Path,
+    *,
+    phase: str,
+    detail: str,
+) -> dict[str, Any]:
+    return notify_run_issue(
+        config,
+        run_dir,
+        status="FAILED",
+        phase=phase,
+        detail=detail,
+    )
+
+
+def notify_run_issue(
+    config: LarkConfig,
+    run_dir: Path,
+    *,
+    status: Literal["FAILED", "RETRYING"],
+    phase: str,
+    detail: str,
+) -> dict[str, Any]:
+    """Send an operational alert even when the content tree is not publishable."""
+
+    if not config.receiver_open_id:
+        raise LarkError("lark.receiver_open_id is required for run notifications")
+    run_manifest = _read_regular_json(run_dir / "00_run_manifest.json")
+    run_id = str(run_manifest.get("run_id") or "")
+    date = str(run_manifest.get("date") or run_dir.parent.name)
+    if not run_id:
+        raise LarkError("run manifest has no run_id for failure notification")
+    safe_detail = " ".join(detail.replace("`", "'").split())[:1200]
+    event_hash = hashlib.sha256(
+        f"{run_id}\0{status}\0{phase}\0{safe_detail}".encode()
+    ).hexdigest()
+    idempotency_key = hashlib.sha256(
+        f"ai-digest-alert:{config.dm_identity}:{event_hash}".encode()
+    ).hexdigest()[:48]
+    message = (
+        f"## AI Intelligence Radar · {date}\n\n"
+        f"状态：**{status}**  \n"
+        f"当前阶段：**{phase}**  \n"
+        f"运行 ID：`{run_id}`  \n"
+        f"说明：{safe_detail or '没有可用错误详情。'}\n\n"
+        + (
+            "任务已保留并会按退避策略重试。"
+            if status == "RETRYING"
+            else "内容发布可能未完成，请以这条运行通知为准。"
+        )
+    )
+    return _send_notification_with_receipt(
+        LarkCLI(config),
+        run_dir,
+        kind="retrying" if status == "RETRYING" else "failure",
+        markdown=message,
+        idempotency_key=idempotency_key,
+    )
+
+
+def _send_notification_with_receipt(
+    cli: LarkCLI,
+    run_dir: Path,
+    *,
+    kind: str,
+    markdown: str,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    if not re.fullmatch(r"[a-z0-9_-]{1,32}", kind):
+        raise LarkError(f"unsafe notification kind: {kind}")
+    notifications = run_dir / "05_publish" / "notifications"
+    receipt_path = notifications / f"{kind}-{idempotency_key[:16]}.json"
+    cached: dict[str, Any] = {}
+    if receipt_path.is_file() and not receipt_path.is_symlink():
+        cached = cast(
+            dict[str, Any],
+            json.loads(receipt_path.read_text(encoding="utf-8")),
+        )
+        if (
+            cached.get("status") == "sent"
+            and cached.get("idempotency_key") == idempotency_key
+            and cached.get("message_id")
+            and cached.get("chat_id")
+        ):
+            return cached
+    attempt = max(0, int(cached.get("attempt") or 0)) + 1
+    receipt: dict[str, Any] = {
+        "schema_version": 1,
+        "kind": kind,
+        "status": "pending",
+        "idempotency_key": idempotency_key,
+        "attempt": attempt,
+        "markdown": markdown,
+    }
+    atomic_write_json(receipt_path, receipt)
+    try:
+        sent = cli.send_dm(markdown, idempotency_key)
+        message_id = str(sent.get("message_id") or "")
+        chat_id = str(sent.get("chat_id") or "")
+        if not message_id or not chat_id:
+            raise LarkError("Lark notification returned no message_id/chat_id")
+    except Exception as error:
+        receipt.update(
+            {
+                "status": "failed",
+                "error": f"{type(error).__name__}: {error}"[-4000:],
+                "next_retry_at": (
+                    datetime.now(UTC)
+                    + NOTIFICATION_RETRY_DELAYS[
+                        min(attempt - 1, len(NOTIFICATION_RETRY_DELAYS) - 1)
+                    ]
+                ).isoformat(),
+            }
+        )
+        atomic_write_json(receipt_path, receipt)
+        raise
+    receipt.update(
+        {
+            "status": "sent",
+            "message_id": message_id,
+            "chat_id": chat_id,
+        }
+    )
+    atomic_write_json(receipt_path, receipt)
+    return receipt
+
+
+def retry_pending_notifications(
+    config: LarkConfig,
+    runtime_root: Path,
+    shared_runtime_root: Path,
+    *,
+    now: datetime | None = None,
+) -> list[Path]:
+    if not config.receiver_open_id:
+        return []
+    moment = (now or datetime.now(UTC)).astimezone(UTC)
+    candidates = list(
+        runtime_root.glob("runs/*/attempt-*/05_publish/notifications/*.json")
+    )
+    for queue_name in ("jobs", "retry_wait", "completed", "publish_pending", "failed"):
+        candidates.extend(
+            (shared_runtime_root / queue_name).glob(
+                "*/05_publish/notifications/*.json"
+            )
+        )
+    sent: list[Path] = []
+    for receipt_path in sorted(set(candidates)):
+        if receipt_path.is_symlink() or not receipt_path.is_file():
+            continue
+        try:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            if not isinstance(receipt, dict) or receipt.get("status") == "sent":
+                continue
+            retry_at_value = receipt.get("next_retry_at")
+            if retry_at_value and datetime.fromisoformat(str(retry_at_value)).astimezone(
+                UTC
+            ) > moment:
+                continue
+            kind = str(receipt["kind"])
+            markdown = str(receipt["markdown"])
+            idempotency_key = str(receipt["idempotency_key"])
+            run_dir = receipt_path.parents[2]
+            _send_notification_with_receipt(
+                LarkCLI(config),
+                run_dir,
+                kind=kind,
+                markdown=markdown,
+                idempotency_key=idempotency_key,
+            )
+        except Exception:
+            continue
+        sent.append(receipt_path)
+    return sent
 
 class LarkPublisher:
     NAVIGATION_VERSION = 3
@@ -426,6 +612,13 @@ class LarkPublisher:
                 )
                 watch_count = int(preflight["watch_count"])
                 not_published_count = int(preflight["not_published_count"])
+                research_object_count = int(preflight["research_object_count"])
+                scheduled_research_count = int(
+                    preflight["scheduled_research_count"]
+                )
+                not_scheduled_research_count = int(
+                    preflight["not_scheduled_research_count"]
+                )
                 source_health = json.loads(
                     (run_dir / "01_phase1" / "source_health.json").read_text(
                         encoding="utf-8"
@@ -446,15 +639,22 @@ class LarkPublisher:
                     f"状态：**{status}**  \n"
                     f"研究报告：{len(successes)}，核查后未发布：{not_published_count}，"
                     f"失败：{len(failures)}，Watch：{watch_count}  \n"
+                    f"Phase 2 Research 对象：{research_object_count}，"
+                    f"当日已调度：{scheduled_research_count}，"
+                    f"未调度：{not_scheduled_research_count}  \n"
                     f"停用来源：{', '.join(disabled) if disabled else '无'}  \n"
                     f"异常来源：{', '.join(source_issues) if source_issues else '无'}  \n"
                     f"[打开今日 Brief]({day_node.url})"
                 )
-                sent = self.cli.send_dm(message, idempotency_key)
-                message_id = str(sent.get("message_id") or "")
-                chat_id = str(sent.get("chat_id") or "")
-                if not message_id or not chat_id:
-                    raise LarkError("Lark DM returned no message_id/chat_id")
+                sent = _send_notification_with_receipt(
+                    self.cli,
+                    run_dir,
+                    kind="daily_result",
+                    markdown=message,
+                    idempotency_key=idempotency_key,
+                )
+                message_id = str(sent["message_id"])
+                chat_id = str(sent["chat_id"])
                 manifest.dm_sent = True
                 manifest.dm_identity = self.config.dm_identity
                 manifest.dm_message_id = message_id
@@ -592,6 +792,8 @@ def validate_publish_inputs(run_dir: Path, status: str) -> dict[str, Any]:
     expected_units: dict[str, set[str]] = {}
     formal_research = False
     phase2_unit_ids: set[str] = set()
+    available_object_ids: list[str] = []
+    admission_required = False
     packages_path = run_dir / "02_routing" / "packages.json"
     objects_path = run_dir / "02_routing" / "objects.json"
     if packages_path.is_file() and (run_dir / "02_routing" / "phase2_manifest.json").is_file():
@@ -603,13 +805,22 @@ def validate_publish_inputs(run_dir: Path, status: str) -> dict[str, Any]:
         expected_units = {
             package.package_id: set(package.unit_ids) for package in packages
         }
+        available_object_ids = [package.package_id for package in packages]
     elif objects_path.is_file() and (run_dir / "02_routing" / "phase2_manifest.json").is_file():
         formal_research = True
+        phase2_manifest = _read_regular_json(
+            run_dir / "02_routing" / "phase2_manifest.json"
+        )
+        admission_required = (
+            isinstance(phase2_manifest, dict)
+            and phase2_manifest.get("object_order") == "semantic_priority_desc"
+        )
         objects = [
             Phase2ResearchObject.model_validate(row)
             for row in json.loads(_read_regular_text(objects_path))
         ]
         expected_units = {value.object_id: set(value.unit_ids) for value in objects}
+        available_object_ids = [value.object_id for value in objects]
     units_path = run_dir / "02_routing" / "units.jsonl"
     if formal_research:
         phase2_unit_ids = {
@@ -618,6 +829,23 @@ def validate_publish_inputs(run_dir: Path, status: str) -> dict[str, Any]:
         }
         if "" in phase2_unit_ids:
             raise LarkError("Phase 2 units contain an empty unit id")
+        admission_path = run_dir / "03_research" / "phase3_admission.json"
+        if admission_required or admission_path.is_file():
+            if not admission_path.is_file() or admission_path.is_symlink():
+                raise LarkError("formal Phase 3 admission is missing or unsafe")
+            admission = Phase3Admission.model_validate_json(
+                _read_regular_text(admission_path)
+            )
+            if admission.available_object_ids != available_object_ids:
+                raise LarkError("Phase 3 admission does not preserve Phase 2 object order")
+            selected_ids = set(admission.selected_object_ids)
+            expected_units = {
+                key: value for key, value in expected_units.items() if key in selected_ids
+            }
+        else:
+            admission = None
+    else:
+        admission = None
     for package_id_value, report_path_value in successes.items():
         package_id = str(package_id_value)
         report_path = str(report_path_value)
@@ -713,6 +941,10 @@ def validate_publish_inputs(run_dir: Path, status: str) -> dict[str, Any]:
         )
         if research_quality.get("status") != expected_research_status:
             raise LarkError("formal Phase 3 quality contradicts research outcomes")
+        if admission is not None and research_quality.get(
+            "admission"
+        ) != admission.model_dump(mode="json"):
+            raise LarkError("formal Phase 3 quality contradicts admission")
         quality_rows = research_quality.get("packages")
         if not isinstance(quality_rows, list):
             raise LarkError("formal Phase 3 quality packages must be an array")
@@ -753,6 +985,15 @@ def validate_publish_inputs(run_dir: Path, status: str) -> dict[str, Any]:
             or phase4_quality.get("watch_count") != len(watch)
         ):
             raise LarkError("formal Phase 4 quality does not match publish inputs")
+        if admission is not None and (
+            phase4_quality.get("research_object_count")
+            != len(admission.available_object_ids)
+            or phase4_quality.get("scheduled_research_count")
+            != len(admission.selected_object_ids)
+            or phase4_quality.get("not_scheduled_research_count")
+            != len(admission.not_scheduled_object_ids)
+        ):
+            raise LarkError("formal Phase 4 admission counts do not match")
         leaked_unit_ids = sorted(
             unit_id for unit_id in phase2_unit_ids if unit_id and unit_id in brief
         )
@@ -785,6 +1026,19 @@ def validate_publish_inputs(run_dir: Path, status: str) -> dict[str, Any]:
         "failure_count": len(failures),
         "watch_count": len(watch),
         "not_published_count": len(not_published),
+        "research_object_count": (
+            len(admission.available_object_ids)
+            if admission is not None
+            else len(known_reports)
+        ),
+        "scheduled_research_count": (
+            len(admission.selected_object_ids)
+            if admission is not None
+            else len(known_reports)
+        ),
+        "not_scheduled_research_count": (
+            len(admission.not_scheduled_object_ids) if admission is not None else 0
+        ),
         "content_keys": sorted(content_keys),
         "artifact_hash": _publish_artifact_hash(run_dir, status),
     }
@@ -889,6 +1143,7 @@ def _publish_artifact_hash(run_dir: Path, status: str) -> str:
         relative_paths.extend(
             [
                 Path("03_research/not_published.json"),
+                Path("03_research/phase3_admission.json"),
                 Path("03_research/quality.json"),
                 Path("04_brief/quality.json"),
             ]

@@ -114,6 +114,13 @@ async def test_transient_worker_failure_is_deferred_and_requeued_when_due(
             CodexResult(exit_code=1, error_class="network", error="offline"),
         )
 
+    notifications: list[tuple[Path, str, str]] = []
+    monkeypatch.setattr(
+        "ai_digest.pipeline.notify_run_issue",
+        lambda _config, run_dir, *, status, phase, detail: notifications.append(
+            (run_dir, status, phase)
+        ),
+    )
     monkeypatch.setattr("ai_digest.pipeline.AgentPhases.route", fail_route)
     assert await run_agent_worker(runtime) == []
     deferred = runtime.shared_runtime_root / "retry_wait" / job.name
@@ -123,6 +130,7 @@ async def test_transient_worker_failure_is_deferred_and_requeued_when_due(
     metadata = json.loads((deferred / "worker_retry.json").read_text())
     retry_at = datetime.fromisoformat(metadata["next_retry_at"])
     assert metadata["attempt"] == 1
+    assert notifications == [(deferred, "RETRYING", "phase2")]
     assert requeue_due_agent_jobs(runtime, retry_at - timedelta(seconds=1)) == []
     assert requeue_due_agent_jobs(runtime, retry_at + timedelta(seconds=1)) == [
         runtime.shared_runtime_root / "jobs" / job.name
@@ -411,16 +419,26 @@ async def test_recovery_quarantines_bad_job_and_publishes_next(tmp_path, monkeyp
     (bad_job / "02_routing" / "bundles.json").write_text("not-json")
 
     published: list[Path] = []
+    notified: list[tuple[Path, str, str]] = []
 
     def fake_publish(self, run_dir, status):  # type: ignore[no-untyped-def]
         published.append(run_dir)
         return None
 
     monkeypatch.setattr("ai_digest.pipeline.LarkPublisher.publish", fake_publish)
+    monkeypatch.setattr(
+        "ai_digest.pipeline.notify_run_failure",
+        lambda _config, run_dir, *, phase, detail: notified.append(
+            (run_dir, phase, detail)
+        ),
+    )
     result = recover_and_publish(runtime)
 
     assert result == [valid_run]
-    assert published == [bad_run, valid_run]
+    assert published == [valid_run]
+    assert len(notified) == 1
+    assert notified[0][0] == bad_run
+    assert notified[0][1] == "runner_import"
     assert (runtime.shared_runtime_root / "archived" / valid_id).exists()
     assert any(path.name.startswith(bad_id) for path in (runtime.shared_runtime_root / "failed").iterdir())
 

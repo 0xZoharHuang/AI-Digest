@@ -15,6 +15,7 @@ from .models import (
     Phase2ResearchObject,
     Phase2RoutingDecision,
     Phase2UnitDocument,
+    Phase3Admission,
     PublishNode,
     ResearchPackage,
     SourceItem,
@@ -256,6 +257,7 @@ def verify_automation_smoke(source_runtime: RuntimeConfig, smoke_root: Path) -> 
     expected_research_units: dict[str, set[str]] = {}
     phase2_selection_count = 0
     research_object_count = 0
+    scheduled_research_count = 0
     if str(manifest.get("contract") or "") in {
         "attention_editor_v1",
         "attention_editor_v2",
@@ -314,6 +316,20 @@ def verify_automation_smoke(source_runtime: RuntimeConfig, smoke_root: Path) -> 
         phase2_selection_count = len(catalog)
         research_object_count = len(packages)
 
+    admission = Phase3Admission.model_validate_json(
+        (run_dir / "03_research" / "phase3_admission.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    if admission.available_object_ids != list(expected_research_units):
+        raise RuntimeError("Phase 3 admission does not preserve Phase 2 object order")
+    scheduled_research_count = len(admission.selected_object_ids)
+    expected_research_units = {
+        key: value
+        for key, value in expected_research_units.items()
+        if key in set(admission.selected_object_ids)
+    }
+
     failures = json.loads(
         (run_dir / "03_research" / "failures.json").read_text(encoding="utf-8")
     )
@@ -355,6 +371,9 @@ def verify_automation_smoke(source_runtime: RuntimeConfig, smoke_root: Path) -> 
         or set(phase4_quality.get("required_report_ids") or []) != set(successes)
         or set(phase4_quality.get("linked_report_ids") or []) != set(successes)
         or phase4_quality.get("missing_report_ids")
+        or phase4_quality.get("research_object_count") != research_object_count
+        or phase4_quality.get("scheduled_research_count")
+        != scheduled_research_count
     ):
         raise RuntimeError(f"Phase 4 smoke quality was not successful: {phase4_quality}")
 
@@ -391,6 +410,7 @@ def verify_automation_smoke(source_runtime: RuntimeConfig, smoke_root: Path) -> 
             "phase2_unit_count": len(unit_ids),
             "phase2_catalog_count": phase2_selection_count,
             "package_count": research_object_count,
+            "scheduled_research_count": scheduled_research_count,
             "main_report_count": len(successes),
             "not_published_count": len(not_published),
             "phase3_missing_count": 0,
@@ -434,10 +454,17 @@ x_text_retention_days = {runtime.x_text_retention_days}
 binary = {q(runtime.codex.binary)}
 router_model = {q(runtime.codex.router_model)}
 router_reasoning = {q(runtime.codex.router_reasoning)}
+router_reader_model = {q(runtime.codex.router_reader_model)}
+router_reader_reasoning = {q(runtime.codex.router_reader_reasoning)}
+router_reader_concurrency = {runtime.codex.router_reader_concurrency}
+router_decider_model = {q(runtime.codex.router_decider_model)}
+router_decider_reasoning = {q(runtime.codex.router_decider_reasoning)}
+router_decider_concurrency = {runtime.codex.router_decider_concurrency}
 research_model = {q(runtime.codex.research_model)}
 research_reasoning = {q(runtime.codex.research_reasoning)}
 brief_model = {q(runtime.codex.brief_model)}
 brief_reasoning = {q(runtime.codex.brief_reasoning)}
+phase3_daily_agent_limit = {runtime.codex.phase3_daily_agent_limit}
 top_level_concurrency = {runtime.codex.top_level_concurrency}
 subagent_threads = {runtime.codex.subagent_threads}
 idle_timeout_seconds = {runtime.codex.idle_timeout_seconds}

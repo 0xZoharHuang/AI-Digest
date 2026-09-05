@@ -38,6 +38,7 @@ class CodexConfig(BaseModel):
     research_reasoning: str = "medium"
     brief_model: str = "gpt-5.6-sol"
     brief_reasoning: str = "high"
+    phase3_daily_agent_limit: int = Field(default=15, ge=1, le=1000)
     top_level_concurrency: int = 3
     subagent_threads: int = 4
     idle_timeout_seconds: int = 900

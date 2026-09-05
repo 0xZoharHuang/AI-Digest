@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,8 @@ from ai_digest.publisher import (
     LarkPublisher,
     _extract_envelope,
     _rewrite_report_links,
+    notify_run_issue,
+    retry_pending_notifications,
     validate_publish_inputs,
 )
 
@@ -165,6 +168,88 @@ def test_cached_node_is_reused_when_markdown_import_changed_its_title():
 
 def test_lark_envelope_parser_ignores_progress_lines():
     assert _extract_envelope('Creating node...\n{"ok":true,"data":{"x":1}}\n')["ok"] is True
+
+
+def test_operational_notification_is_independent_and_idempotent(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "runs" / "2026-09-05" / "attempt-0001"
+    run_dir.mkdir(parents=True)
+    (run_dir / "00_run_manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "2026-09-05-a0001-notify",
+                "date": "2026-09-05",
+            }
+        )
+    )
+    fake = FakeLark()
+    monkeypatch.setattr("ai_digest.publisher.LarkCLI", lambda _config: fake)
+    config = LarkConfig(receiver_open_id="user")
+
+    first = notify_run_issue(
+        config,
+        run_dir,
+        status="RETRYING",
+        phase="phase2",
+        detail="quota; retry later",
+    )
+    second = notify_run_issue(
+        config,
+        run_dir,
+        status="RETRYING",
+        phase="phase2",
+        detail="quota; retry later",
+    )
+
+    assert first == second
+    assert first["status"] == "sent"
+    assert len(fake.messages) == 1
+    assert "RETRYING" in fake.messages[0][0]
+    assert "phase2" in fake.messages[0][0]
+    receipts = list((run_dir / "05_publish/notifications").glob("retrying-*.json"))
+    assert len(receipts) == 1
+
+
+def test_failed_operational_notification_is_retried_from_receipt(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "runs" / "2026-09-05" / "attempt-0001"
+    run_dir.mkdir(parents=True)
+    (run_dir / "00_run_manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "2026-09-05-a0001-notify-retry",
+                "date": "2026-09-05",
+            }
+        )
+    )
+    fake = FailOnceDMLark()
+    monkeypatch.setattr("ai_digest.publisher.LarkCLI", lambda _config: fake)
+    config = LarkConfig(receiver_open_id="user")
+
+    with pytest.raises(LarkError, match="offline"):
+        notify_run_issue(
+            config,
+            run_dir,
+            status="FAILED",
+            phase="phase1",
+            detail="source collection failed",
+        )
+    receipt = next((run_dir / "05_publish/notifications").glob("failure-*.json"))
+    failed = json.loads(receipt.read_text())
+    assert failed["status"] == "failed"
+
+    retried = retry_pending_notifications(
+        config,
+        tmp_path,
+        tmp_path / "shared",
+        now=datetime.fromisoformat(failed["next_retry_at"]) + timedelta(seconds=1),
+    )
+
+    assert retried == [receipt]
+    assert json.loads(receipt.read_text())["status"] == "sent"
+    assert len(fake.messages) == 1
 
 
 def test_report_link_rewrite_handles_prefix_bundle_ids_exactly():

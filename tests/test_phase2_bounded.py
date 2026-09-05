@@ -213,6 +213,17 @@ def test_bounded_helper_failure_and_identity_branches(tmp_path: Path) -> None:
         CodexConfig(router_reader_concurrency=0)
     with pytest.raises(ValueError, match="less than or equal to 16"):
         CodexConfig(router_decider_concurrency=17)
+    with pytest.raises(ValueError, match="greater than or equal to 1"):
+        CodexConfig(phase3_daily_agent_limit=0)
+
+    adjudication_prompt = bounded_module.adjudication_batch_prompt(1, 1)
+    final_prompt = bounded_module.bounded_finalize_prompt(10, 5, 3, 2)
+    assert "完全不要考虑 Phase 3" in adjudication_prompt
+    assert "全部语义上" in final_prompt
+    assert "从高到低排列" in final_prompt
+    for capacity_language in ("3 路并发", "下一个日周期", "支付一次", "占用一个研究工作单"):
+        assert capacity_language not in adjudication_prompt
+        assert capacity_language not in final_prompt
 
     with pytest.raises(RuntimeError, match="coverage mismatch"):
         bounded_module.validate_provisional_coverage([document], [])
@@ -356,6 +367,7 @@ async def test_bounded_readers_then_single_editor_consolidates(
     manifest = json.loads((root / "phase2_manifest.json").read_text())
     assert manifest["contract"] == "attention_editor_v3"
     assert manifest["execution_mode"] == "parallel_bounded_readers_single_editor"
+    assert manifest["object_order"] == "semantic_priority_desc"
     assert manifest["batch_count"] == 3
     assert manifest["route_counts"] == {"archive": 1, "research": 1, "watch": 1}
     assert {assignment.d for assignment in routing.assignments} == {"r", "w", "n"}

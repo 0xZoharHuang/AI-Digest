@@ -8,7 +8,7 @@ import pytest
 import ai_digest.v3 as v3_module
 from ai_digest.agent_phases import AgentPhases
 from ai_digest.codex_runner import CodexResult
-from ai_digest.config import LarkConfig, RuntimeConfig
+from ai_digest.config import CodexConfig, LarkConfig, RuntimeConfig
 from ai_digest.models import (
     LegacyResearchPackage,
     ObservationUnit,
@@ -19,6 +19,7 @@ from ai_digest.models import (
     Phase2RoutingDecision,
     Phase2Summary,
     Phase2UnitDocument,
+    Phase3Admission,
     ResearchEvidenceEntry,
     ResearchPackage,
     SourceItem,
@@ -121,6 +122,41 @@ def test_observation_units_mechanically_merge_cross_source_entities():
         ("arxiv", "huggingface"),
         ("x_for_you", "x_list"),
     }
+
+
+def test_phase3_admission_requires_ordered_prefix_and_complete_suffix():
+    valid = Phase3Admission(
+        daily_agent_limit=2,
+        concurrency=1,
+        available_object_ids=["a", "b", "c"],
+        selected_object_ids=["a", "b"],
+        not_scheduled_object_ids=["c"],
+    )
+    assert valid.selected_object_ids == ["a", "b"]
+    with pytest.raises(ValueError, match="duplicate"):
+        Phase3Admission(
+            daily_agent_limit=2,
+            concurrency=1,
+            available_object_ids=["a", "a"],
+            selected_object_ids=["a"],
+            not_scheduled_object_ids=["a"],
+        )
+    with pytest.raises(ValueError, match="ordered prefix"):
+        Phase3Admission(
+            daily_agent_limit=1,
+            concurrency=1,
+            available_object_ids=["a", "b"],
+            selected_object_ids=["b"],
+            not_scheduled_object_ids=["a"],
+        )
+    with pytest.raises(ValueError, match="unscheduled"):
+        Phase3Admission(
+            daily_agent_limit=1,
+            concurrency=1,
+            available_object_ids=["a", "b"],
+            selected_object_ids=["a"],
+            not_scheduled_object_ids=[],
+        )
 
 
 def test_observation_unit_summary_surfaces_reference_text_over_link_only():
@@ -1126,7 +1162,7 @@ async def test_phase3_uses_sol_medium_and_accepts_main_report_without_subreports
 async def test_attention_objects_use_formal_phase3_phase4_and_publish_contract(
     tmp_path,
 ):
-    run = _sealed_run(tmp_path, ("1", "2"))
+    run = _sealed_run(tmp_path, ("1", "2", "3"))
     phase1 = run / "01_phase1"
     (phase1 / "source_health.json").write_text("{}")
     (run / "00_run_manifest.json").write_text(
@@ -1151,7 +1187,7 @@ async def test_attention_objects_use_formal_phase3_phase4_and_publish_contract(
         )
         for unit in units
     ]
-    research_id, watch_id = [value.unit_id for value in documents]
+    research_id, overflow_id, watch_id = [value.unit_id for value in documents]
     routing = run / "02_routing"
     routing.mkdir()
     (routing / "units.jsonl").write_text(
@@ -1163,6 +1199,12 @@ async def test_attention_objects_use_formal_phase3_phase4_and_publish_contract(
             route="research",
             object_id="robotics",
             reason_zh="出现值得独立核查的机器人能力变化。",
+        ),
+        Phase2RoutingDecision(
+            unit_id=overflow_id,
+            route="research",
+            object_id="overflow",
+            reason_zh="同样具有独立研究价值，但排序在第二位。",
         ),
         Phase2RoutingDecision(
             unit_id=watch_id,
@@ -1178,7 +1220,12 @@ async def test_attention_objects_use_formal_phase3_phase4_and_publish_contract(
             object_id="robotics",
             label_zh="机器人能力变化",
             unit_ids=[research_id],
-        )
+        ),
+        Phase2ResearchObject(
+            object_id="overflow",
+            label_zh="第二个研究对象",
+            unit_ids=[overflow_id],
+        ),
     ]
     (routing / "objects.json").write_text(
         json.dumps([value.model_dump(mode="json") for value in objects], ensure_ascii=False)
@@ -1189,9 +1236,10 @@ async def test_attention_objects_use_formal_phase3_phase4_and_publish_contract(
                 "schema_version": 3,
                 "contract": "attention_editor_v3",
                 "thread_id": "attention-thread",
-                "unit_count": 2,
-                "object_count": 1,
-                "route_counts": {"research": 1, "watch": 1},
+                "unit_count": 3,
+                "object_count": 2,
+                "object_order": "semantic_priority_desc",
+                "route_counts": {"research": 2, "watch": 1},
                 "hashes": {
                     name: file_sha256(routing / name)
                     for name in ("units.jsonl", "decisions.jsonl", "objects.json")
@@ -1248,14 +1296,32 @@ async def test_attention_objects_use_formal_phase3_phase4_and_publish_contract(
                 )
             return CodexResult(exit_code=0, thread_id=f"{workspace.name}-thread")
 
-    runtime = RuntimeConfig(runtime_root=tmp_path, shared_runtime_root=tmp_path / "queue")
+    runtime = RuntimeConfig(
+        runtime_root=tmp_path,
+        shared_runtime_root=tmp_path / "queue",
+        codex=CodexConfig(phase3_daily_agent_limit=1),
+    )
     phases = AgentPhases(runtime)
     phases.runner = FormalRunner()  # type: ignore[assignment]
+    phase2_before = {
+        name: (routing / name).read_bytes()
+        for name in ("decisions.jsonl", "objects.json", "phase2_manifest.json")
+    }
     successes = await phases.research(run)
     assert successes == {"robotics": "robotics/main_report.md"}
     assert (run / "03_research/robotics/intake.jsonl").is_file()
     assert (run / "03_research/robotics/evidence.jsonl").is_file()
     assert (run / "03_research/not_published.json").read_text().strip() == "[]"
+    admission = json.loads((run / "03_research/phase3_admission.json").read_text())
+    assert admission["available_object_ids"] == ["robotics", "overflow"]
+    assert admission["selected_object_ids"] == ["robotics"]
+    assert admission["not_scheduled_object_ids"] == ["overflow"]
+    assert next(
+        value for value in decisions if value.unit_id == overflow_id
+    ).route == "research"
+    assert phase2_before == {
+        name: (routing / name).read_bytes() for name in phase2_before
+    }
 
     await phases.brief(run, successes=successes)
     watch = load_jsonl(run / "04_brief/watch.jsonl")
@@ -1264,10 +1330,16 @@ async def test_attention_objects_use_formal_phase3_phase4_and_publish_contract(
     phase4_quality = json.loads((run / "04_brief/quality.json").read_text())
     assert phase4_quality["status"] == "success"
     assert phase4_quality["linked_report_ids"] == ["robotics"]
+    assert phase4_quality["research_object_count"] == 2
+    assert phase4_quality["scheduled_research_count"] == 1
+    assert phase4_quality["not_scheduled_research_count"] == 1
 
     preflight = validate_publish_inputs(run, "SUCCESS")
     assert preflight["report_count"] == 1
     assert preflight["watch_count"] == 1
+    assert preflight["research_object_count"] == 2
+    assert preflight["scheduled_research_count"] == 1
+    assert preflight["not_scheduled_research_count"] == 1
     (run / "04_brief/quality.json").unlink()
 
     class NoExternalCalls:

@@ -20,6 +20,7 @@ research_model = "gpt-5.6-sol"
 research_reasoning = "medium"
 brief_model = "gpt-5.6-terra"
 brief_reasoning = "high"
+phase3_daily_agent_limit = 15
 top_level_concurrency = 3
 subagent_threads = 4
 idle_timeout_seconds = 900

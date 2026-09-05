@@ -57,6 +57,10 @@ hashes, model/prompt versions, per-batch receipts, final Editor thread, evaluati
 independent audit output are retained together. These scripts and challenge fixtures are development
 tools; production consumes only the compact validated Phase 2 contract.
 
+Phase 2 quality is capacity-independent: tests must demonstrate that more than 15 objects may remain
+Research, while `phase3_admission.json` selects only the configured ordered prefix. Raising the Phase
+3 limit must not require rerunning Phase 2 or modifying any Phase 2 route.
+
 ## Automation smoke acceptance
 
 ```bash
@@ -88,9 +92,11 @@ For an attention-editor run, the smoke additionally fails unless:
 - Phase 4 has an independent successful quality receipt with exact report-link coverage;
 - Phase 5 leaves a matching local preflight receipt and makes zero live Lark calls.
 
-A live notification is tested only after these local gates pass. Production acceptance then requires
-one publish plus an idempotent replay proving that unchanged Wiki pages are not rewritten and the DM
-is not duplicated.
+A live success notification with a Brief link is tested only after these local gates pass. Operational
+`RETRYING` and `FAILED` notifications are independent of content validity: tests require them to send
+without a publishable Wiki tree, persist as receipts, and retry after a transient Feishu failure.
+Production acceptance then requires one publish plus an idempotent replay proving that unchanged Wiki
+pages are not rewritten and the terminal DM is not duplicated.
 
 ## Failure injection
 

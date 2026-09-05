@@ -26,6 +26,7 @@ from .models import (
     Phase2CatalogEntry,
     Phase2ResearchObject,
     Phase2UnitDocument,
+    Phase3Admission,
     PublishManifest,
     ResearchArtifactManifest,
     ResearchPackage,
@@ -33,7 +34,12 @@ from .models import (
     RunStatus,
 )
 from .phase1 import Phase1Runner
-from .publisher import LarkPublisher, validate_publish_inputs
+from .publisher import (
+    LarkPublisher,
+    notify_run_failure,
+    notify_run_issue,
+    validate_publish_inputs,
+)
 from .store import FileStore, StateDB, load_jsonl, parse_jsonl_text
 from .utils import atomic_write_json, atomic_write_text
 
@@ -62,6 +68,14 @@ async def run_local_pipeline(
     if manifest.phases["phase1"] == RunStatus.FAILED:
         _write_pipeline_failure(run_dir, "Phase 1 produced no usable input")
         manifest.status = RunStatus.FAILED
+        if publish:
+            with suppress(Exception):
+                notify_run_failure(
+                    runtime.lark,
+                    run_dir,
+                    phase="phase1",
+                    detail="Phase 1 produced no usable input",
+                )
         return manifest, run_dir
     phases = AgentPhases(runtime)
     try:
@@ -106,6 +120,14 @@ async def run_local_pipeline(
         manifest.errors.append(f"{type(error).__name__}: {error}")
         manifest.status = RunStatus.FAILED
         _write_pipeline_failure(run_dir, str(error))
+        if publish:
+            with suppress(Exception):
+                notify_run_failure(
+                    runtime.lark,
+                    run_dir,
+                    phase="pipeline",
+                    detail=f"{type(error).__name__}: {error}",
+                )
     atomic_write_json(run_dir / "00_run_manifest.json", manifest.model_dump(mode="json"))
     state = StateDB(runtime.runtime_root / "state.db")
     await state.init()
@@ -215,13 +237,23 @@ async def _run_agent_worker_unlocked(runtime: RuntimeConfig) -> list[Path]:
                 atomic_write_text(job_dir / "DONE", "complete\n")
             except Exception as error:
                 detail = f"{type(error).__name__}: {error}"
-                if isinstance(error, RetryableCodexError) and _defer_agent_job(
-                    job_dir,
-                    retry_root,
-                    active_phase,
-                    error,
-                ):
-                    continue
+                if isinstance(error, RetryableCodexError):
+                    job_name = job_dir.name
+                    if _defer_agent_job(
+                        job_dir,
+                        retry_root,
+                        active_phase,
+                        error,
+                    ):
+                        with suppress(Exception):
+                            notify_run_issue(
+                                runtime.lark,
+                                retry_root / job_name,
+                                status="RETRYING",
+                                phase=active_phase,
+                                detail=f"{error.error_class}: {error}",
+                            )
+                        continue
                 atomic_write_json(
                     job_dir / "worker_failure.json",
                     {"phase": active_phase, "error": detail},
@@ -549,6 +581,13 @@ def publish_existing_run(runtime: RuntimeConfig, run_dir: Path) -> PublishManife
         manifest.status = _overall_status(manifest)
         atomic_write_json(run_dir / "00_run_manifest.json", manifest.model_dump(mode="json"))
         _update_run_state(runtime, manifest.run_id, manifest.status.value, "publish_pending")
+        with suppress(Exception):
+            notify_run_failure(
+                runtime.lark,
+                run_dir,
+                phase="phase5",
+                detail=f"{type(error).__name__}: {error}",
+            )
         raise
 
 
@@ -658,6 +697,14 @@ def _recover_and_publish_unlocked(
                 run_dir / "00_run_manifest.json", manifest.model_dump(mode="json")
             )
             _update_run_state(runtime, manifest.run_id, manifest.status.value, "publish_pending")
+            if publish_mode == "live":
+                with suppress(Exception):
+                    notify_run_failure(
+                        runtime.lark,
+                        run_dir,
+                        phase="phase5",
+                        detail=f"{type(error).__name__}: {error}",
+                    )
             if job_dir.parent != pending_root:
                 destination = pending_root / job_dir.name
                 if destination.exists():
@@ -869,7 +916,12 @@ def _publish_import_failure(
         _update_run_state(runtime, run_id, RunStatus.FAILED.value, "failed")
         if notify:
             with suppress(Exception):
-                LarkPublisher(runtime.lark).publish(run_dir, "FAILED")
+                notify_run_failure(
+                    runtime.lark,
+                    run_dir,
+                    phase="runner_import",
+                    detail=detail,
+                )
     except Exception:
         return
 
@@ -1068,6 +1120,8 @@ def _import_research(job: Path, run: Path) -> None:
         raise ValueError("research output arrived without validated routing")
     expected_units: dict[str, set[str]] = {}
     formal_research = False
+    admission_required = False
+    available_bundle_ids: list[str]
     if objects_path.exists() and (run / "02_routing" / "phase2_manifest.json").exists():
         formal_research = True
         manifest = json.loads(
@@ -1079,11 +1133,13 @@ def _import_research(job: Path, run: Path) -> None:
             "attention_editor_v3",
         }:
             raise ValueError("objects.json appears under an unsupported Phase 2 contract")
+        admission_required = manifest.get("object_order") == "semantic_priority_desc"
         objects = [
             Phase2ResearchObject.model_validate(row)
             for row in json.loads(objects_path.read_text(encoding="utf-8"))
         ]
-        bundle_ids = {value.object_id for value in objects}
+        available_bundle_ids = [value.object_id for value in objects]
+        bundle_ids = set(available_bundle_ids)
         expected_units = {value.object_id: set(value.unit_ids) for value in objects}
     elif packages_path.exists() and (run / "02_routing" / "phase2_manifest.json").exists():
         formal_research = True
@@ -1091,7 +1147,8 @@ def _import_research(job: Path, run: Path) -> None:
             ResearchPackage.model_validate(row)
             for row in json.loads(packages_path.read_text(encoding="utf-8"))
         ]
-        bundle_ids = {package.package_id for package in packages}
+        available_bundle_ids = [package.package_id for package in packages]
+        bundle_ids = set(available_bundle_ids)
         expected_units = {
             package.package_id: set(package.unit_ids) for package in packages
         }
@@ -1100,10 +1157,26 @@ def _import_research(job: Path, run: Path) -> None:
             LegacyResearchPackage.model_validate(row).package_id
             for row in json.loads(packages_path.read_text(encoding="utf-8"))
         }
+        available_bundle_ids = sorted(bundle_ids)
     else:
         bundle_ids = {
             Bundle.model_validate(row).bundle_id
             for row in json.loads(routing_path.read_text(encoding="utf-8"))
+        }
+        available_bundle_ids = sorted(bundle_ids)
+    active_bundle_ids = bundle_ids
+    admission: Phase3Admission | None = None
+    admission_path = source / "phase3_admission.json"
+    if formal_research and (admission_required or admission_path.is_file()):
+        admission_content = _safe_read(
+            source, Path("phase3_admission.json"), 2_000_000
+        )
+        admission = Phase3Admission.model_validate_json(admission_content)
+        if admission.available_object_ids != available_bundle_ids:
+            raise ValueError("Phase 3 admission does not preserve Phase 2 object order")
+        active_bundle_ids = set(admission.selected_object_ids)
+        expected_units = {
+            key: value for key, value in expected_units.items() if key in active_bundle_ids
         }
     successes_raw = json.loads(_safe_read(source, Path("successes.json"), 2_000_000))
     if not isinstance(successes_raw, dict):
@@ -1113,7 +1186,7 @@ def _import_research(job: Path, run: Path) -> None:
     target.mkdir(parents=True, exist_ok=True)
     for bundle_id, relative in successes_raw.items():
         Bundle(bundle_id=str(bundle_id), label="validated", item_ids=[])
-        if bundle_id not in bundle_ids:
+        if bundle_id not in active_bundle_ids:
             raise ValueError(f"invalid report mapping: {bundle_id} -> {relative}")
         package_root = source / bundle_id
         try:
@@ -1145,7 +1218,7 @@ def _import_research(job: Path, run: Path) -> None:
     not_published: list[str] = []
     for package_id_value in not_published_value:
         package_id = str(package_id_value)
-        if package_id not in bundle_ids or package_id in successes:
+        if package_id not in active_bundle_ids or package_id in successes:
             raise ValueError(f"invalid not-published package: {package_id}")
         package_root = source / package_id
         try:
@@ -1187,11 +1260,15 @@ def _import_research(job: Path, run: Path) -> None:
         if (
             any(not value for value in failure_ids)
             or len(outcome_ids) != len(set(outcome_ids))
-            or set(outcome_ids) != bundle_ids
+            or set(outcome_ids) != active_bundle_ids
         ):
             raise ValueError("formal research outcomes do not exactly cover Phase 2 objects")
         expected_status = (
-            "quiet" if not bundle_ids else "partial" if failures_value else "success"
+            "quiet"
+            if not active_bundle_ids
+            else "partial"
+            if failures_value
+            else "success"
         )
         if quality_value.get("status") != expected_status:
             raise ValueError("formal research quality status contradicts outcomes")
@@ -1206,6 +1283,14 @@ def _import_research(job: Path, run: Path) -> None:
             set(success_ids) | set(not_published)
         ):
             raise ValueError("formal research quality does not match decided artifacts")
+        if admission is not None and quality_value.get(
+            "admission"
+        ) != admission.model_dump(mode="json"):
+            raise ValueError("formal research quality does not match Phase 3 admission")
+        if admission is not None:
+            atomic_write_json(
+                target / "phase3_admission.json", admission.model_dump(mode="json")
+            )
         atomic_write_json(target / "quality.json", quality_value)
     else:
         _copy_optional_json(source, target, "quality.json", 5_000_000, default={})
@@ -1225,6 +1310,7 @@ def _import_brief(job: Path, run: Path) -> None:
         ("watch.jsonl", 10_000_000),
         ("failures.json", 2_000_000),
         ("not_published.json", 2_000_000),
+        ("phase3_admission.json", 2_000_000),
         ("source_health.json", 2_000_000),
         ("research_quality.json", 5_000_000),
         ("quality.json", 5_000_000),
@@ -1249,6 +1335,19 @@ def _import_brief(job: Path, run: Path) -> None:
         research_quality = json.loads(
             _safe_read(source, Path("research_quality.json"), 5_000_000)
         )
+        admission_path = source / "phase3_admission.json"
+        admission: Phase3Admission | None = None
+        if admission_path.is_file() or (run / "02_routing" / "objects.json").is_file():
+            admission = Phase3Admission.model_validate_json(
+                _safe_read(source, Path("phase3_admission.json"), 2_000_000)
+            )
+            imported_admission = Phase3Admission.model_validate_json(
+                (run / "03_research" / "phase3_admission.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            if admission != imported_admission:
+                raise ValueError("Phase 4 admission input differs from Phase 3")
         if not isinstance(quality, dict) or quality.get("status") not in {
             "success",
             "partial",
@@ -1279,6 +1378,15 @@ def _import_brief(job: Path, run: Path) -> None:
         )
         if quality.get("watch_count") != watch_count:
             raise ValueError("formal Phase 4 watch count is inconsistent")
+        if admission is not None and (
+            quality.get("research_object_count")
+            != len(admission.available_object_ids)
+            or quality.get("scheduled_research_count")
+            != len(admission.selected_object_ids)
+            or quality.get("not_scheduled_research_count")
+            != len(admission.not_scheduled_object_ids)
+        ):
+            raise ValueError("formal Phase 4 admission counts are inconsistent")
     _safe_read(source, Path("PHASE4_COMPLETE"), 100)
     atomic_write_text(target / "PHASE4_COMPLETE", "complete\n")
 
