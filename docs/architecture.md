@@ -99,8 +99,12 @@ compact per-unit identity cards in bounded, overlapping comparison scopes. Each 
 name its same-object representative (itself when independent); omitted cards are invalid output.
 Exact post, paper, repository and canonical-link hints
 supplement vector candidates. Every proposed edge fits a comparison scope or is explicitly deferred.
-Graph similarity is never a semantic merge. Model-confirmed identity relations are combined globally;
-exact duplicate observations with both identical primary article URL and case-insensitive original
+Graph similarity is never a semantic merge. Model-confirmed identity relations are combined globally
+subject to explicit distinct multi-member identities. Bare-link or empty-body observations cannot
+bridge different established identities; they attach only when their contextual candidates agree.
+No record is discarded by this safeguard. Captured titles take precedence over provisional captions;
+unresolved records without captured anchors receive a neutral missing-content caption.
+Exact duplicate observations with both identical primary article URL and case-insensitive original
 title are also coalesced. Mentioned links or generated labels cannot authorize this shortcut.
 First-pass names are hints only: sharing a provisional name never creates an indivisible multi-unit
 group. Execution paging therefore does not impose package boundaries. Original complete records

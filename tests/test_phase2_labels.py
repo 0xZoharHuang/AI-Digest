@@ -130,6 +130,26 @@ def test_exact_duplicates_require_original_primary_url_and_title():
     assert exact_duplicate_groups(packages, documents) == [["a", "b"]]
 
 
+def test_bare_link_cannot_bridge_independent_objects_but_can_attach_unambiguously():
+    from ai_digest.phase2_labels import constrained_components, has_captured_anchor
+    decisions = [[["a", "b", "link"]], [["c", "d", "link"]]]
+    groups, blocked = constrained_components(["a", "b", "c", "d", "link"], decisions, [], {"link"})
+    assert {frozenset(g) for g in groups} == {frozenset({"a", "b"}), frozenset({"c", "d"}), frozenset({"link"})}
+    assert blocked == 4
+    groups, _ = constrained_components(["a", "b", "link"], decisions[:1], [], {"link"})
+    assert groups == [["a", "b", "link"]]
+    assert not has_captured_anchor({"observations": [{"payload": {"text": "@someone https://t.co/example"}}]})
+    assert has_captured_anchor({"observations": [{"payload": {"title": "A concrete original article"}}]})
+
+
+def test_conflicting_nontrivial_identity_groups_are_not_blindly_unioned():
+    from ai_digest.phase2_labels import constrained_components
+    groups, blocked = constrained_components(["a", "b", "c", "d"],
+        [[["a", "b"], ["c", "d"]], [["b", "c"]]], [])
+    assert {frozenset(g) for g in groups} == {frozenset({"a", "b"}), frozenset({"c", "d"})}
+    assert blocked == 1
+
+
 @pytest.mark.asyncio
 async def test_unbounded_packages_replay_and_corruption(tmp_path, monkeypatch):
     monkeypatch.setattr("ai_digest.semantic_index.nearest_groups", lambda *args: {})
@@ -183,6 +203,19 @@ async def test_initial_shared_name_is_not_an_indivisible_package(tmp_path, monke
     await SemanticPhase2(RuntimeConfig(), WrongNameRunner()).run(tmp_path, source, build_observation_units(source), "")
     _, packages = validate_artifacts(tmp_path / "02_routing")
     assert len(packages) == 2
+
+
+@pytest.mark.asyncio
+async def test_original_titles_and_canonical_paper_type_override_generated_metadata(tmp_path, monkeypatch):
+    monkeypatch.setattr("ai_digest.semantic_index.nearest_groups", lambda *args: {})
+    source = items(2)
+    for number, item in source.items():
+        item.item_type = "paper"
+        item.payload = {"text": "Captured abstract " + number, "title": "Original paper " + number}
+    await SemanticPhase2(RuntimeConfig(), LabelRunner()).run(tmp_path, source, build_observation_units(source), "")
+    labels, packages = validate_artifacts(tmp_path / "02_routing")
+    assert {label.kind for label in labels} == {"paper"}
+    assert {package.label_zh for package in packages} == {"Original paper 0", "Original paper 1"}
 
 
 @pytest.mark.asyncio
@@ -330,7 +363,7 @@ async def test_cross_batch_merge_checks_members_and_reuses_receipt(tmp_path, mon
             for k in ["a", "b"]
         ]
 
-    documents = {k: {"text": k} for k in ["a", "b"]}
+    documents = {k: {"observations": [{"payload": {"text": k}}]} for k in ["a", "b"]}
     result = await engine.merge(tmp_path, packages(), documents)
     assert result[0].unit_ids == ["a", "b"] and len(result) == 1
     again = await engine.merge(tmp_path, packages(), documents)
@@ -375,7 +408,7 @@ async def test_similarity_chain_is_not_an_automatic_package(tmp_path, monkeypatc
         ResearchPackage(package_id=k, label_zh=k, scope_note_zh="scope", unit_ids=[k])
         for k in ["a", "b", "c"]
     ]
-    documents = {k: {"text": k} for k in ["a", "b", "c"]}
+    documents = {k: {"observations": [{"payload": {"text": k}}]} for k in ["a", "b", "c"]}
     monkeypatch.setattr(
         "ai_digest.semantic_index.nearest_groups", lambda *args: {"a": [], "b": ["a"], "c": ["b"]}
     )
@@ -408,7 +441,7 @@ async def test_confirmed_identity_can_cross_comparison_boundaries(tmp_path, monk
             return CodexResult(exit_code=0, thread_id="confirmed")
     engine = SemanticPhase2(RuntimeConfig(), SameObjectRunner())
     engine.package_batches = {"a": 0, "b": 1, "c": 2}
-    result = await engine.merge(tmp_path, packages, {k: {"text": k} for k in ["a", "b", "c"]})
+    result = await engine.merge(tmp_path, packages, {k: {"observations": [{"payload": {"text": k}}]} for k in ["a", "b", "c"]})
     assert len(result) == 1 and result[0].unit_ids == ["a", "b", "c"]
 
 

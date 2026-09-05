@@ -1,6 +1,42 @@
 # Semantic labels validation
 
-Status: implementation and experiments in progress. Not approved for production cutover.
+Status: Phase 2 semantic release gates passed on the frozen corpus after evidence adjudication.
+Immutable-snapshot verification and production cutover are still separate pending gates.
+
+## Release candidate evidence
+
+The final candidate retains all 6,878 normalized units (7,578 source observations), with 5,998 present,
+777 unclear and 103 confirmed chatter labels, and 6,130 natural packages. No Phase 3 quota was used to
+set package count. The model-assisted reference after evidence review measures retention 193/195
+(98.97%), same-object recall 110/113 (97.35%), and separation 118/118 (100%). All explicit lost-paper
+and unrelated-object regressions pass. These are sample point estimates, not guarantees; Wilson
+intervals and the three remaining false-separated pairs remain in the acceptance receipt.
+
+The unadjudicated new reference scored 110/120 (91.67%). Blind re-review of the ten disagreements,
+mixed with twenty unchanged controls, identified seven unsupported claims that February training
+rollback and April RL-stack changes came from the same disclosure. Their captured shortlinks are
+unexpanded and the supposed common source is absent. The primary agent checked the original evidence:
+these seven pairs are uncertain, not relabelled as definitely different. The other three misses remain
+counted against the implementation. Original drafts, quotes, adjudication and provenance hashes are
+preserved. This is not human-certified gold and does not claim zero semantic error.
+
+A large-package audit found a bare-link observation acting as a bridge between Atlas and Muse Voice
+in different comparison contexts. Unanchored observations can now attach to one established identity
+but cannot unite multiple identities through conflicting contextual guesses. Explicit distinct
+multi-member identities are also respected. The cache-only full replay separated these products
+without reducing either pair-reference score or executing a new model call. Final captions prefer
+captured original titles; unresolved bare links do not receive an invented object name.
+
+The accepted full computation records 510 logical calls: 225 annotation, 19 negative confirmation,
+266 identity comparison. Recorded usage is 15,879,129 input tokens (3,301,120 cached) and 491,423 output
+tokens. These are model-token counters, not a Codex subscription invoice. Successful calls were
+reused across interrupted experiments; a roughly 21-second cache-only replay is NOT cold runtime.
+The final continuation at concurrency 8 took 364.71 seconds for 199 newly executed comparison calls;
+earlier stages and local embedding work are additional. Production retains its explicitly configured
+concurrency until separately changed. Synthetic million-vector capacity evidence below does not
+establish a million-record daily pipeline SLA.
+
+## Development history
 
 The first complete 6,878-unit run finished structurally but failed semantic acceptance: 6,342
 packages, information retention 193/195 (98.97%) against the independent reference, correct separation

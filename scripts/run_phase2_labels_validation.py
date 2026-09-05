@@ -16,6 +16,11 @@ from ai_digest.phase2_labels import SemanticPhase2
 from ai_digest.v3 import build_observation_units, load_phase1_items
 
 
+class CacheOnlyRunner(CodexRunner):
+    async def run(self, **kwargs):
+        raise RuntimeError("cache-only validation refuses an uncached model call")
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
@@ -27,6 +32,7 @@ async def main() -> None:
     parser.add_argument("--text-only", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--reasoning", choices=["low", "none", "medium"], default="medium")
     parser.add_argument("--concurrency", type=int, choices=range(1, 17), default=4)
+    parser.add_argument("--cache-only", action="store_true")
     args = parser.parse_args()
     source = args.source.resolve()
     target = args.target.resolve()
@@ -65,7 +71,7 @@ async def main() -> None:
         router_reader_concurrency=args.concurrency)
     if args.reuse_work:
         previous = args.reuse_work.resolve() / "02_routing" / "semantic_labels_v1"
-        for stage in ("labels", "index"):
+        for stage in ("labels", "index", "discard-checks", "merge-blocks"):
             if (previous / stage).is_dir():
                 shutil.copytree(
                     previous / stage,
@@ -74,7 +80,8 @@ async def main() -> None:
                 )
     runtime = RuntimeConfig(codex=config)
     start = time.monotonic()
-    routing = await SemanticPhase2(runtime, CodexRunner(config.binary)).run(
+    runner = CacheOnlyRunner(config.binary) if args.cache_only else CodexRunner(config.binary)
+    routing = await SemanticPhase2(runtime, runner).run(
         target, items, units, ""
     )
     manifest = json.loads((target / "02_routing" / "phase2_manifest.json").read_text())

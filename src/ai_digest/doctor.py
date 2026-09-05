@@ -14,6 +14,20 @@ from .x_provider import TwitterApiIOKeyStore
 MIN_RUNTIME_FREE_BYTES = 5 * 1024**3
 
 
+def codex_profiles(runtime: RuntimeConfig) -> set[tuple[str, str]]:
+    config = runtime.codex
+    profiles = {(config.research_model, config.research_reasoning),
+                (config.brief_model, config.brief_reasoning),
+                (config.phase3_admission_model, config.phase3_admission_reasoning)}
+    if config.phase2_engine == "semantic_labels_v1":
+        profiles.add((config.phase2_label_model, config.phase2_label_reasoning))
+    else:
+        profiles.update({(config.router_model, config.router_reasoning),
+            (config.router_reader_model, config.router_reader_reasoning),
+            (config.router_decider_model, config.router_decider_reasoning)})
+    return profiles
+
+
 def run_doctor(runtime: RuntimeConfig, sources: SourcesConfig) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
 
@@ -31,16 +45,10 @@ def run_doctor(runtime: RuntimeConfig, sources: SourcesConfig) -> dict[str, Any]
     codex = resolve_binary(runtime.codex.binary)
     lark = resolve_binary(runtime.lark.binary)
     add("codex_cli", Path(codex).exists(), codex)
-    for model in sorted(
-        {
-            runtime.codex.router_model,
-            runtime.codex.research_model,
-            runtime.codex.brief_model,
-        }
-    ):
+    for model, reasoning in sorted(codex_profiles(runtime)):
         add(
-            f"codex_model:{model}",
-            _codex_model_access(codex, model),
+            f"codex_model:{model}:{reasoning}",
+            _codex_model_access(codex, model, reasoning),
             "minimal authenticated codex exec completed",
         )
     add("lark_cli", Path(lark).exists(), lark)
@@ -130,7 +138,7 @@ def _command_ok(args: list[str]) -> bool:
         return False
 
 
-def _codex_model_access(binary: str, model: str) -> bool:
+def _codex_model_access(binary: str, model: str, reasoning: str = "low") -> bool:
     if not Path(binary).exists():
         return False
     try:
@@ -144,7 +152,7 @@ def _codex_model_access(binary: str, model: str) -> bool:
                 "-m",
                 model,
                 "-c",
-                'model_reasoning_effort="low"',
+                "model_reasoning_effort=" + json.dumps(reasoning),
                 "Return only OK.",
             ],
             cwd=REPO_ROOT,

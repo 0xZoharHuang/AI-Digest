@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 from collections import Counter
+from itertools import combinations
 from pathlib import Path
 from typing import Any, Literal
 
@@ -60,6 +62,92 @@ def validate_identities(value: Any, expected: set[str]) -> list[list[str]]:
     ):
         raise ValueError("identity assignment coverage mismatch")
     return validate_group_merges({"merges": [[gid, rep] for gid, rep in value.items()]}, expected)
+
+
+def constrained_components(
+    ids: list[str], decisions: list[list[list[str]]], exact: list[list[str]],
+    non_bridging: set[str] | None = None,
+) -> tuple[list[list[str]], int]:
+    """Do not let an ambiguous bridge erase explicit distinct multi-member identities.
+
+    Singleton/self assignments remain abstentions, not negative evidence. Only differing
+    nontrivial identities in the SAME comparison establish a separation constraint.
+    """
+    parents = {pid: pid for pid in ids}
+    non_bridging = non_bridging or set()
+    signatures: dict[str, dict[int, set[int]]] = {pid: {} for pid in ids}
+    support: Counter[tuple[str, str]] = Counter()
+    for scope, groups in enumerate(decisions):
+        for group_index, group in enumerate(groups):
+            for pid in group:
+                signatures[pid][scope] = {group_index}
+            support.update(combinations(sorted(group), 2))
+
+    def find(pid: str) -> str:
+        while parents[pid] != pid:
+            parents[pid] = parents[parents[pid]]
+            pid = parents[pid]
+        return pid
+
+    def join(a: str, b: str, *, literal: bool = False) -> bool:
+        left, right = sorted((find(a), find(b)))
+        if left == right:
+            return True
+        ls, rs = signatures[left], signatures[right]
+        if not literal and any(ls[scope].isdisjoint(rs[scope]) for scope in ls.keys() & rs.keys()):
+            return False
+        parents[right] = left
+        for scope, classes in rs.items():
+            ls.setdefault(scope, set()).update(classes)
+        return True
+
+    for group in exact:
+        for pid in group[1:]:
+            join(group[0], pid, literal=True)
+    blocked = 0
+    deferred_neighbours: dict[str, set[str]] = {pid: set() for pid in non_bridging}
+    for pair in sorted(support, key=lambda pair: (-support[pair], pair)):
+        if non_bridging.intersection(pair):
+            for pid in non_bridging.intersection(pair):
+                deferred_neighbours[pid].update(other for other in pair if other not in non_bridging)
+            continue
+        blocked += not join(*pair)
+    # A bare link/empty captured body may attach to one known identity, but may not
+    # fuse two identities through conflicting contextual guesses in different calls.
+    for pid in sorted(non_bridging):
+        neighbours = deferred_neighbours[pid]
+        roots = {find(other) for other in neighbours}
+        if len(roots) == 1:
+            join(pid, next(iter(roots)))
+        elif len(roots) > 1:
+            blocked += len(neighbours)
+    components: dict[str, list[str]] = {}
+    for pid in ids:
+        components.setdefault(find(pid), []).append(pid)
+    return list(components.values()), blocked
+
+
+def has_captured_anchor(document: dict[str, Any]) -> bool:
+    for observation in document.get("observations", []):
+        payload = observation["payload"]
+        for key in ("title", "text", "text_preview", "abstract", "description", "readme_preview"):
+            text = re.sub(r"https?://\S+|@[\w_]+", "", str(payload.get(key) or ""))
+            if any(char.isalpha() for char in text):
+                return True
+    return False
+
+
+def original_title(document: dict[str, Any]) -> str:
+    for observation in document.get("observations", []):
+        payload = observation["payload"]
+        title = str(payload.get("title") or "").strip()
+        if not title and observation.get("item_type") == "github_repository":
+            title = str(payload.get("full_name") or "").strip()
+        if not title and observation.get("item_type") == "article":
+            title = str(payload.get("text_preview") or "").split("\n", 1)[0].strip()
+        if title:
+            return title[:200]
+    return ""
 
 
 def validate_group_merges(value: Any, expected: set[str]) -> list[list[str]]:
@@ -255,6 +343,7 @@ class SemanticPhase2:
         self.deferred_merges: list[str] = []
         self.context_abstentions = 0
         self.rescued_units: set[str] = set()
+        self.conflicting_merges = 0
 
     async def confirm_exclusions(
         self, work: Path, payloads: list[dict[str, Any]], results: list[BatchOutput]
@@ -453,6 +542,9 @@ class SemanticPhase2:
                 by_alias = {row["unit_id"]: row for row in alias_input}
                 for label in result.labels:
                     document = by_alias[label.unit_id]
+                    types = {o["item_type"] for o in document["observations"]}
+                    if types and types <= {"paper", "hf_daily_paper"}:
+                        label.kind = "paper"
                     if label.signal == "chatter" and incomplete_context(document):
                         label.signal = "unclear"
                         label.local_group_id = f"unobserved_{label.unit_id}"
@@ -529,7 +621,7 @@ class SemanticPhase2:
             {
                 "contract": CONTRACT,
                 "prompt_version": PROMPT_VERSION,
-                "grouping_contract": "unit_identity_assignments_v1",
+                "grouping_contract": "anchored_unit_identities_v1",
                 "execution_concurrency": self.runtime.codex.router_reader_concurrency,
                 "input_hash": input_hash,
                 "unit_count": len(units),
@@ -539,6 +631,7 @@ class SemanticPhase2:
                 "discard_verification_version": 1,
                 "discard_verified_count": exclusion_count,
                 "discard_rescued_unit_ids": sorted(self.rescued_units),
+                "conflicting_merge_count": self.conflicting_merges,
                 "calls": self.calls,
                 "deferred_merge_package_ids": self.deferred_merges,
                 "hashes": {
@@ -606,35 +699,34 @@ class SemanticPhase2:
         tasks = [asyncio.create_task(consolidate(block)) for block in blocks]
         try:
             consolidated = await asyncio.gather(*tasks)
-            consolidated.append(exact_duplicate_groups(packages, documents))
         except BaseException:
             for task in tasks:
                 if not task.done() and not task.cancelling():
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
-        # Only explicit model-confirmed identity relations are transitive, never ANN similarity.
-        parents = {pid: pid for pid in by_id}
-        def find(pid: str) -> str:
-            while parents[pid] != pid:
-                parents[pid] = parents[parents[pid]]
-                pid = parents[pid]
-            return pid
-        for decisions in consolidated:
-            for group in decisions:
-                for pid in group[1:]:
-                    left, right = sorted((find(group[0]), find(pid)))
-                    parents[right] = left
-        components: dict[str, list[ResearchPackage]] = {}
-        for pid, package in by_id.items():
-            components.setdefault(find(pid), []).append(package)
+        components, self.conflicting_merges = constrained_components(
+            list(by_id), consolidated, exact_duplicate_groups(packages, documents),
+            {p.package_id for p in packages if not any(has_captured_anchor(documents[uid]) for uid in p.unit_ids)},
+        )
         result = []
-        for originals in components.values():
+        support: Counter[str] = Counter()
+        for scope in consolidated:
+            for group in scope:
+                support.update({pid: len(group) - 1 for pid in group})
+        titles = {p.package_id: next((title for uid in p.unit_ids if (title := original_title(documents[uid]))), "") for p in packages}
+        anchored = {p.package_id: any(has_captured_anchor(documents[uid]) for uid in p.unit_ids) for p in packages}
+        for component in components:
+            originals = [by_id[pid] for pid in component]
             if len(originals) == 1:
-                result.append(originals[0])
+                package = originals[0]
+                label = titles[package.package_id] or package.label_zh
+                if not anchored[package.package_id]:
+                    label = "待补全来源内容：" + str(documents[package.unit_ids[0]].get("entity_key", package.unit_ids[0]))
+                result.append(package.model_copy(update={"label_zh": label}))
                 continue
             ids = sorted(uid for package in originals for uid in package.unit_ids)
-            representative = max(originals, key=lambda p: (len(p.unit_ids), p.package_id))
-            result.append(ResearchPackage(package_id="p_" + digest(ids)[:20], label_zh=representative.label_zh,
+            representative = max(originals, key=lambda p: (bool(titles[p.package_id]), anchored[p.package_id], support[p.package_id], p.package_id))
+            result.append(ResearchPackage(package_id="p_" + digest(ids)[:20], label_zh=titles[representative.package_id] or representative.label_zh,
                 scope_note_zh="同一具体对象、事件或窄问题；研究范围由本包独立 Agent 确定。", unit_ids=ids))
         return result
