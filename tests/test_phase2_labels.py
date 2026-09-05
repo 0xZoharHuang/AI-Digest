@@ -235,6 +235,19 @@ async def test_research_workspace_handles_chatter_outside_the_candidate_catalog(
 
 
 @pytest.mark.asyncio
+async def test_downstream_failure_does_not_overwrite_valid_phase2(tmp_path, monkeypatch):
+    from ai_digest.pipeline import _ensure_failure_publish_inputs
+    monkeypatch.setattr("ai_digest.semantic_index.nearest_groups", lambda *args: {})
+    source = items(3)
+    await SemanticPhase2(RuntimeConfig(), LabelRunner()).run(tmp_path, source, build_observation_units(source), "")
+    root = tmp_path / "02_routing"
+    before = {p.name: p.read_bytes() for p in root.iterdir() if p.is_file()}
+    _ensure_failure_publish_inputs(tmp_path, "phase3", "downstream failure")
+    assert before == {p.name: p.read_bytes() for p in root.iterdir() if p.is_file()}
+    validate_artifacts(root)
+
+
+@pytest.mark.asyncio
 async def test_zero_budget_never_calls_model(tmp_path):
     runner = LabelRunner()
     admission = await select_phase3_admission(

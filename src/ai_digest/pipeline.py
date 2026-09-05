@@ -8,6 +8,7 @@ import re
 import shutil
 import sqlite3
 import stat
+import traceback
 from contextlib import closing, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -258,7 +259,7 @@ async def _run_agent_worker_unlocked(runtime: RuntimeConfig, *, job_id: str | No
                         continue
                 atomic_write_json(
                     job_dir / "worker_failure.json",
-                    {"phase": active_phase, "error": detail},
+                    {"phase": active_phase, "error": detail, "traceback": traceback.format_exc()},
                 )
                 _write_pipeline_failure(job_dir, detail)
                 _ensure_failure_publish_inputs(job_dir, active_phase, detail)
@@ -429,11 +430,12 @@ def import_agent_job(runtime: RuntimeConfig, job_dir: Path) -> Path:
 def _ensure_failure_publish_inputs(job_dir: Path, failed_phase: str, detail: str) -> None:
     routing = job_dir / "02_routing"
     routing.mkdir(parents=True, exist_ok=True)
-    if not (routing / "bundles.json").exists():
-        atomic_write_json(routing / "bundles.json", [])
-    if not (routing / "assignments.jsonl").exists():
-        atomic_write_text(routing / "assignments.jsonl", "")
-    atomic_write_text(routing / "PHASE2_COMPLETE", "fallback\n")
+    if failed_phase == "phase2" or not (routing / "PHASE2_COMPLETE").exists():
+        if not (routing / "bundles.json").exists():
+            atomic_write_json(routing / "bundles.json", [])
+        if not (routing / "assignments.jsonl").exists():
+            atomic_write_text(routing / "assignments.jsonl", "")
+        atomic_write_text(routing / "PHASE2_COMPLETE", "fallback\n")
 
     research = job_dir / "03_research"
     research.mkdir(parents=True, exist_ok=True)
