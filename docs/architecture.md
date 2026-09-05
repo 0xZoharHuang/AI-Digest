@@ -4,7 +4,8 @@
 
 ```text
 platform observations -> sealed source JSONL -> exact observation units
-  -> one serial Phase 2 Codex thread -> 0-15 research packages
+  -> bounded Phase 2 Readers -> precision Readers -> one object Editor
+  -> selected research objects
   -> package research leads -> Chinese main reports/optional subreports
   -> navigation brief -> private Lark Wiki + self-DM
 ```
@@ -25,8 +26,8 @@ store/
 runs/<date>/attempt-0001/
   00_run_manifest.json
   01_phase1/{x_list,x_for_you,github,papers,articles,hackernews}.jsonl
-  02_routing/{units.jsonl,catalog.jsonl,working_map.md,packages.json,phase2_manifest.json}
-  03_research/<package-id>/{main_report.md,intake.jsonl,evidence.jsonl,subreports/,research_manifest.json}
+  02_routing/{units.jsonl,decisions.jsonl,objects.json,phase2_manifest.json}
+  03_research/<object-id>/{main_report.md,intake.jsonl,evidence.jsonl,subreports/,research_manifest.json}
   04_brief/daily_brief.md
   05_publish/publish_manifest.json
 state.db
@@ -79,37 +80,47 @@ state, duplicate/revision counts, observed time range, raw completeness and quie
 Deterministic unitization groups only provably identical entities: an X post/conversation, GitHub
 repo, arXiv paper, HN story or canonical article. Semantic similarity never deletes evidence.
 
-One new Codex thread is created for each day and resumed across bounded batches of at most 160 units
-and 256 KiB projection. Each batch reads every unit but returns only exact semantic membership plus a
-compact group-level working map:
+Phase 2 gives every complete normalized unit to a bounded semantic Reader. Batches contain at most
+96 units and 256 KiB, interleave sources, and run with a small fixed concurrency. A Reader may use
+scripts for navigation and coverage checks, but only Codex may assign `research`, `watch`, or
+`archive`; Archive must be a positive semantic decision rather than a default for records outside a
+keyword or score threshold.
 
 ```json
 {
-  "assignments": {
-    "u_...": "dynamic-topic-key",
-    "u_...2": "another-topic-key"
-  },
-  "working_map": "group-level semantic boundaries"
+  "unit_id": "u_...",
+  "route": "research",
+  "object_key": "concrete-object-hint",
+  "object_label_zh": "具体对象",
+  "reason_zh": "一句选择依据"
 }
 ```
 
-Every unit ID in the bounded batch is a required object key. This preserves Agent-owned semantic
-classification while making exact structural coverage a schema property instead of relying on a
-variable-length list and follow-up repair calls.
+Each batch response is constrained by JSON Schema and then checked for exact, unique unit coverage.
+An invalid batch is returned to its own saved Codex session with the concrete missing/duplicate IDs;
+valid batches are immutable recovery points. Reader batches may run concurrently. The first pass is
+deliberately high-recall; a second bounded pass of at most 64 units and 192 KiB re-reads every retained
+unit and makes the precise Research/Watch/Archive candidate judgment. Both passes remain flat,
+rebuildable files rather than an opaque workflow state machine.
 
-The application derives internal catalog previews mechanically from the retained Phase 1 projection;
-Phase 2 does not rewrite, translate or polish thousands of per-unit summaries. Historical summary
-checkpoints remain readable when an interrupted run resumes across this contract change.
+After both passes are valid, one higher-capability Editor receives Research object candidates with
+their full normalized units and a mechanical `source_signals` view of event/release/growth/engagement
+fields. It decides which objects warrant a full Phase 3 job within the next daily cycle, reviews a
+deterministic per-source Archive sample plus exact-identifier neighbors, and resolves same-object
+evidence across batches and sources. Exact identifiers and canonical URLs are identity evidence;
+lexical similarity, source, time, stars or engagement may select records for inspection but never
+decide a route. Objects not selected for today's Phase 3 remain Watch rather than being discarded.
 
-Phase 2 does not decide importance, research depth, questions or conclusions. The application
-persists the thread as soon as Codex starts it, hashes every input checkpoint, and rejects mixed
-threads or stale outputs.
+The formal output remains deliberately small:
 
-As it reads, the Agent reuses or creates dynamic group IDs and carries their meanings in the working
-map. After all batches, the same thread consolidates every observed group into 1–15 semantic
-packages. Code only expands group membership back to units and validates exact coverage; it does not
-perform semantic matching, importance filtering or mechanical package splitting. Large package
-catalogs are stored as bounded shards for the Lead.
+- `decisions.jsonl`: one final `research/watch/archive` decision per unit. Research has a concrete
+  object and one-sentence reason; Watch has one sentence; Archive carries no editorial rewrite.
+- `objects.json`: Research objects with all same-object Research units and any explicitly linked
+  Watch support. Each object must contain at least one Research unit.
+
+Phase 2 does not write research scope, questions, evidence plans, scores, per-item summaries or
+report structure. Phase 3 owns those decisions. The application validates exact decision coverage,
+object membership, hashes and the final Editor session; historical Phase 2 contracts remain readable.
 
 ## Phase 3 contract
 

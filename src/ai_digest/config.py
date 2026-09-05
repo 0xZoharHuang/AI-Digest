@@ -28,6 +28,12 @@ class CodexConfig(BaseModel):
     binary: str = "./node_modules/.bin/codex"
     router_model: str = "gpt-5.6-sol"
     router_reasoning: str = "high"
+    router_reader_model: str = "gpt-5.6-terra"
+    router_reader_reasoning: str = "high"
+    router_reader_concurrency: int = Field(default=4, ge=1, le=16)
+    router_decider_model: str = "gpt-5.6-terra"
+    router_decider_reasoning: str = "high"
+    router_decider_concurrency: int = Field(default=4, ge=1, le=16)
     research_model: str = "gpt-5.6-sol"
     research_reasoning: str = "medium"
     brief_model: str = "gpt-5.6-sol"

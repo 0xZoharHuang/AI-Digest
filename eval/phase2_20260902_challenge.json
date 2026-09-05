@@ -1,0 +1,112 @@
+{
+  "groups": [
+    {
+      "name": "claude-fable-mythos-5-1",
+      "accepted_routes": ["research", "watch"],
+      "minimum_research": 1,
+      "same_object": true,
+      "unit_ids": [
+        "u_048713246c4ed5208781",
+        "u_122118ee2c4bf79cc081",
+        "u_20c3204664c7785d4fab",
+        "u_2c7d22d29f39a1604312",
+        "u_790607b12fbdc4e497e9",
+        "u_b016ba4ed177a9a0479f",
+        "u_d485bdcf4e51e131c974",
+        "u_e3cca1d6b5fec3a66e42"
+      ]
+    },
+    {
+      "name": "gemini-agentic-video-understanding",
+      "accepted_routes": ["research", "watch"],
+      "minimum_research": 1,
+      "same_object": true,
+      "unit_ids": [
+        "u_321623f66d031c628db4",
+        "u_3ef7f6f9769f1e66b58a",
+        "u_400d3c8ffaa1d40a73b5",
+        "u_43d0a87fb84ab106219d",
+        "u_ce12c7f3a7cfb9250878"
+      ]
+    },
+    {
+      "name": "meta-muse-voice-transcribe",
+      "accepted_routes": ["research", "watch"],
+      "minimum_research": 1,
+      "same_object": true,
+      "unit_ids": [
+        "u_0d0bfddfa77c7ced7f9b",
+        "u_742216bdcbf9ebaa0e24",
+        "u_cc3f58497fe7afe6d2f3",
+        "u_dcb622b565fc58279f0f"
+      ]
+    },
+    {
+      "name": "openai-astra",
+      "accepted_routes": ["research", "watch"],
+      "minimum_research": 1,
+      "same_object": true,
+      "unit_ids": [
+        "u_1cb9bf820485d6172c8a",
+        "u_25f49e200acb68764bfe",
+        "u_410cd5c913f445ae0f9f",
+        "u_d83684e6c7bf3bc4e199",
+        "u_ff3f4bad4e5bd3270740"
+      ]
+    },
+    {
+      "name": "perplexity-hybrid-compute",
+      "accepted_routes": ["research", "watch"],
+      "minimum_research": 1,
+      "same_object": true,
+      "unit_ids": [
+        "u_630a7620cf55d5257a2a",
+        "u_6c68aaa87a1a71b231f4",
+        "u_dabf78bc18a1177e017e",
+        "u_f7c6dd597f391ad47f9c"
+      ]
+    },
+    {
+      "name": "world-labs-atlas",
+      "accepted_routes": ["research", "watch"],
+      "minimum_research": 1,
+      "same_object": true,
+      "unit_ids": [
+        "u_556f3a6de2f8543f23f3",
+        "u_dbe8b3aee8ae82a6aef1"
+      ]
+    }
+  ],
+  "units": [
+    {
+      "name": "nori-robotics",
+      "unit_id": "u_01a062ebfc05fec1ad50",
+      "accepted_routes": ["research"]
+    },
+    {
+      "name": "scientific-agent-skills",
+      "unit_id": "u_41486d6a3ec5419e969c",
+      "accepted_routes": ["research"]
+    },
+    {
+      "name": "eva-client",
+      "unit_id": "u_80dfeaf1ae17d8f171fb",
+      "accepted_routes": ["research", "watch"]
+    },
+    {
+      "name": "ecc-agent-harness",
+      "unit_id": "u_cde5faa58ebc4cda1319",
+      "accepted_routes": ["research"]
+    },
+    {
+      "name": "openmaic",
+      "unit_id": "u_85abe75fc29bb9b14e25",
+      "accepted_routes": ["research"]
+    },
+    {
+      "name": "archify",
+      "unit_id": "u_434a1bd5efde4b3d8252",
+      "accepted_routes": ["research"]
+    }
+  ]
+}

@@ -26,7 +26,7 @@ from ai_digest.phase2_attention import (
     validate_editor_outputs,
 )
 from ai_digest.store import load_jsonl
-from ai_digest.v3 import V3Phases
+from ai_digest.v3 import build_observation_units, load_phase1_items
 
 
 def _item(item_id: str, source: str, text: str) -> SourceItem:
@@ -147,6 +147,34 @@ def test_attention_selection_has_no_object_count_or_size_policy():
     validate_attention_selection(decisions, objects)
 
 
+def test_attention_selection_allows_watch_support_inside_research_object():
+    research_id = "u_00000000000000000001"
+    watch_id = "u_00000000000000000002"
+    decisions = {
+        research_id: Phase2RoutingDecision(
+            unit_id=research_id,
+            route="research",
+            object_id="candidate",
+            reason_zh="值得继续查看",
+        ),
+        watch_id: Phase2RoutingDecision(
+            unit_id=watch_id,
+            route="watch",
+            object_id="candidate",
+            reason_zh="同一对象的补充材料",
+        ),
+    }
+    objects = [
+        Phase2ResearchObject(
+            object_id="candidate",
+            label_zh="候选对象",
+            unit_ids=[research_id, watch_id],
+        )
+    ]
+
+    validate_attention_selection(decisions, objects)
+
+
 def _write_final_outputs(root: Path, *, partial: bool = False) -> None:
     documents = [
         Phase2UnitDocument.model_validate(row)
@@ -240,7 +268,7 @@ def _sealed_run(tmp_path: Path) -> Path:
 
 
 @pytest.mark.asyncio
-async def test_attention_editor_uses_one_long_task_and_resumes_same_thread(
+async def test_legacy_attention_editor_uses_one_long_task_and_resumes_same_thread(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(attention_module, "PHASE2_ATTENTION_BATCH_MAX_UNITS", 1)
@@ -248,18 +276,20 @@ async def test_attention_editor_uses_one_long_task_and_resumes_same_thread(
     run = _sealed_run(tmp_path)
     runtime = RuntimeConfig(runtime_root=tmp_path, shared_runtime_root=tmp_path / "queue")
     first_runner = LongEditorRunner(fail_once=True)
+    items = load_phase1_items(run / "01_phase1")
+    units = build_observation_units(items)
 
     with pytest.raises(RetryableCodexError):
-        await V3Phases(runtime, first_runner).route(  # type: ignore[arg-type]
-            run, run / "interests.md"
+        await attention_module.AttentionPhase2(runtime, first_runner).run(  # type: ignore[arg-type]
+            run, items, units, (run / "interests.md").read_text()
         )
     assert first_runner.calls == [
         ("attention-editor-v2", None, True, "workspace-write")
     ]
 
     second_runner = LongEditorRunner()
-    routing = await V3Phases(runtime, second_runner).route(  # type: ignore[arg-type]
-        run, run / "interests.md"
+    routing = await attention_module.AttentionPhase2(runtime, second_runner).run(  # type: ignore[arg-type]
+        run, items, units, (run / "interests.md").read_text()
     )
     assert second_runner.calls == [
         ("attention-editor-v2", "attention-thread", True, "workspace-write")
@@ -280,8 +310,8 @@ async def test_attention_editor_uses_one_long_task_and_resumes_same_thread(
     assert {assignment.d for assignment in routing.assignments} == {"r", "w", "n"}
 
     cached_runner = LongEditorRunner()
-    cached = await V3Phases(runtime, cached_runner).route(  # type: ignore[arg-type]
-        run, run / "interests.md"
+    cached = await attention_module.AttentionPhase2(runtime, cached_runner).run(  # type: ignore[arg-type]
+        run, items, units, (run / "interests.md").read_text()
     )
     assert cached_runner.calls == []
     assert cached == routing

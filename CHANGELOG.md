@@ -5,8 +5,19 @@ versioning for public releases.
 
 ## [Unreleased]
 
+### Changed
+
+- Replace the one-context/source-lane Phase 2 path with a high-recall bounded full-record pass, a
+  smaller precision pass over retained units, and one higher-capability Editor that owns the
+  daily Phase 3 queue, Archive audit and concrete object consolidation.
+- Keep the production handoff minimal as `decisions.jsonl` plus `objects.json`; Watch evidence may
+  attach to a Research object without being promoted to Research, while Phase 3 retains research
+  scope and report design.
+
 ### Fixed
 
+- Reject duplicate, missing, or unknown unit IDs even when a batch response satisfies JSON Schema,
+  repair only that batch in its saved Codex session, and retain valid batches across interruption.
 - Preserve the currently loaded immutable V3 snapshot during cutover, attempt and report its recovery
   when a replacement LaunchAgent bootstrap fails, and support an explicit reversible
   `--rollback-v3` switch without falling through to the legacy V1 schedule.

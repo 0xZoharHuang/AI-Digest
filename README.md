@@ -18,7 +18,7 @@ X / GitHub / papers / media / HN
        durable observations
                 │
                 ▼
- one daily semantic-grouping thread
+ bounded semantic Readers + one daily Editor
                 │
                 ▼
        parallel research leads
@@ -43,8 +43,8 @@ traceable research**:
 - A source adapter records what the platform actually exposed, not what an editorial layer guessed
   was important.
 - A daily run drains every ready, undelivered observation; late arrivals survive outages.
-- Phase 2 understands each observation once, assigns a dynamic group, and consolidates those groups
-  into unique packages without deciding importance.
+- Phase 2 gives every normalized unit a bounded Codex review, then one Editor selects concrete
+  research objects and consolidates their same-object evidence without designing Phase 3 research.
 - Phase 3 uses each new signal as a starting point for primary-evidence deep research.
 - A Lead may withhold a fully inspected package instead of publishing a filler page.
 - Phase 4 is a reading map. It does not compress the day into a forced grand narrative.
@@ -72,7 +72,7 @@ stale content nodes that are recorded in the same run's publish manifest.
 | Phase | First-principles job | Main artifacts |
 |---|---|---|
 | 1 — Observe | Save platform-native increments, revisions, receipts, and health without editorial ranking | source JSONL, raw blobs, fetch manifests, `index.json` |
-| 2 — Route | Mechanically form exact units; one daily Codex thread summarizes and uniquely groups every unit into 1–15 dynamic packages | `units.jsonl`, `catalog.jsonl`, `working_map.md`, `packages.json`, `phase2_manifest.json` |
+| 2 — Route | Mechanically form exact units; high-recall and precision bounded Codex passes judge every retained full record, then one Editor selects/merges today's concrete research objects | `units.jsonl`, `decisions.jsonl`, `objects.json`, `phase2_manifest.json` |
 | 3 — Research | One lead per package performs artifact-level deep research and writes natural Simplified-Chinese work | `main_report.md`, `intake.jsonl`, `evidence.jsonl`, optional `subreports/*.md` |
 | 4 — Navigate | Build a reader-facing Brief that links to research and exposes failures/unknowns | `daily_brief.md`, quality and source-health files |
 | 5 — Publish | Validate the tree, update Lark idempotently, and send one self-DM | `publish_manifest.json` |
@@ -140,6 +140,7 @@ uv run ai-digest collect --source arxiv --source huggingface
 uv run ai-digest pipeline
 
 # Isolated owner runtime + real Codex worker + publish preflight; never calls Lark
+# This verifies integration, not Phase 2 semantic quality.
 uv run ai-digest automation-smoke
 ```
 

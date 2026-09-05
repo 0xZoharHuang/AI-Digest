@@ -8,8 +8,14 @@ x_text_retention_days = 30
 
 [codex]
 binary = "./node_modules/.bin/codex"
-router_model = "gpt-5.6-terra"
+router_model = "gpt-5.6-sol"
 router_reasoning = "high"
+router_reader_model = "gpt-5.6-terra"
+router_reader_reasoning = "high"
+router_reader_concurrency = 4
+router_decider_model = "gpt-5.6-terra"
+router_decider_reasoning = "high"
+router_decider_concurrency = 4
 research_model = "gpt-5.6-sol"
 research_reasoning = "medium"
 brief_model = "gpt-5.6-terra"

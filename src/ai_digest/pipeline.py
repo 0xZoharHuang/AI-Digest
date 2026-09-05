@@ -24,6 +24,8 @@ from .models import (
     ObservationUnit,
     Phase2Annotation,
     Phase2CatalogEntry,
+    Phase2ResearchObject,
+    Phase2UnitDocument,
     PublishManifest,
     ResearchPackage,
     RunManifest,
@@ -836,10 +838,63 @@ def _import_routing(job: Path, run: Path) -> None:
     if not source.exists():
         raise ValueError("runner output is missing 02_routing")
     if (source / "phase2_manifest.json").exists():
+        manifest_content = _safe_read(
+            source, Path("phase2_manifest.json"), 2_000_000
+        )
+        manifest_value = json.loads(manifest_content)
+        contract = str(manifest_value.get("contract") or "")
+        if contract in {
+            "attention_editor_v1",
+            "attention_editor_v2",
+            "attention_editor_v3",
+        }:
+            units_content = _safe_read(source, Path("units.jsonl"), 50_000_000)
+            decisions_content = _safe_read(
+                source, Path("decisions.jsonl"), 20_000_000
+            )
+            objects_content = _safe_read(source, Path("objects.json"), 10_000_000)
+            if any(
+                (source / name).exists()
+                for name in ("annotations.jsonl", "catalog.jsonl", "packages.json")
+            ):
+                raise ValueError("runner output mixes Phase 2 routing contracts")
+            from .phase2_attention import validate_attention_artifacts
+
+            validate_attention_artifacts(source)
+            documents = [
+                Phase2UnitDocument.model_validate(row)
+                for row in parse_jsonl_text(units_content)
+            ]
+            phase1_index = json.loads(
+                (run / "01_phase1" / "index.json").read_text(encoding="utf-8")
+            )
+            expected_items = {
+                str(value) for value in phase1_index.get("item_ids", [])
+            }
+            actual_items = [
+                item_id for document in documents for item_id in document.item_ids
+            ]
+            if (
+                len(actual_items) != len(set(actual_items))
+                or set(actual_items) != expected_items
+            ):
+                raise ValueError(
+                    "attention Phase 2 units do not exactly cover imported Phase 1 items"
+                )
+            target = run / "02_routing"
+            target.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(target / "units.jsonl", units_content)
+            atomic_write_text(target / "decisions.jsonl", decisions_content)
+            atomic_write_text(target / "objects.json", objects_content)
+            atomic_write_text(target / "phase2_manifest.json", manifest_content)
+            _copy_optional_json(source, target, "unit_items.json", 20_000_000)
+            _copy_optional_json(source, target, "codex.json", 5_000_000)
+            _safe_read(source, Path("PHASE2_COMPLETE"), 100)
+            atomic_write_text(target / "PHASE2_COMPLETE", f"{contract} complete\n")
+            return
         units_content = _safe_read(source, Path("units.jsonl"), 50_000_000)
         catalog_content = _safe_read(source, Path("catalog.jsonl"), 20_000_000)
         packages_content = _safe_read(source, Path("packages.json"), 5_000_000)
-        manifest_content = _safe_read(source, Path("phase2_manifest.json"), 2_000_000)
         if (source / "annotations.jsonl").exists():
             raise ValueError("runner output mixes Phase 2 routing contracts")
         units = [ObservationUnit.model_validate(row) for row in parse_jsonl_text(units_content)]
@@ -954,10 +1009,27 @@ def _import_research(job: Path, run: Path) -> None:
         raise ValueError("runner output is missing 03_research")
     routing_path = run / "02_routing" / "bundles.json"
     packages_path = run / "02_routing" / "packages.json"
-    if not routing_path.exists() and not packages_path.exists():
+    objects_path = run / "02_routing" / "objects.json"
+    if not routing_path.exists() and not packages_path.exists() and not objects_path.exists():
         raise ValueError("research output arrived without validated routing")
     expected_units: dict[str, set[str]] = {}
-    if packages_path.exists() and (run / "02_routing" / "phase2_manifest.json").exists():
+    if objects_path.exists() and (run / "02_routing" / "phase2_manifest.json").exists():
+        manifest = json.loads(
+            (run / "02_routing" / "phase2_manifest.json").read_text(encoding="utf-8")
+        )
+        if str(manifest.get("contract") or "") not in {
+            "attention_editor_v1",
+            "attention_editor_v2",
+            "attention_editor_v3",
+        }:
+            raise ValueError("objects.json appears under an unsupported Phase 2 contract")
+        objects = [
+            Phase2ResearchObject.model_validate(row)
+            for row in json.loads(objects_path.read_text(encoding="utf-8"))
+        ]
+        bundle_ids = {value.object_id for value in objects}
+        expected_units = {value.object_id: set(value.unit_ids) for value in objects}
+    elif packages_path.exists() and (run / "02_routing" / "phase2_manifest.json").exists():
         packages = [
             ResearchPackage.model_validate(row)
             for row in json.loads(packages_path.read_text(encoding="utf-8"))

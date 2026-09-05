@@ -12,6 +12,9 @@ from .artifacts import load_artifact_layout, load_not_published_artifacts
 from .config import LarkConfig, RuntimeConfig, SourcesConfig, resolve_binary
 from .models import (
     Phase2CatalogEntry,
+    Phase2ResearchObject,
+    Phase2RoutingDecision,
+    Phase2UnitDocument,
     PublishNode,
     ResearchPackage,
     SourceItem,
@@ -238,17 +241,8 @@ def verify_automation_smoke(source_runtime: RuntimeConfig, smoke_root: Path) -> 
 
     phase1_index = _json_object(run_dir / "01_phase1" / "index.json")
     expected_items = {str(value) for value in phase1_index.get("item_ids", [])}
-    units = load_jsonl(run_dir / "02_routing" / "units.jsonl")
-    catalog = [
-        Phase2CatalogEntry.model_validate(row)
-        for row in load_jsonl(run_dir / "02_routing" / "catalog.jsonl")
-    ]
-    packages = [
-        ResearchPackage.model_validate(row)
-        for row in json.loads(
-            (run_dir / "02_routing" / "packages.json").read_text(encoding="utf-8")
-        )
-    ]
+    routing_root = run_dir / "02_routing"
+    units = load_jsonl(routing_root / "units.jsonl")
     unit_ids = [str(row["unit_id"]) for row in units]
     unit_items: list[str] = []
     for unit in units:
@@ -256,15 +250,69 @@ def verify_automation_smoke(source_runtime: RuntimeConfig, smoke_root: Path) -> 
         if not isinstance(item_ids, list):
             raise RuntimeError("Phase 2 unit has invalid item_ids")
         unit_items.extend(str(item_id) for item_id in item_ids)
-    if len(unit_ids) != len(set(unit_ids)) or {row.unit_id for row in catalog} != set(unit_ids):
-        raise RuntimeError("Phase 2 unit/catalog coverage is not exact")
     if len(unit_items) != len(set(unit_items)) or set(unit_items) != expected_items:
         raise RuntimeError("Phase 2 units do not exactly cover Phase 1")
-    packaged = [unit_id for package in packages for unit_id in package.unit_ids]
-    if not packages or not unit_ids:
-        raise RuntimeError("smoke produced no research package; Phase 3 was not exercised")
-    if len(packaged) != len(set(packaged)) or set(packaged) != set(unit_ids):
-        raise RuntimeError("Phase 2 packages do not exactly cover units")
+    manifest = _json_object(routing_root / "phase2_manifest.json")
+    expected_research_units: dict[str, set[str]] = {}
+    phase2_selection_count = 0
+    research_object_count = 0
+    if str(manifest.get("contract") or "") in {
+        "attention_editor_v1",
+        "attention_editor_v2",
+        "attention_editor_v3",
+    }:
+        documents = [Phase2UnitDocument.model_validate(row) for row in units]
+        decisions = [
+            Phase2RoutingDecision.model_validate(row)
+            for row in load_jsonl(routing_root / "decisions.jsonl")
+        ]
+        objects = [
+            Phase2ResearchObject.model_validate(row)
+            for row in json.loads(
+                (routing_root / "objects.json").read_text(encoding="utf-8")
+            )
+        ]
+        from .phase2_attention import validate_attention_artifacts
+
+        validate_attention_artifacts(routing_root)
+        if not objects or not documents or not any(
+            value.route == "research" for value in decisions
+        ):
+            raise RuntimeError(
+                "smoke produced no research object; Phase 3 was not exercised"
+            )
+        expected_research_units = {
+            value.object_id: set(value.unit_ids) for value in objects
+        }
+        phase2_selection_count = len(decisions)
+        research_object_count = len(objects)
+    else:
+        catalog = [
+            Phase2CatalogEntry.model_validate(row)
+            for row in load_jsonl(routing_root / "catalog.jsonl")
+        ]
+        packages = [
+            ResearchPackage.model_validate(row)
+            for row in json.loads(
+                (routing_root / "packages.json").read_text(encoding="utf-8")
+            )
+        ]
+        if len(unit_ids) != len(set(unit_ids)) or {
+            row.unit_id for row in catalog
+        } != set(unit_ids):
+            raise RuntimeError("Phase 2 unit/catalog coverage is not exact")
+        packaged = [unit_id for package in packages for unit_id in package.unit_ids]
+        if not packages or not unit_ids:
+            raise RuntimeError(
+                "smoke produced no research package; Phase 3 was not exercised"
+            )
+        if len(packaged) != len(set(packaged)) or set(packaged) != set(unit_ids):
+            raise RuntimeError("Phase 2 packages do not exactly cover units")
+        expected_research_units = {
+            package.package_id: set(package.unit_ids) for package in packages
+        }
+        phase2_selection_count = len(catalog)
+        research_object_count = len(packages)
 
     failures = json.loads(
         (run_dir / "03_research" / "failures.json").read_text(encoding="utf-8")
@@ -275,13 +323,12 @@ def verify_automation_smoke(source_runtime: RuntimeConfig, smoke_root: Path) -> 
     successes = _json_object(run_dir / "03_research" / "successes.json")
     if not successes:
         raise RuntimeError("Phase 3 produced no main report")
-    package_by_id = {package.package_id: package for package in packages}
     for package_id, report_path in successes.items():
         load_artifact_layout(
             run_dir / "03_research" / package_id,
             package_id,
             str(report_path),
-            expected_unit_ids=set(package_by_id[package_id].unit_ids),
+            expected_unit_ids=expected_research_units[package_id],
         )
     not_published = json.loads(
         (run_dir / "03_research" / "not_published.json").read_text(encoding="utf-8")
@@ -293,9 +340,9 @@ def verify_automation_smoke(source_runtime: RuntimeConfig, smoke_root: Path) -> 
         load_not_published_artifacts(
             run_dir / "03_research" / package_id,
             package_id,
-            expected_unit_ids=set(package_by_id[package_id].unit_ids),
+            expected_unit_ids=expected_research_units[package_id],
         )
-    if set(successes) | set(not_published) != set(package_by_id):
+    if set(successes) | set(not_published) != set(expected_research_units):
         raise RuntimeError("Phase 3 did not decide every research package")
 
     preflight = validate_publish_inputs(run_dir, str(row[0]).upper())
@@ -322,8 +369,8 @@ def verify_automation_smoke(source_runtime: RuntimeConfig, smoke_root: Path) -> 
             "state": {"status": str(row[0]), "handoff_state": str(row[1])},
             "phase1_item_count": len(expected_items),
             "phase2_unit_count": len(unit_ids),
-            "phase2_catalog_count": len(catalog),
-            "package_count": len(packages),
+            "phase2_catalog_count": phase2_selection_count,
+            "package_count": research_object_count,
             "main_report_count": len(successes),
             "not_published_count": len(not_published),
             "phase3_missing_count": 0,

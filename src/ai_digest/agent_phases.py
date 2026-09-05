@@ -605,6 +605,21 @@ class AgentPhases:
         await asyncio.gather(*(run_bundle(bundle) for bundle in routing.bundles))
         atomic_write_json(research_root / "failures.json", failures)
         atomic_write_json(research_root / "successes.json", successes)
+        atomic_write_json(
+            research_root / "quality.json",
+            {
+                "status": (
+                    "quiet"
+                    if not routing.bundles
+                    else "success"
+                    if not failures and len(successes) == len(routing.bundles)
+                    else "partial"
+                ),
+                "bundle_count": len(routing.bundles),
+                "success_count": len(successes),
+                "failure_count": len(failures),
+            },
+        )
         atomic_write_text(research_root / "PHASE3_COMPLETE", "complete\n")
         return successes
 

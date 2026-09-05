@@ -28,6 +28,7 @@ from .utils import atomic_write_json, atomic_write_jsonl, atomic_write_text
 PHASE2_ATTENTION_PROMPT_VERSION = "2026-09-04.8"
 PHASE2_ATTENTION_CONTRACT = "attention_editor_v2"
 PHASE2_ATTENTION_LEGACY_CONTRACT = "attention_editor_v1"
+PHASE2_ATTENTION_BOUNDED_CONTRACT = "attention_editor_v3"
 PHASE2_ATTENTION_BATCH_MAX_UNITS = 160
 PHASE2_ATTENTION_BATCH_MAX_BYTES = 256 * 1024
 
@@ -383,16 +384,22 @@ def validate_attention_selection(
     expected_research = {
         unit_id for unit_id, decision in decisions.items() if decision.route == "research"
     }
+    expected_support = {
+        unit_id
+        for unit_id, decision in decisions.items()
+        if decision.route == "watch" and decision.object_id
+    }
+    expected_object_units = expected_research | expected_support
     actual_research = [
         unit_id for research_object in objects for unit_id in research_object.unit_ids
     ]
     if (
         len(actual_research) != len(set(actual_research))
-        or set(actual_research) != expected_research
+        or set(actual_research) != expected_object_units
     ):
         raise RuntimeError(
             "research object coverage mismatch: "
-            f"expected={len(expected_research)} actual={len(set(actual_research))}"
+            f"expected={len(expected_object_units)} actual={len(set(actual_research))}"
         )
     object_by_unit = {
         unit_id: research_object.object_id
@@ -401,11 +408,21 @@ def validate_attention_selection(
     }
     mismatched = sorted(
         unit_id
-        for unit_id in expected_research
+        for unit_id in expected_object_units
         if decisions[unit_id].object_id != object_by_unit.get(unit_id)
     )
     if mismatched:
         raise RuntimeError(f"research decision object mismatch: {mismatched[:20]}")
+    empty_research_objects = sorted(
+        research_object.object_id
+        for research_object in objects
+        if not (set(research_object.unit_ids) & expected_research)
+    )
+    if empty_research_objects:
+        raise RuntimeError(
+            "research objects contain only watch support: "
+            f"{empty_research_objects[:20]}"
+        )
 
 
 def validate_attention_artifacts(root: Path) -> None:
@@ -413,8 +430,11 @@ def validate_attention_artifacts(root: Path) -> None:
     if manifest.get("contract") == PHASE2_ATTENTION_LEGACY_CONTRACT:
         _validate_legacy_attention_v1_artifacts(root, manifest)
         return
-    if manifest.get("schema_version") != 3 or manifest.get("contract") != PHASE2_ATTENTION_CONTRACT:
-        raise RuntimeError("Phase 2 contract is not attention_editor_v2")
+    if manifest.get("schema_version") != 3 or manifest.get("contract") not in {
+        PHASE2_ATTENTION_CONTRACT,
+        PHASE2_ATTENTION_BOUNDED_CONTRACT,
+    }:
+        raise RuntimeError("unsupported Phase 2 attention contract")
     hashes = manifest.get("hashes")
     if not isinstance(hashes, dict):
         raise RuntimeError("Phase 2 attention manifest has no hashes")

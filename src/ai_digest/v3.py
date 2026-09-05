@@ -25,11 +25,12 @@ from .models import (
     SourceItem,
 )
 from .phase2_attention import (
+    PHASE2_ATTENTION_BOUNDED_CONTRACT,
     PHASE2_ATTENTION_CONTRACT,
     PHASE2_ATTENTION_LEGACY_CONTRACT,
-    AttentionPhase2,
     load_attention_routing,
 )
+from .phase2_bounded import BoundedAttentionPhase2
 from .store import load_jsonl
 from .utils import atomic_write_json, atomic_write_jsonl, atomic_write_text
 
@@ -150,7 +151,11 @@ class V3Phases:
         if (
             (root / "PHASE2_COMPLETE").exists()
             and manifest.get("contract")
-            in {PHASE2_ATTENTION_CONTRACT, PHASE2_ATTENTION_LEGACY_CONTRACT}
+            in {
+                PHASE2_ATTENTION_CONTRACT,
+                PHASE2_ATTENTION_BOUNDED_CONTRACT,
+                PHASE2_ATTENTION_LEGACY_CONTRACT,
+            }
         ):
             return load_attention_routing(root)
         if (root / "PHASE2_COMPLETE").exists():
@@ -160,7 +165,7 @@ class V3Phases:
         items = load_phase1_items(phase1)
         units = build_observation_units(items)
         interests = load_interests(interests_path)
-        return await AttentionPhase2(self.runtime, self.runner).run(
+        return await BoundedAttentionPhase2(self.runtime, self.runner).run(
             run_dir,
             items,
             units,

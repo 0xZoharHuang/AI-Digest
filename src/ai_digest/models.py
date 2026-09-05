@@ -181,10 +181,43 @@ class Phase2RoutingDecision(BaseModel):
     def model_post_init(self, __context: Any) -> None:
         if self.route == "research" and (not self.object_id or not self.reason_zh):
             raise ValueError("research decisions require object_id and reason_zh")
-        if self.route == "watch" and (self.object_id or not self.reason_zh):
-            raise ValueError("watch decisions require reason_zh and no object_id")
+        if self.route == "watch" and not self.reason_zh:
+            raise ValueError("watch decisions require reason_zh")
         if self.route == "archive" and (self.object_id or self.reason_zh):
             raise ValueError("archive decisions must not include editorial text")
+
+
+class Phase2ProvisionalDecision(BaseModel):
+    """Bounded-review judgment before cross-batch object consolidation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    unit_id: str
+    route: Literal["research", "watch", "archive"]
+    object_key: str = ""
+    object_label_zh: str = ""
+    reason_zh: str = ""
+
+    @field_validator("object_key", "object_label_zh", "reason_zh")
+    @classmethod
+    def provisional_text_is_trimmed(cls, value: str) -> str:
+        return value.strip()
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.route == "research" and (
+            not self.object_key or not self.object_label_zh or not self.reason_zh
+        ):
+            raise ValueError(
+                "provisional research decisions require object identity and reason"
+            )
+        if self.route == "watch" and not self.reason_zh:
+            raise ValueError("provisional watch decisions require a reason")
+        if bool(self.object_key) != bool(self.object_label_zh):
+            raise ValueError("provisional object key and label must appear together")
+        if self.route == "archive" and (
+            self.object_key or self.object_label_zh or self.reason_zh
+        ):
+            raise ValueError("provisional archive decisions must not include editorial text")
 
 
 class Phase2ResearchObject(BaseModel):
