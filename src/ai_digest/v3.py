@@ -1850,6 +1850,7 @@ def materialize_research_workspace(
                 "package_id": catalog[unit.unit_id].package_id,
             }
             for unit in units.values()
+            if unit.unit_id in catalog
         ),
     )
     atomic_write_jsonl(

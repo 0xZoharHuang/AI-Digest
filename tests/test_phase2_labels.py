@@ -219,6 +219,22 @@ async def test_original_titles_and_canonical_paper_type_override_generated_metad
 
 
 @pytest.mark.asyncio
+async def test_research_workspace_handles_chatter_outside_the_candidate_catalog(tmp_path, monkeypatch):
+    from ai_digest.store import load_jsonl
+    from ai_digest.v3 import materialize_research_workspace
+    monkeypatch.setattr("ai_digest.semantic_index.nearest_groups", lambda *args: {})
+    source = items(3)
+    await SemanticPhase2(RuntimeConfig(), LabelRunner()).run(tmp_path, source, build_observation_units(source), "")
+    packages, units, catalog = load_phase3_inputs(tmp_path / "02_routing")
+    assert len(units) == 3 and len(catalog) == 2
+    (tmp_path / "interests.md").write_text("One package per independent researcher.")
+    workspace = tmp_path / "03_research" / packages[0].package_id
+    materialize_research_workspace(workspace, packages[0], units, catalog, source, tmp_path, tmp_path)
+    assert {r["unit_id"] for r in load_jsonl(workspace / "global_catalog.jsonl")} == set(catalog)
+    assert {r["unit_id"] for r in load_jsonl(workspace / "intake_todo.jsonl")} == set(packages[0].unit_ids)
+
+
+@pytest.mark.asyncio
 async def test_zero_budget_never_calls_model(tmp_path):
     runner = LabelRunner()
     admission = await select_phase3_admission(
