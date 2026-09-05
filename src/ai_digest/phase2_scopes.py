@@ -10,6 +10,27 @@ from urllib.parse import parse_qsl, urlencode, urlsplit
 from .models import ResearchPackage
 
 
+def exact_duplicate_groups(packages: list[ResearchPackage], documents: dict[str, Any]) -> list[list[str]]:
+    """Exact primary URL AND original title identify duplicate article observations.
+
+    This does not apply to mentioned links, same domains, generated labels, or similarity.
+    """
+    owners: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for package in packages:
+        for uid in package.unit_ids:
+            for observation in documents[uid].get("observations", []):
+                payload = observation["payload"]
+                title = " ".join(str(payload.get("title") or "").casefold().split())
+                url = str(payload.get("url") or "")
+                try:
+                    parsed = urlsplit(url)
+                except ValueError:
+                    continue
+                if title and parsed.scheme in {"http", "https"} and parsed.hostname and parsed.path.strip("/"):
+                    owners[(url, title)].add(package.package_id)
+    return [sorted(group) for group in owners.values() if len(group) > 1]
+
+
 def identifiers(document: dict[str, Any]) -> set[str]:
     found: set[str] = set()
 
@@ -62,8 +83,15 @@ def group_card(package: ResearchPackage, documents: dict[str, Any]) -> dict[str,
         previews = []
         for observation in document.get("observations", []):
             payload = observation["payload"]
-            text = payload.get("title") or payload.get("text") or payload.get("description") or payload.get("abstract") or ""
-            previews.append(str(text)[:400])
+            for key in ("title", "text", "text_preview", "description", "abstract", "readme_preview", "quoted_text"):
+                text = str(payload.get(key) or "")[:800]
+                if text and text not in previews:
+                    previews.append(text)
+            for reference in payload.get("references") or []:
+                if isinstance(reference, dict):
+                    text = str(reference.get("text") or "")[:800]
+                    if text and text not in previews:
+                        previews.append(text)
         members.append({"entity": document.get("entity_key", uid), "previews": previews,
                         "identifiers": sorted(identifiers(document))})
     return {"title": package.label_zh, "member_count": len(package.unit_ids), "members": members}

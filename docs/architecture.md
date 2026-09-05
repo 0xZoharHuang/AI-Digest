@@ -79,7 +79,7 @@ state, duplicate/revision counts, observed time range, raw completeness and quie
 
 New runs use `semantic_labels_v1` (development validation in progress; this description is not
 evidence of production cutover). Every complete normalized unit receives a minimal `signal`
-(`present`, `unclear`, `chatter`), `kind`, and local group ID. Only groups receive short titles;
+(`present`, `unclear`, `chatter`), `kind`, and a short provisional object name;
 there are no per-unit summaries, reasons, value scores, or research conclusions. Both present and
 unclear units enter natural packages; chatter remains in the label ledger with its original data.
 Package count is unbounded and independent of Phase 3's daily budget.
@@ -93,20 +93,24 @@ membership must validate before a completion marker can be written.
 
 Cross-batch candidates use a local, pinned Qwen3-Embedding-0.6B model and a rebuildable HNSW index.
 The index combines short subject names with original-content embeddings. The development default
-retrieves up to eight preceding-batch neighbours at cosine similarity >= 0.60.
+retrieves up to eight global neighbours at cosine similarity >= 0.60, irrespective of annotation batch.
 This threshold proposes comparisons, never discards records or declares a merge. Luna compares
-compact identity cards in bounded, overlapping comparison scopes, returning only group IDs confirmed
-to describe the same specific object/event. Exact post, paper, repository and canonical-link hints
+compact per-unit identity cards in bounded, overlapping comparison scopes. Each card must explicitly
+name its same-object representative (itself when independent); omitted cards are invalid output.
+Exact post, paper, repository and canonical-link hints
 supplement vector candidates. Every proposed edge fits a comparison scope or is explicitly deferred.
-Graph similarity is never a semantic merge: only model-confirmed identity relations are combined
-globally. Execution paging therefore does not impose package boundaries. Original complete records
+Graph similarity is never a semantic merge. Model-confirmed identity relations are combined globally;
+exact duplicate observations with both identical primary article URL and case-insensitive original
+title are also coalesced. Mentioned links or generated labels cannot authorize this shortcut.
+First-pass names are hints only: sharing a provisional name never creates an indivisible multi-unit
+group. Execution paging therefore does not impose package boundaries. Original complete records
 remain attached to final packages. Short ordered aliases prevent record-ID binding errors, and code restores
 original immutable IDs. Empty captured bodies abstain as unclear rather than asserting chatter.
 Only proposed chatter receives a second independent small-context reading (up to 8 records / 64 KiB,
 same inexpensive model); both readings must agree before excluding it from the package catalog.
 The verifier never sees the original prediction. Rescued records return to ordinary candidate
 matching, including against their original batch. This selective negative check is not a required
-extra full-corpus round. One-batch runs without rescued records need no cross-batch pass.
+extra full-corpus round. Multi-unit inputs use candidate matching even if annotation took one batch.
 Install the `semantic` dependency extra for candidate matching.
 
 Phase 3 consumes a selected ordered subset, one independent Lead per package. A zero budget makes

@@ -111,30 +111,15 @@ def nearest_groups(
     index.set_num_threads(1)
     index.set_ef(64)
     result = NeighbourMap()
-    # Query only previously inserted groups so every proposed comparison is usable.
-    pending: list[int] = []
-    previous_batch = None
-    inserted = 0
+    # Batch order must not restrict semantic neighbours or perpetuate first-pass mistakes.
+    # The complete local index is rebuildable; no model sees the full corpus at once.
+    index.add_items(matrix, list(range(len(packages))))
+    del batches
     for number, package in enumerate(packages):
-        batch = batches[package.package_id] if batches is not None else number
-        if batch != previous_batch and pending:
-            index.add_items(matrix[pending], pending)
-            inserted += len(pending)
-            pending = []
-        previous_batch = batch
-        if inserted:
-            ids, distances = index.knn_query(matrix[number : number + 1], k=min(8, inserted))
-            # Candidate threshold only: unmatched groups remain available singletons.
-            result[package.package_id] = [
-                packages[int(i)].package_id
-                for i, distance in zip(ids[0], distances[0], strict=True)
-                if float(distance) <= 0.40
-            ]
-            for i, distance in zip(ids[0], distances[0], strict=True):
-                other = packages[int(i)].package_id
-                if other in result[package.package_id]:
-                    result.scores[(package.package_id, other)] = 1.0 - float(distance)
-        else:
-            result[package.package_id] = []
-        pending.append(number)
+        ids, distances = index.knn_query(matrix[number : number + 1], k=min(9, len(packages)))
+        candidates = [(int(i), float(distance)) for i, distance in zip(ids[0], distances[0], strict=True)
+                      if int(i) != number and float(distance) <= 0.40][:8]
+        result[package.package_id] = [packages[i].package_id for i, _ in candidates]
+        for i, distance in candidates:
+            result.scores[(package.package_id, packages[i].package_id)] = 1.0 - distance
     return result

@@ -1,0 +1,17 @@
+{
+  "input_hash": "d109495e4c4f3894b7d7ea613a85257c9934ddc8ffc3e027c91d11b0d843f850",
+  "status": "development_regressions_from_original_evidence",
+  "must_retain": [
+    "u_fd8f571173623773e398", "u_e9d424bd12213d7c9ada", "u_86ffbfc7dda6af586f7a",
+    "u_2eb0fe831fef10ce39be", "u_3c962cfce8cbe4a9c294"
+  ],
+  "must_separate": [
+    ["u_645e974385bfb935ad63", "u_72f66694711950a9a5f6"],
+    ["u_1e5e733940685ab18544", "u_405b22491e6f33ad0281"],
+    ["u_fdb4693eb654ffecdd0c", "u_fc2c1021b93cc54b33ac"],
+    ["u_f8c1d4f8c77e63c762be", "u_d473dcc0f2f88158684e"],
+    ["u_77d709452fcfdd72abf1", "u_767657dbed294b23d65f"],
+    ["u_435f2ccc34ac6c01797a", "u_122118ee2c4bf79cc081"],
+    ["u_74f974cae11dfb2b4489", "u_d5ea58780ff590830c39"]
+  ]
+}

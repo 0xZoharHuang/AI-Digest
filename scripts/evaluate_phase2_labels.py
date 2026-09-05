@@ -7,9 +7,43 @@ import json
 import math
 from pathlib import Path
 
+from ai_digest.phase2_attention import file_sha256
 from ai_digest.phase2_labels import validate_artifacts
 from ai_digest.store import load_jsonl
 from ai_digest.utils import atomic_write_json
+
+
+def load_pair_reference(path: Path, documents: dict) -> list[dict]:
+    """Bind draft pair judgments to the actual original documents, not just familiar IDs."""
+    by_items = {tuple(sorted(row["item_ids"])): row for row in documents.values()}
+    verified = {}
+    for receipt_path in sorted((path / "calls").glob("*/receipt.json")):
+        root = receipt_path.parent
+        receipt = json.loads(receipt_path.read_text())
+        if not receipt.get("success"):
+            continue
+        if receipt.get("output_hash") != file_sha256(root / "output.json"):
+            raise ValueError("pair reference receipt hash mismatch")
+        data = json.loads((root / "input.json").read_text())
+        output = json.loads((root / "output.json").read_text())
+        aliases = {}
+        for alias, document in data["units"].items():
+            original = by_items.get(tuple(sorted(document["item_ids"])))
+            if original is None or {**document, "unit_id": original["unit_id"]} != original:
+                raise ValueError("pair review input differs from evaluated corpus")
+            aliases[alias] = original["unit_id"]
+        if set(output) != set(data["cases"]):
+            raise ValueError("pair reference coverage mismatch")
+        for case, (left, right) in data["cases"].items():
+            key = tuple(sorted((aliases[left], aliases[right])))
+            row = {"left": key[0], "right": key[1], **output[case]}
+            if key in verified and verified[key] != row:
+                raise ValueError("conflicting pair reference receipts")
+            verified[key] = row
+    draft = json.loads((path / "draft_pairs.json").read_text())
+    if len(draft) != len(verified) or any(verified.get(tuple(sorted((r["left"], r["right"])))) != r for r in draft):
+        raise ValueError("draft pair reference differs from verified calls")
+    return [pair for pair in draft if not pair["unclear"]]
 
 
 def evaluate(root: Path, gold: dict) -> dict:
@@ -41,6 +75,17 @@ def evaluate(root: Path, gold: dict) -> dict:
     same_total = same_correct = different_total = different_correct = 0
     seen = set()
     pair_errors = []
+    challenge_errors = []
+    for uid in gold.get("must_retain", []):
+        if uid not in lookup:
+            raise ValueError("unknown retention challenge ID")
+        if uid not in membership:
+            challenge_errors.append({"must_retain": uid})
+    for left, right in gold.get("must_separate", []):
+        if left not in lookup or right not in lookup or left == right:
+            raise ValueError("invalid separation challenge pair")
+        if left in membership and membership.get(right) == membership[left]:
+            challenge_errors.append({"must_separate": [left, right]})
     for pair in gold["pairs"]:
         left, right = pair["left"], pair["right"]
         identity = tuple(sorted([left, right]))
@@ -92,6 +137,7 @@ def evaluate(root: Path, gold: dict) -> dict:
         "different_pair_accuracy": separation,
         "signal_mismatches": mismatches,
         "pair_errors": pair_errors,
+        "challenge_errors": challenge_errors,
         "sufficient_sample": enough,
         "wilson_95_intervals": {
             "signal_retention": interval(signal_total - signal_lost, signal_total),
@@ -100,6 +146,7 @@ def evaluate(root: Path, gold: dict) -> dict:
         },
         "semantic_gate_passed": bool(
             enough
+            and not challenge_errors
             and gold.get("review_status") == "reviewed"
             and retention is not None
             and retention >= 0.98
@@ -118,6 +165,7 @@ def main() -> None:
     parser.add_argument("--label-review", type=Path)
     parser.add_argument("--pair-review", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--challenge", type=Path)
     args = parser.parse_args()
     root = args.run / "02_routing"
     if args.gold:
@@ -129,9 +177,14 @@ def main() -> None:
                 raise ValueError("review input differs from evaluated corpus")
         gold = {"input_hash": json.loads((root / "phase2_manifest.json").read_text())["input_hash"],
             "review_status": "draft", "labels": load_jsonl(args.label_review / "draft_labels.jsonl"),
-            "pairs": [pair for pair in json.loads((args.pair_review / "draft_pairs.json").read_text()) if not pair["unclear"]]}
+            "pairs": load_pair_reference(args.pair_review, documents)}
     else:
         parser.error("provide --gold or both --label-review and --pair-review")
+    if args.challenge:
+        challenge = json.loads(args.challenge.read_text())
+        if challenge["input_hash"] != gold["input_hash"]:
+            raise ValueError("challenge corpus differs from evaluated corpus")
+        gold.update({key: challenge[key] for key in ("must_retain", "must_separate")})
     result = evaluate(root, gold)
     result["reference_status"] = gold.get("review_status", "unspecified")
     if args.output:

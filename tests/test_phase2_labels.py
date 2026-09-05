@@ -57,7 +57,11 @@ def items(count=20):
 
 
 def test_reject_missing_duplicate_and_chatter_package():
-    from ai_digest.phase2_labels import validate_group_merges
+    from ai_digest.phase2_labels import validate_group_merges, validate_identities
+    assert validate_identities({"a": "a", "b": "a", "c": "b"}, {"a", "b", "c"}) == [["a", "b", "c"]]
+    for invalid in ({"a": "a"}, {"a": "a", "b": "x"}, {"a": "a", "b": []}):
+        with pytest.raises(ValueError, match="coverage"):
+            validate_identities(invalid, {"a", "b"})
     assert validate_group_merges({"merges": [["a", "a"]]}, {"a", "b"}) == []
     assert validate_group_merges({"merges": [["a", "b"], ["b", "c"]]}, {"a", "b", "c"}) == [["a", "b", "c"]]
     with pytest.raises(ValueError, match="unknown"):
@@ -80,6 +84,21 @@ def test_reject_missing_duplicate_and_chatter_package():
     chatter = validate_batch({**data, "labels": [{**row, "signal": "chatter"}]}, {"a"})
     assert chatter.labels[0].signal == "chatter"
     assert not chatter.groups
+
+
+def test_exact_duplicates_require_original_primary_url_and_title():
+    from ai_digest.phase2_scopes import exact_duplicate_groups
+    packages = [ResearchPackage(package_id=k, label_zh="not authoritative", scope_note_zh="scope",
+        unit_ids=[k]) for k in ("a", "b", "c", "d")]
+    def doc(title, url, **extras):
+        return {"observations": [{"payload": {"title": title, "url": url, **extras}}]}
+    documents = {
+        "a": doc("A specific Event", "https://example.org/article"),
+        "b": doc("a specific event", "https://example.org/article"),
+        "c": doc("Different story", "https://example.org/article"),
+        "d": doc("A specific event", "https://example.org/other", links=["https://example.org/article"]),
+    }
+    assert exact_duplicate_groups(packages, documents) == [["a", "b"]]
 
 
 @pytest.mark.asyncio
@@ -114,6 +133,27 @@ async def test_unbounded_packages_replay_and_corruption(tmp_path, monkeypatch):
     (root / "labels.jsonl").write_text("")
     with pytest.raises(ValueError, match="hash mismatch"):
         validate_artifacts(root)
+
+
+@pytest.mark.asyncio
+async def test_initial_shared_name_is_not_an_indivisible_package(tmp_path, monkeypatch):
+    monkeypatch.setattr("ai_digest.semantic_index.nearest_groups", lambda *args: {})
+
+    class WrongNameRunner(LabelRunner):
+        async def run(self, **kwargs):
+            result = await super().run(**kwargs)
+            data = json.loads(kwargs["output_file"].read_text())
+            for label in data["labels"]:
+                label["local_group_id"] = "same accidental name"
+            data["groups"] = [{"group_id": "same accidental name", "title": "same accidental name"}]
+            atomic_write_json(kwargs["output_file"], data)
+            return result
+
+    source = items(2)
+    source["0"].payload["text"] = "A different concrete event"
+    await SemanticPhase2(RuntimeConfig(), WrongNameRunner()).run(tmp_path, source, build_observation_units(source), "")
+    _, packages = validate_artifacts(tmp_path / "02_routing")
+    assert len(packages) == 2
 
 
 @pytest.mark.asyncio
@@ -155,7 +195,8 @@ async def test_exclusion_verification_rescues_information_and_reuses_cache(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_label_admission_uses_cards_and_can_select_nothing(tmp_path):
+async def test_label_admission_uses_cards_and_can_select_nothing(tmp_path, monkeypatch):
+    monkeypatch.setattr("ai_digest.semantic_index.nearest_groups", lambda *args: {})
     source = items(4)
     await SemanticPhase2(RuntimeConfig(), LabelRunner()).run(
         tmp_path, source, build_observation_units(source), ""
@@ -199,7 +240,8 @@ def test_admission_can_leave_capacity_unused():
 
 
 @pytest.mark.asyncio
-async def test_unicode_record_separators_and_missing_content(tmp_path):
+async def test_unicode_record_separators_and_missing_content(tmp_path, monkeypatch):
+    monkeypatch.setattr("ai_digest.semantic_index.nearest_groups", lambda *args: {})
     from ai_digest.phase2_labels import incomplete_context
     source = items(3)
     source["1"].payload["text"] = "A\u2028B\u2029C"
@@ -242,7 +284,7 @@ async def test_cross_batch_merge_checks_members_and_reuses_receipt(tmp_path, mon
             assert data["groups"][0]["members"][0]["entity"] == "a"
             atomic_write_json(
                 kwargs["output_file"],
-                {"merges": [[g["group_id"] for g in data["groups"]]]},
+                {g["group_id"]: data["groups"][0]["group_id"] for g in data["groups"]},
             )
             return CodexResult(exit_code=0, thread_id="merge")
 
@@ -265,7 +307,7 @@ async def test_cross_batch_merge_checks_members_and_reuses_receipt(tmp_path, mon
     again = await engine.merge(tmp_path, packages(), documents)
     assert again == result and runner.calls == 1
     engine.package_batches["b"] = 0
-    assert len(await engine.merge(tmp_path, packages(), documents)) == 2
+    assert len(await engine.merge(tmp_path, packages(), documents)) == 1
 
     class UnknownRunner:
         async def run(self, **kwargs):
@@ -314,9 +356,8 @@ async def test_similarity_chain_is_not_an_automatic_package(tmp_path, monkeypatc
             data = json.loads((kwargs["workspace"] / "input.json").read_text())
             atomic_write_json(
                 kwargs["output_file"],
-                {
-                    "merges": [[g["group_id"] for g in data["groups"] if g["title"] in {"a", "b"}]]
-                },
+                {g["group_id"]: (next(row["group_id"] for row in data["groups"] if row["title"] == "a")
+                    if g["title"] in {"a", "b"} else g["group_id"]) for g in data["groups"]},
             )
             return CodexResult(exit_code=0, thread_id="partition")
 
@@ -334,7 +375,7 @@ async def test_confirmed_identity_can_cross_comparison_boundaries(tmp_path, monk
     class SameObjectRunner:
         async def run(self, **kwargs):
             data = json.loads((kwargs["workspace"] / "input.json").read_text())
-            atomic_write_json(kwargs["output_file"], {"merges": [[g["group_id"] for g in data["groups"]]]})
+            atomic_write_json(kwargs["output_file"], {g["group_id"]: data["groups"][0]["group_id"] for g in data["groups"]})
             return CodexResult(exit_code=0, thread_id="confirmed")
     engine = SemanticPhase2(RuntimeConfig(), SameObjectRunner())
     engine.package_batches = {"a": 0, "b": 1, "c": 2}
@@ -392,15 +433,16 @@ def test_semantic_index_cache_and_candidate_only_search(tmp_path, monkeypatch):
     ]
     documents = {k: {"observations": [{"text": k}]} for k in ["a", "b"]}
     result = nearest_groups(packages, documents, tmp_path)
-    assert result == {"a": [], "b": ["a"]}
+    assert result == {"a": ["b"], "b": ["a"]}
     assert Encoder.calls == 1
     assert nearest_groups(packages, documents, tmp_path) == result
     assert Encoder.calls == 1
-    assert nearest_groups(packages, documents, tmp_path, {"a": 0, "b": 0}) == {"a": [], "b": []}
+    assert nearest_groups(packages, documents, tmp_path, {"a": 0, "b": 0}) == result
 
 
 @pytest.mark.asyncio
-async def test_import_contract_rejects_rehashed_inconsistent_membership(tmp_path):
+async def test_import_contract_rejects_rehashed_inconsistent_membership(tmp_path, monkeypatch):
+    monkeypatch.setattr("ai_digest.semantic_index.nearest_groups", lambda *args: {})
     from ai_digest.phase2_attention import file_sha256
 
     source = items(3)

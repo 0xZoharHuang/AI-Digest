@@ -19,11 +19,21 @@ async def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--target", type=Path, required=True)
+    parser.add_argument("--exclude", type=Path, action="append", default=[])
+    parser.add_argument("--seed", default="")
     args = parser.parse_args()
     root = args.source / "02_routing"
     documents = {d["unit_id"]: d for d in load_jsonl(root / "units.jsonl")}
     objects = json.loads((root / "objects.json").read_text())
-    candidates = [list(itertools.combinations(sorted(o["unit_ids"]), 2)) for o in objects if len(o["unit_ids"]) > 1]
+    excluded = {tuple(sorted((row["left"], row["right"]))) for path in args.exclude
+                for row in json.loads(path.read_text())}
+    if args.seed:
+        objects.sort(key=lambda o: digest([args.seed, o["object_id"]]))
+    candidates = [[pair for pair in itertools.combinations(sorted(o["unit_ids"]), 2)
+                   if tuple(sorted(pair)) not in excluded] for o in objects if len(o["unit_ids"]) > 1]
+    if args.seed:
+        for group in candidates:
+            group.sort(key=lambda pair: digest([args.seed, pair]))
     positive = []
     while len(positive) < 120 and any(candidates):
         for group in candidates:
@@ -43,6 +53,8 @@ async def main():
         if counts[left["object_id"]] >= 6 or counts[right["object_id"]] >= 6:
             continue
         pair = (left["unit_ids"][0], right["unit_ids"][0])
+        if tuple(sorted(pair)) in excluded:
+            continue
         if pair[0] != pair[1]:
             negative.append(pair)
             counts.update([left["object_id"], right["object_id"]])
@@ -74,7 +86,8 @@ async def main():
                 raise ValueError("invalid pair judgment")
             reviewed.append({"left": pair[0], "right": pair[1], **row})
         atomic_write_json(args.target / "draft_pairs.json", reviewed)
-    atomic_write_json(args.target / "review.json", {"review_status": "draft", "pair_count": len(reviewed), "calls": reviewer.calls})
+    atomic_write_json(args.target / "review.json", {"review_status": "draft", "pair_count": len(reviewed),
+        "seed": args.seed, "excluded_pair_count": len(excluded), "calls": reviewer.calls})
     print(f"Independent pair draft complete: {len(reviewed)} pairs; inspect disagreements before acceptance.")
 
 

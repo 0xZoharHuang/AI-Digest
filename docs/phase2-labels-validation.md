@@ -10,6 +10,19 @@ The replacement covers candidate relations with overlapping identity-card scopes
 model-confirmed equivalence relations across scopes. Its full semantic recheck remains in progress;
 offline candidate co-location coverage of 115/117 is not a semantic pass.
 
+The overlapping-scopes full run completed with 6,119 packages. Reference same-object recall rose to
+100/117 (85.47%), while different-object separation remained 121/121. This still fails the 95% recall
+gate. Sixteen of the seventeen missed pairs actually shared a comparison call; candidate coverage
+alone was not the remaining cause. A complete per-card identity-assignment probe is being compared
+with sparse merge output before spending on another full run. The negative-confirmation run was
+interrupted with its valid checkpoints intact because it retained this failing merge contract.
+
+An isolated real Phase 1–5 integration smoke passed in 671.04 seconds: 7 original items, 6 units and
+6 packages, 3 independent selected leads, 3 reports, no failures, and 3 unconsumed packages retained.
+Queue traversal was jobs -> completed -> archived. Wiki dry-run produced 6 nonempty pages and no
+unresolved internal links, with zero live Lark calls. This validates integration, not full Phase 2
+semantic quality or real publishing/notification transport; it predates negative-confirmation changes.
+
 The 1,000,000-vector synthetic index run completed in 2,067.75 seconds at 4,199 MiB peak RSS, using
 four native threads and 1,024 dimensions. Self-retrieval@1 was 0.73 at that scale with ef=64, so those
 parameters are not accepted for million-scale retrieval quality. This is capacity evidence only.
@@ -29,6 +42,27 @@ The 149-record check recovered 46 candidates, including all five concrete failur
 used 351,415 input tokens (49,920 cached) and 9,058 output tokens. Some recovered items are genuinely
 ambiguous; retention is not an assertion of research value. A fresh full packaging run with these
 corrections is required. Cached first-pass labels and embeddings remain reusable.
+
+The first-pass multi-member-group census also exposed unrelated records sharing a provisional name
+(for example an indirect prompt-injection paper and a retail-banking prediction paper). The final
+candidate therefore indexes each retained unit separately; temporary names never form indivisible
+packages. Global nearest-neighbour candidates no longer exclude same-batch records. Complete per-card
+representative assignments recovered 11 of 16 co-located failures in a seven-block development probe
+without sampled false joins; that targeted probe is not acceptance. Exact primary URL plus original
+title identifies literal duplicate article observations, independently of model naming. Cards now
+include original text previews, abstracts and quoted context as available, not only a headline.
+The revised full run and a newly sampled pair reference remain pending. Known lost-paper and
+unrelated-pair cases are explicit development regressions in `eval/phase2_label_boundary_regressions.json`.
+
+A compact integer-array identity-output probe reduced seven-block output from 26,908 to 15,530 tokens
+and median call latency from 80.04 to 46.48 seconds. It recovered 12/16 targeted missed pairs rather
+than 11/16, but introduced an incorrect join between the record-label lawsuit and a separate Claude
+security incident. It is not promoted to production. The per-ID assignment contract remains in use;
+these development probes do not establish global optimality or holdout accuracy.
+
+The new pair reference excludes all 240 earlier pairs and contains 120 same-object, 118 different-object,
+and 2 uncertain pairs. Its original inputs and output receipts are checked against the frozen corpus,
+not merely matched by familiar IDs. It remains a model-assisted draft until discrepancy review.
 
 Current code regression: 211 tests pass, 85.73% measured coverage. Smoke configuration round-trips
 all Codex settings, including the Phase 2 engine/model/reasoning/tool profile, without default drift.
