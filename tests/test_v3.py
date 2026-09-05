@@ -6,19 +6,25 @@ from datetime import UTC, datetime
 import pytest
 
 import ai_digest.v3 as v3_module
+from ai_digest.agent_phases import AgentPhases
 from ai_digest.codex_runner import CodexResult
-from ai_digest.config import RuntimeConfig
+from ai_digest.config import LarkConfig, RuntimeConfig
 from ai_digest.models import (
     LegacyResearchPackage,
     ObservationUnit,
     Phase2Annotation,
     Phase2CatalogEntry,
     Phase2PackagePlan,
+    Phase2ResearchObject,
+    Phase2RoutingDecision,
     Phase2Summary,
+    Phase2UnitDocument,
     ResearchEvidenceEntry,
     ResearchPackage,
     SourceItem,
 )
+from ai_digest.phase2_attention import file_sha256
+from ai_digest.publisher import LarkError, LarkPublisher, validate_publish_inputs
 from ai_digest.store import load_jsonl
 from ai_digest.v3 import (
     PHASE2_LEGACY_PROMPT_VERSIONS,
@@ -1114,3 +1120,163 @@ async def test_phase3_uses_sol_medium_and_accepts_main_report_without_subreports
     assert runner.calls[0]["model"] == "gpt-5.6-sol"
     assert runner.calls[0]["reasoning"] == "medium"
     assert not (run / "03_research/robotics/subreports").exists()
+
+
+@pytest.mark.asyncio
+async def test_attention_objects_use_formal_phase3_phase4_and_publish_contract(
+    tmp_path,
+):
+    run = _sealed_run(tmp_path, ("1", "2"))
+    phase1 = run / "01_phase1"
+    (phase1 / "source_health.json").write_text("{}")
+    (run / "00_run_manifest.json").write_text(
+        json.dumps({"run_id": "2026-08-31-a0001-attention"})
+    )
+    items = {
+        item.item_id: item
+        for item in (
+            SourceItem.model_validate_json(line)
+            for line in (phase1 / "x_list.jsonl").read_text().splitlines()
+        )
+    }
+    units = build_observation_units(items)
+    documents = [
+        Phase2UnitDocument(
+            unit_id=unit.unit_id,
+            entity_key=unit.entity_key,
+            item_ids=unit.item_ids,
+            sources=unit.sources,
+            occurred_at=unit.occurred_at,
+            observations=[items[item_id] for item_id in unit.item_ids],
+        )
+        for unit in units
+    ]
+    research_id, watch_id = [value.unit_id for value in documents]
+    routing = run / "02_routing"
+    routing.mkdir()
+    (routing / "units.jsonl").write_text(
+        "".join(value.model_dump_json() + "\n" for value in documents)
+    )
+    decisions = [
+        Phase2RoutingDecision(
+            unit_id=research_id,
+            route="research",
+            object_id="robotics",
+            reason_zh="出现值得独立核查的机器人能力变化。",
+        ),
+        Phase2RoutingDecision(
+            unit_id=watch_id,
+            route="watch",
+            reason_zh="相关但当前证据不足，继续观察。",
+        ),
+    ]
+    (routing / "decisions.jsonl").write_text(
+        "".join(value.model_dump_json() + "\n" for value in decisions)
+    )
+    objects = [
+        Phase2ResearchObject(
+            object_id="robotics",
+            label_zh="机器人能力变化",
+            unit_ids=[research_id],
+        )
+    ]
+    (routing / "objects.json").write_text(
+        json.dumps([value.model_dump(mode="json") for value in objects], ensure_ascii=False)
+    )
+    (routing / "phase2_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "contract": "attention_editor_v3",
+                "thread_id": "attention-thread",
+                "unit_count": 2,
+                "object_count": 1,
+                "route_counts": {"research": 1, "watch": 1},
+                "hashes": {
+                    name: file_sha256(routing / name)
+                    for name in ("units.jsonl", "decisions.jsonl", "objects.json")
+                },
+            }
+        )
+    )
+    (routing / "PHASE2_COMPLETE").write_text("attention_editor_v3 complete\n")
+
+    class FormalRunner:
+        async def run(self, **kwargs):  # type: ignore[no-untyped-def]
+            workspace = kwargs["workspace"]
+            if workspace.name == "robotics":
+                (workspace / "main_report.md").write_text("# 机器人研究\n\n正式正文。")
+                (workspace / "intake.jsonl").write_text(
+                    json.dumps(
+                        {
+                            "unit_id": research_id,
+                            "research_use": "research_subject",
+                            "note_zh": "已核查完整材料。",
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+                (workspace / "evidence.jsonl").write_text(
+                    json.dumps(
+                        {
+                            "claim": "机器人能力发生变化",
+                            "status": "verified_fact",
+                            "evidence": ["https://example.com/source"],
+                            "scope": "当前版本",
+                            "conflict": "",
+                            "related_unit_ids": [research_id],
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+                (workspace / "research_manifest.json").write_text(
+                    json.dumps(
+                        {
+                            "package_id": "robotics",
+                            "main_report": "main_report.md",
+                            "subreports": [],
+                            "reviewed_unit_ids": [research_id],
+                            "status": "success",
+                        }
+                    )
+                )
+            else:
+                kwargs["output_file"].write_text(
+                    "# 每日导航\n\n- [机器人研究](report://robotics)\n"
+                )
+            return CodexResult(exit_code=0, thread_id=f"{workspace.name}-thread")
+
+    runtime = RuntimeConfig(runtime_root=tmp_path, shared_runtime_root=tmp_path / "queue")
+    phases = AgentPhases(runtime)
+    phases.runner = FormalRunner()  # type: ignore[assignment]
+    successes = await phases.research(run)
+    assert successes == {"robotics": "robotics/main_report.md"}
+    assert (run / "03_research/robotics/intake.jsonl").is_file()
+    assert (run / "03_research/robotics/evidence.jsonl").is_file()
+    assert (run / "03_research/not_published.json").read_text().strip() == "[]"
+
+    await phases.brief(run, successes=successes)
+    watch = load_jsonl(run / "04_brief/watch.jsonl")
+    assert len(watch) == 1
+    assert watch[0]["unit_id"] == watch_id
+    phase4_quality = json.loads((run / "04_brief/quality.json").read_text())
+    assert phase4_quality["status"] == "success"
+    assert phase4_quality["linked_report_ids"] == ["robotics"]
+
+    preflight = validate_publish_inputs(run, "SUCCESS")
+    assert preflight["report_count"] == 1
+    assert preflight["watch_count"] == 1
+    (run / "04_brief/quality.json").unlink()
+
+    class NoExternalCalls:
+        def __getattr__(self, name):  # type: ignore[no-untyped-def]
+            raise AssertionError(f"external call reached: {name}")
+
+    publisher = LarkPublisher(
+        LarkConfig(space_id="blocked", receiver_open_id="blocked")
+    )
+    publisher.cli = NoExternalCalls()  # type: ignore[assignment]
+    with pytest.raises(LarkError, match="Phase 4 quality"):
+        publisher.publish(run, "SUCCESS")

@@ -353,12 +353,41 @@ async def test_unit_packages_v1_import_preserves_main_report_and_ledgers(tmp_pat
         json.dumps({"package": "package/main_report.md"})
     )
     (job / "03_research" / "failures.json").write_text("[]")
-    (job / "03_research" / "quality.json").write_text(json.dumps({"status": "success"}))
+    (job / "03_research" / "not_published.json").write_text("[]")
+    research_quality = {
+        "status": "success",
+        "packages": [
+            {
+                "package_id": "package",
+                "main_report": "main_report.md",
+                "subreports": [],
+                "reviewed_unit_ids": ["u_a"],
+                "status": "success",
+            }
+        ],
+    }
+    (job / "03_research" / "quality.json").write_text(
+        json.dumps(research_quality)
+    )
     (job / "03_research" / "PHASE3_COMPLETE").write_text("complete\n")
     (brief / "daily_brief.md").write_text("# Brief\n\n[主报告](report://package)\n")
     (brief / "watch.jsonl").write_text("")
     (brief / "failures.json").write_text("[]")
-    (brief / "quality.json").write_text(json.dumps({"status": "success"}))
+    (brief / "not_published.json").write_text("[]")
+    (brief / "research_quality.json").write_text(json.dumps(research_quality))
+    (brief / "quality.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "status": "success",
+                "generation": "codex",
+                "required_report_ids": ["package"],
+                "linked_report_ids": ["package"],
+                "missing_report_ids": [],
+                "watch_count": 0,
+            }
+        )
+    )
     (brief / "source_health.json").write_text("{}")
     (brief / "PHASE4_COMPLETE").write_text("complete\n")
 
@@ -408,6 +437,12 @@ async def test_recovery_preflight_archives_without_calling_lark(tmp_path, monkey
     monkeypatch.setattr("ai_digest.pipeline.LarkPublisher.publish", forbidden_publish)
     assert recover_and_publish(runtime, publish_mode="preflight") == [run_dir]
     assert (runtime.shared_runtime_root / "archived" / run_id).is_dir()
+    receipt = json.loads(
+        (run_dir / "05_publish" / "preflight_receipt.json").read_text()
+    )
+    assert receipt["mode"] == "preflight"
+    assert receipt["live_lark_writes"] is False
+    assert receipt["run_id"] == run_id
 
 
 @pytest.mark.asyncio

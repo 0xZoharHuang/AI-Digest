@@ -324,12 +324,16 @@ def verify_automation_smoke(source_runtime: RuntimeConfig, smoke_root: Path) -> 
     if not successes:
         raise RuntimeError("Phase 3 produced no main report")
     for package_id, report_path in successes.items():
-        load_artifact_layout(
+        layout = load_artifact_layout(
             run_dir / "03_research" / package_id,
             package_id,
             str(report_path),
             expected_unit_ids=expected_research_units[package_id],
         )
+        if str(manifest.get("contract") or "").startswith("attention_editor_") and (
+            layout.kind != "main_report_v1"
+        ):
+            raise RuntimeError("attention Phase 2 fell back to a legacy Phase 3 artifact")
     not_published = json.loads(
         (run_dir / "03_research" / "not_published.json").read_text(encoding="utf-8")
     )
@@ -345,7 +349,23 @@ def verify_automation_smoke(source_runtime: RuntimeConfig, smoke_root: Path) -> 
     if set(successes) | set(not_published) != set(expected_research_units):
         raise RuntimeError("Phase 3 did not decide every research package")
 
+    phase4_quality = _json_object(run_dir / "04_brief" / "quality.json")
+    if (
+        phase4_quality.get("status") != "success"
+        or set(phase4_quality.get("required_report_ids") or []) != set(successes)
+        or set(phase4_quality.get("linked_report_ids") or []) != set(successes)
+        or phase4_quality.get("missing_report_ids")
+    ):
+        raise RuntimeError(f"Phase 4 smoke quality was not successful: {phase4_quality}")
+
     preflight = validate_publish_inputs(run_dir, str(row[0]).upper())
+    phase5_receipt = _json_object(run_dir / "05_publish" / "preflight_receipt.json")
+    if (
+        phase5_receipt.get("mode") != "preflight"
+        or phase5_receipt.get("live_lark_writes") is not False
+        or phase5_receipt.get("artifact_hash") != preflight.get("artifact_hash")
+    ):
+        raise RuntimeError(f"Phase 5 preflight receipt is invalid: {phase5_receipt}")
     x_list_text = (run_dir / "01_phase1" / "x_list.jsonl").read_text(encoding="utf-8")
     units_text = (run_dir / "02_routing" / "units.jsonl").read_text(encoding="utf-8")
     if not all(character in x_list_text and character in units_text for character in ("\u2028", "\u2029")):

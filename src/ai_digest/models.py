@@ -225,7 +225,7 @@ class Phase2ResearchObject(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    object_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,79}$")
+    object_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")
     label_zh: str
     unit_ids: list[str] = Field(min_length=1)
 

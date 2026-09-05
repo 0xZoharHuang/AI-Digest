@@ -27,6 +27,7 @@ from .models import (
     Phase2ResearchObject,
     Phase2UnitDocument,
     PublishManifest,
+    ResearchArtifactManifest,
     ResearchPackage,
     RunManifest,
     RunStatus,
@@ -84,7 +85,19 @@ async def run_local_pipeline(
             else RunStatus.SUCCESS
         )
         await phases.brief(run_dir, routing, successes)
-        manifest.phases["phase4"] = RunStatus.SUCCESS
+        phase4_quality_path = run_dir / "04_brief" / "quality.json"
+        phase4_quality = (
+            json.loads(phase4_quality_path.read_text(encoding="utf-8"))
+            if phase4_quality_path.exists()
+            else {"status": "success"}
+        )
+        manifest.phases["phase4"] = (
+            RunStatus.PARTIAL
+            if phase4_quality.get("status") == "partial"
+            else RunStatus.SUCCESS
+            if phase4_quality.get("status") == "success"
+            else RunStatus.FAILED
+        )
         manifest.status = _overall_status(manifest)
         if publish:
             LarkPublisher(runtime.lark).publish(run_dir, manifest.status.value.upper())
@@ -443,15 +456,22 @@ def _reconcile_manifest(runtime: RuntimeConfig, run_dir: Path) -> RunManifest:
 
     bundles_path = run_dir / "02_routing" / "bundles.json"
     packages_path = run_dir / "02_routing" / "packages.json"
+    objects_path = run_dir / "02_routing" / "objects.json"
     bundles = (
         json.loads(bundles_path.read_text(encoding="utf-8"))
         if bundles_path.exists()
         else json.loads(packages_path.read_text(encoding="utf-8"))
         if packages_path.exists()
+        else json.loads(objects_path.read_text(encoding="utf-8"))
+        if objects_path.exists()
         else []
     )
     if not isinstance(bundles, list):
         raise ValueError("bundles.json must be an array")
+    formal_contract = (
+        (run_dir / "02_routing" / "phase2_manifest.json").is_file()
+        and (packages_path.is_file() or objects_path.is_file())
+    )
     failed_phase = str(worker_failure.get("phase")) if worker_failure else None
     manifest.phases["phase2"] = (
         RunStatus.FAILED
@@ -469,23 +489,43 @@ def _reconcile_manifest(runtime: RuntimeConfig, run_dir: Path) -> RunManifest:
     quality = json.loads(quality_path.read_text(encoding="utf-8")) if quality_path.exists() else {}
     if not isinstance(successes, dict) or not isinstance(failures, list):
         raise ValueError("invalid research outcome files")
-    manifest.phases["phase3"] = (
-        RunStatus.FAILED
-        if failed_phase in {"phase2", "phase3"} and not successes
-        else RunStatus.PARTIAL
-        if failures or quality.get("status") == "partial"
-        else RunStatus.QUIET
-        if not bundles
-        else RunStatus.SUCCESS
+    research_quality_status = str(quality.get("status") or "")
+    if failed_phase in {"phase2", "phase3"} and not successes:
+        manifest.phases["phase3"] = RunStatus.FAILED
+    elif failures or research_quality_status == "partial":
+        manifest.phases["phase3"] = RunStatus.PARTIAL
+    elif formal_contract:
+        manifest.phases["phase3"] = (
+            RunStatus.QUIET
+            if not bundles and research_quality_status == "quiet"
+            else RunStatus.SUCCESS
+            if bundles and research_quality_status == "success"
+            else RunStatus.FAILED
+        )
+    else:
+        manifest.phases["phase3"] = (
+            RunStatus.QUIET if not bundles else RunStatus.SUCCESS
+        )
+    phase4_quality_path = run_dir / "04_brief" / "quality.json"
+    phase4_quality = (
+        json.loads(phase4_quality_path.read_text(encoding="utf-8"))
+        if phase4_quality_path.exists()
+        else {}
     )
+    phase4_quality_status = str(phase4_quality.get("status") or "")
     brief_complete = (run_dir / "04_brief" / "PHASE4_COMPLETE").exists()
-    manifest.phases["phase4"] = (
-        RunStatus.FAILED
-        if worker_failure is not None
-        else RunStatus.SUCCESS
-        if brief_complete
-        else RunStatus.FAILED
-    )
+    if worker_failure is not None or not brief_complete:
+        manifest.phases["phase4"] = RunStatus.FAILED
+    elif formal_contract:
+        manifest.phases["phase4"] = (
+            RunStatus.PARTIAL
+            if phase4_quality_status == "partial"
+            else RunStatus.SUCCESS
+            if phase4_quality_status == "success"
+            else RunStatus.FAILED
+        )
+    else:
+        manifest.phases["phase4"] = RunStatus.SUCCESS
     manifest.status = _overall_status(manifest)
     atomic_write_json(run_dir / "00_run_manifest.json", manifest.model_dump(mode="json"))
     _update_run_state(runtime, manifest.run_id, manifest.status.value, "agent_complete")
@@ -583,7 +623,21 @@ def _recover_and_publish_unlocked(
                     run_dir, manifest.status.value.upper()
                 )
             else:
-                validate_publish_inputs(run_dir, manifest.status.value.upper())
+                preflight = validate_publish_inputs(
+                    run_dir, manifest.status.value.upper()
+                )
+                publish_root = run_dir / "05_publish"
+                publish_root.mkdir(parents=True, exist_ok=True)
+                atomic_write_json(
+                    publish_root / "preflight_receipt.json",
+                    {
+                        "schema_version": 1,
+                        "mode": "preflight",
+                        "validated_at": moment.isoformat(),
+                        "live_lark_writes": False,
+                        **preflight,
+                    },
+                )
             manifest.phases["phase5"] = RunStatus.SUCCESS
             manifest.status = _overall_status(manifest)
             atomic_write_json(
@@ -1013,7 +1067,9 @@ def _import_research(job: Path, run: Path) -> None:
     if not routing_path.exists() and not packages_path.exists() and not objects_path.exists():
         raise ValueError("research output arrived without validated routing")
     expected_units: dict[str, set[str]] = {}
+    formal_research = False
     if objects_path.exists() and (run / "02_routing" / "phase2_manifest.json").exists():
+        formal_research = True
         manifest = json.loads(
             (run / "02_routing" / "phase2_manifest.json").read_text(encoding="utf-8")
         )
@@ -1030,6 +1086,7 @@ def _import_research(job: Path, run: Path) -> None:
         bundle_ids = {value.object_id for value in objects}
         expected_units = {value.object_id: set(value.unit_ids) for value in objects}
     elif packages_path.exists() and (run / "02_routing" / "phase2_manifest.json").exists():
+        formal_research = True
         packages = [
             ResearchPackage.model_validate(row)
             for row in json.loads(packages_path.read_text(encoding="utf-8"))
@@ -1080,6 +1137,8 @@ def _import_research(job: Path, run: Path) -> None:
     not_published_content = _safe_optional_read(
         source, Path("not_published.json"), 2_000_000
     )
+    if formal_research and not_published_content is None:
+        raise ValueError("formal research output is missing not_published.json")
     not_published_value = json.loads(not_published_content) if not_published_content else []
     if not isinstance(not_published_value, list):
         raise ValueError("not_published.json must be an array")
@@ -1111,7 +1170,45 @@ def _import_research(job: Path, run: Path) -> None:
     if not isinstance(failures_value, list):
         raise ValueError("failures.json must be an array")
     atomic_write_json(target / "failures.json", failures_value)
-    _copy_optional_json(source, target, "quality.json", 5_000_000, default={})
+    quality_content = _safe_optional_read(source, Path("quality.json"), 5_000_000)
+    if formal_research:
+        if quality_content is None:
+            raise ValueError("formal research output is missing quality.json")
+        quality_value = json.loads(quality_content)
+        if not isinstance(quality_value, dict):
+            raise ValueError("formal research quality must be an object")
+        failure_ids = [
+            str(value.get("package_id") or "")
+            for value in failures_value
+            if isinstance(value, dict)
+        ]
+        success_ids = list(successes)
+        outcome_ids = [*success_ids, *not_published, *failure_ids]
+        if (
+            any(not value for value in failure_ids)
+            or len(outcome_ids) != len(set(outcome_ids))
+            or set(outcome_ids) != bundle_ids
+        ):
+            raise ValueError("formal research outcomes do not exactly cover Phase 2 objects")
+        expected_status = (
+            "quiet" if not bundle_ids else "partial" if failures_value else "success"
+        )
+        if quality_value.get("status") != expected_status:
+            raise ValueError("formal research quality status contradicts outcomes")
+        package_quality = quality_value.get("packages")
+        if not isinstance(package_quality, list):
+            raise ValueError("formal research quality packages must be an array")
+        quality_manifests = [
+            ResearchArtifactManifest.model_validate(value) for value in package_quality
+        ]
+        quality_ids = [value.package_id for value in quality_manifests]
+        if len(quality_ids) != len(set(quality_ids)) or set(quality_ids) != (
+            set(success_ids) | set(not_published)
+        ):
+            raise ValueError("formal research quality does not match decided artifacts")
+        atomic_write_json(target / "quality.json", quality_value)
+    else:
+        _copy_optional_json(source, target, "quality.json", 5_000_000, default={})
     _safe_read(source, Path("PHASE3_COMPLETE"), 100)
     atomic_write_text(target / "PHASE3_COMPLETE", "complete\n")
 
@@ -1129,6 +1226,7 @@ def _import_brief(job: Path, run: Path) -> None:
         ("failures.json", 2_000_000),
         ("not_published.json", 2_000_000),
         ("source_health.json", 2_000_000),
+        ("research_quality.json", 5_000_000),
         ("quality.json", 5_000_000),
         ("codex.json", 2_000_000),
     ):
@@ -1139,6 +1237,48 @@ def _import_brief(job: Path, run: Path) -> None:
             else:
                 parse_jsonl_text(content)
                 atomic_write_text(target / name, content)
+    formal_brief = (
+        (run / "02_routing" / "phase2_manifest.json").is_file()
+        and any(
+            (run / "02_routing" / name).is_file()
+            for name in ("objects.json", "packages.json")
+        )
+    )
+    if formal_brief:
+        quality = json.loads(_safe_read(source, Path("quality.json"), 5_000_000))
+        research_quality = json.loads(
+            _safe_read(source, Path("research_quality.json"), 5_000_000)
+        )
+        if not isinstance(quality, dict) or quality.get("status") not in {
+            "success",
+            "partial",
+        }:
+            raise ValueError("formal Phase 4 quality is missing or invalid")
+        if not isinstance(research_quality, dict) or research_quality.get(
+            "status"
+        ) not in {"success", "partial", "quiet"}:
+            raise ValueError("formal Phase 4 research quality input is invalid")
+        successes = json.loads(
+            (run / "03_research" / "successes.json").read_text(encoding="utf-8")
+        )
+        required = quality.get("required_report_ids")
+        linked = quality.get("linked_report_ids")
+        missing = quality.get("missing_report_ids")
+        if (
+            not isinstance(required, list)
+            or not isinstance(linked, list)
+            or not isinstance(missing, list)
+            or len(required) != len(set(required))
+            or set(required) != set(successes)
+            or set(linked) != set(required)
+            or missing
+        ):
+            raise ValueError("formal Phase 4 report-link coverage is not exact")
+        watch_count = len(
+            parse_jsonl_text(_safe_read(source, Path("watch.jsonl"), 10_000_000))
+        )
+        if quality.get("watch_count") != watch_count:
+            raise ValueError("formal Phase 4 watch count is inconsistent")
     _safe_read(source, Path("PHASE4_COMPLETE"), 100)
     atomic_write_text(target / "PHASE4_COMPLETE", "complete\n")
 

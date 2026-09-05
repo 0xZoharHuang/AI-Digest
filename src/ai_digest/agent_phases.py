@@ -14,7 +14,7 @@ from .config import RuntimeConfig, load_interests
 from .models import Assignment, Bundle, RoutingOutput, SourceItem
 from .store import load_jsonl
 from .utils import atomic_write_json, atomic_write_jsonl, atomic_write_text
-from .v3 import V3Phases
+from .v3 import V3Phases, uses_formal_phase3_contract
 
 ROUTING_SCHEMA = {
     "type": "object",
@@ -511,7 +511,7 @@ class AgentPhases:
 
     async def research(self, run_dir: Path, routing: RoutingOutput | None = None) -> dict[str, str]:
         routing_root = run_dir / "02_routing"
-        if (routing_root / "packages.json").exists():
+        if uses_formal_phase3_contract(routing_root):
             return await V3Phases(self.runtime, self.runner).research(run_dir, routing)
         return await self._research_legacy(run_dir, routing)
 
@@ -629,7 +629,7 @@ class AgentPhases:
         routing: RoutingOutput | None = None,
         successes: dict[str, str] | None = None,
     ) -> Path:
-        if (run_dir / "02_routing" / "packages.json").exists():
+        if uses_formal_phase3_contract(run_dir / "02_routing"):
             if successes is None:
                 successes = json.loads(
                     (run_dir / "03_research" / "successes.json").read_text(encoding="utf-8")

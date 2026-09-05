@@ -80,6 +80,18 @@ The smoke must prove:
 The receipt is written below the chosen smoke root as `automation_smoke_receipt.json`.
 It is evidence for integration and recovery only, not Phase 2 semantic quality.
 
+For an attention-editor run, the smoke additionally fails unless:
+
+- Phase 3 uses `main_report.md`, `intake.jsonl`, `evidence.jsonl`, and
+  `research_manifest.json`; legacy `report.md` is not accepted;
+- every Phase 2 object has exactly one success, `not_published`, or explicit failure outcome;
+- Phase 4 has an independent successful quality receipt with exact report-link coverage;
+- Phase 5 leaves a matching local preflight receipt and makes zero live Lark calls.
+
+A live notification is tested only after these local gates pass. Production acceptance then requires
+one publish plus an idempotent replay proving that unchanged Wiki pages are not rewritten and the DM
+is not duplicated.
+
 ## Failure injection
 
 Tests include:

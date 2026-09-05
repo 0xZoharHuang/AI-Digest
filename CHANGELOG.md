@@ -16,6 +16,11 @@ versioning for public releases.
 
 ### Fixed
 
+- Route attention-editor objects through the formal Phase 3 artifact contract instead of the legacy
+  single `report.md` path; carry Watch decisions into Phase 4, record independent Phase 4 quality,
+  and reject incomplete Phase 3/4 evidence before the first Lark write.
+- Include research quality, `not_published` decisions, and Phase 4 quality in the publish artifact
+  hash, and retain an explicit receipt for isolated Phase 5 preflight runs.
 - Reject duplicate, missing, or unknown unit IDs even when a batch response satisfies JSON Schema,
   repair only that batch in its saved Codex session, and retain valid batches across interruption.
 - Preserve the currently loaded immutable V3 snapshot during cutover, attempt and report its recovery

@@ -18,7 +18,9 @@ from .models import (
     Phase2Annotation,
     Phase2CatalogEntry,
     Phase2PackagePlan,
+    Phase2RoutingDecision,
     Phase2Summary,
+    Phase2UnitDocument,
     ResearchArtifactManifest,
     ResearchPackage,
     RoutingOutput,
@@ -29,6 +31,8 @@ from .phase2_attention import (
     PHASE2_ATTENTION_CONTRACT,
     PHASE2_ATTENTION_LEGACY_CONTRACT,
     load_attention_routing,
+    validate_attention_artifacts,
+    validate_editor_outputs,
 )
 from .phase2_bounded import BoundedAttentionPhase2
 from .store import load_jsonl
@@ -880,7 +884,7 @@ class V3Phases:
     async def research(
         self, run_dir: Path, routing: RoutingOutput | None = None
     ) -> dict[str, str]:
-        packages = load_packages(run_dir / "02_routing")
+        packages, units, catalog = load_phase3_inputs(run_dir / "02_routing")
         if not packages:
             root = run_dir / "03_research"
             root.mkdir(parents=True, exist_ok=True)
@@ -891,8 +895,6 @@ class V3Phases:
             atomic_write_text(root / "PHASE3_COMPLETE", "quiet\n")
             return {}
         items = load_phase1_items(run_dir / "01_phase1")
-        units = {unit.unit_id: unit for unit in load_units(run_dir / "02_routing")}
-        catalog = {row.unit_id: row for row in load_catalog(run_dir / "02_routing")}
         root = run_dir / "03_research"
         root.mkdir(parents=True, exist_ok=True)
         semaphore = __import__("asyncio").Semaphore(self.runtime.codex.top_level_concurrency)
@@ -974,6 +976,8 @@ class V3Phases:
                 quality.append(manifest.model_dump(mode="json"))
 
         await __import__("asyncio").gather(*(run_package(package) for package in packages))
+        failures.sort(key=lambda value: str(value.get("package_id") or ""))
+        quality.sort(key=lambda value: str(value.get("package_id") or ""))
         atomic_write_json(root / "failures.json", failures)
         atomic_write_json(root / "successes.json", successes)
         atomic_write_json(root / "not_published.json", sorted(not_published))
@@ -1026,14 +1030,17 @@ class V3Phases:
                 target_root / "research_manifest.json",
             )
         shutil.copy2(run_dir / "03_research" / "failures.json", root / "failures.json")
-        shutil.copy2(run_dir / "03_research" / "quality.json", root / "quality.json")
+        shutil.copy2(
+            run_dir / "03_research" / "quality.json", root / "research_quality.json"
+        )
         not_published = run_dir / "03_research" / "not_published.json"
         if not_published.is_file() and not not_published.is_symlink():
             shutil.copy2(not_published, root / "not_published.json")
         else:
             atomic_write_json(root / "not_published.json", [])
         shutil.copy2(run_dir / "01_phase1" / "source_health.json", root / "source_health.json")
-        atomic_write_text(root / "watch.jsonl", "")
+        watch_rows = load_attention_watch_rows(run_dir / "02_routing")
+        atomic_write_jsonl(root / "watch.jsonl", watch_rows)
         atomic_write_text(root / "AGENTS.md", phase4_agents_md())
         output = root / "daily_brief.md"
         result = await self.runner.run(
@@ -1044,17 +1051,70 @@ class V3Phases:
             sandbox="read-only",
             output_file=output,
         )
-        if not result.success or not output.exists():
-            atomic_write_text(output, fallback_brief(run_dir, successes))
+        if not result.success:
+            _raise_if_retryable("Phase 4 navigation brief", result)
+        output_has_text = output.exists() and bool(
+            output.read_text(encoding="utf-8").strip()
+        )
         missing = [
             package_id
             for package_id in successes
-            if f"report://{package_id}" not in output.read_text(encoding="utf-8")
+            if not output_has_text
+            or f"report://{package_id}" not in output.read_text(encoding="utf-8")
         ]
+        if (not output_has_text or missing) and result.thread_id:
+            result = await self.runner.run(
+                workspace=root,
+                prompt=(
+                    "修复并完整重写中文日报导航。每个 required report id 必须至少出现一次 "
+                    f"report:// 链接。当前缺失：{missing}。只返回 Markdown 正文。"
+                ),
+                model=self.runtime.codex.brief_model,
+                reasoning=self.runtime.codex.brief_reasoning,
+                sandbox="read-only",
+                output_file=output,
+                resume_thread_id=result.thread_id,
+            )
+            if not result.success:
+                _raise_if_retryable("Phase 4 navigation brief repair", result)
+            output_has_text = output.exists() and bool(
+                output.read_text(encoding="utf-8").strip()
+            )
+            missing = [
+                package_id
+                for package_id in successes
+                if not output_has_text
+                or f"report://{package_id}" not in output.read_text(encoding="utf-8")
+            ]
+        used_fallback = not output_has_text or bool(missing)
         if missing:
             atomic_write_text(output, fallback_brief(run_dir, successes))
+        if not output_has_text:
+            atomic_write_text(output, fallback_brief(run_dir, successes))
+        internal_unit_ids = {
+            str(value.get("unit_id") or "")
+            for value in load_jsonl(run_dir / "02_routing" / "units.jsonl")
+        }
+        assert_reader_output_is_clean(output, internal_unit_ids - {""})
         append_run_status(output, run_dir, successes)
         atomic_write_json(root / "codex.json", codex_summary(result))
+        linked = sorted(
+            package_id
+            for package_id in successes
+            if f"report://{package_id}" in output.read_text(encoding="utf-8")
+        )
+        atomic_write_json(
+            root / "quality.json",
+            {
+                "schema_version": 1,
+                "status": "partial" if used_fallback else "success",
+                "generation": "deterministic_fallback" if used_fallback else "codex",
+                "required_report_ids": sorted(successes),
+                "linked_report_ids": linked,
+                "missing_report_ids": sorted(set(successes) - set(linked)),
+                "watch_count": len(watch_rows),
+            },
+        )
         atomic_write_text(root / "PHASE4_COMPLETE", "v3 complete\n")
         return output
 
@@ -1978,6 +2038,109 @@ def load_packages(path: Path) -> list[ResearchPackage]:
     return [ResearchPackage.model_validate(row) for row in json.loads(package_path.read_text())]
 
 
+def uses_formal_phase3_contract(path: Path) -> bool:
+    if (path / "packages.json").is_file():
+        return True
+    manifest = _read_json(path / "phase2_manifest.json", {})
+    return manifest.get("contract") in {
+        PHASE2_ATTENTION_CONTRACT,
+        PHASE2_ATTENTION_BOUNDED_CONTRACT,
+    }
+
+
+def load_phase3_inputs(
+    path: Path,
+) -> tuple[
+    list[ResearchPackage],
+    dict[str, ObservationUnit],
+    dict[str, Phase2CatalogEntry],
+]:
+    if not uses_formal_phase3_contract(path):
+        return [], {}, {}
+    manifest = _read_json(path / "phase2_manifest.json", {})
+    if manifest.get("contract") not in {
+        PHASE2_ATTENTION_CONTRACT,
+        PHASE2_ATTENTION_BOUNDED_CONTRACT,
+    }:
+        packages = load_packages(path)
+        units = {unit.unit_id: unit for unit in load_units(path)}
+        catalog = {row.unit_id: row for row in load_catalog(path)}
+        return packages, units, catalog
+
+    validate_attention_artifacts(path)
+    documents = [
+        Phase2UnitDocument.model_validate(row) for row in load_jsonl(path / "units.jsonl")
+    ]
+    decisions, objects = validate_editor_outputs(path, documents)
+    object_by_unit = {
+        unit_id: value.object_id for value in objects for unit_id in value.unit_ids
+    }
+    selected_ids = sorted(object_by_unit)
+    document_by_id = {value.unit_id: value for value in documents}
+    packages = [
+        ResearchPackage(
+            package_id=value.object_id,
+            label_zh=value.label_zh,
+            scope_note_zh=(
+                "这些材料仅被确认属于同一具体对象；研究范围、问题与结论由 Phase 3 自主确定。"
+            ),
+            unit_ids=value.unit_ids,
+        )
+        for value in objects
+    ]
+    units = {
+        unit_id: ObservationUnit(
+            unit_id=unit_id,
+            entity_key=document_by_id[unit_id].entity_key,
+            item_ids=document_by_id[unit_id].item_ids,
+            sources=document_by_id[unit_id].sources,
+            occurred_at=document_by_id[unit_id].occurred_at,
+            summary=decisions[unit_id].reason_zh,
+        )
+        for unit_id in selected_ids
+    }
+    catalog = {
+        unit_id: Phase2CatalogEntry(
+            unit_id=unit_id,
+            summary_zh=decisions[unit_id].reason_zh,
+            package_id=object_by_unit[unit_id],
+        )
+        for unit_id in selected_ids
+    }
+    return packages, units, catalog
+
+
+def load_attention_watch_rows(path: Path) -> list[dict[str, Any]]:
+    manifest = _read_json(path / "phase2_manifest.json", {})
+    if manifest.get("contract") not in {
+        PHASE2_ATTENTION_CONTRACT,
+        PHASE2_ATTENTION_BOUNDED_CONTRACT,
+    }:
+        return []
+    validate_attention_artifacts(path)
+    documents = [
+        Phase2UnitDocument.model_validate(row) for row in load_jsonl(path / "units.jsonl")
+    ]
+    decisions = {
+        value.unit_id: value
+        for value in (
+            Phase2RoutingDecision.model_validate(row)
+            for row in load_jsonl(path / "decisions.jsonl")
+        )
+    }
+    return [
+        {
+            "unit_id": document.unit_id,
+            "entity_key": document.entity_key,
+            "sources": document.sources,
+            "object_id": decisions[document.unit_id].object_id,
+            "reason_zh": decisions[document.unit_id].reason_zh,
+        }
+        for document in documents
+        if decisions[document.unit_id].route == "watch"
+    ]
+
+
 def load_legacy_packages(path: Path) -> list[LegacyResearchPackage]:
     package_path = path / "packages.json"
     if not package_path.exists():
@@ -2152,7 +2315,8 @@ research_manifest.json，并仅在自然需要时创建 subreports。结果必�
 def phase4_agents_md() -> str:
     return """# Phase 4 — Reader Navigation Editor
 
-读取 reports/、quality.json、failures.json、not_published.json 和 source_health.json，生成一份简体中文阅读入口。
+读取 reports/、research_quality.json、failures.json、not_published.json、watch.jsonl 和 source_health.json，
+生成一份简体中文阅读入口。
 你的职责是帮助读者快速看到今天研究了哪些具体问题并进入 main report/subreport，不进行新的联网
 研究，不重写 Phase 3，不强行提炼统一趋势。每个成功 package 必须至少包含一个
 report://<package-id> 链接；如实呈现来源、研究失败，以及有多少研究主题经核查后未形成报告，

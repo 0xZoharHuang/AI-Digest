@@ -124,7 +124,9 @@ object membership, hashes and the final Editor session; historical Phase 2 contr
 
 ## Phase 3 contract
 
-Each package lead receives `AGENTS.md`, `RESEARCH_METHOD.md`, a readable `PACKAGE.md`, bounded catalog
+Each selected Phase 2 object is mechanically adapted to the formal Phase 3 package interface; this
+adapter adds no scope or editorial decision. Each package lead receives `AGENTS.md`,
+`RESEARCH_METHOD.md`, a readable `PACKAGE.md`, bounded catalog
 shards, per-unit source files, an on-demand daily catalog, bootstrap index and progress checkpoint. It may use up to four
 non-recursive subagents for genuinely independent research directions.
 
@@ -140,6 +142,19 @@ Infrastructure failures retain checkpoints, while valid completed package artifa
 After doing the research, a Lead may return `status=not_published` with no reader page when the
 package offers no material insight for the configured reader; intake and evidence remain durable.
 
+For every Phase 2 object, Phase 3 must produce exactly one outcome: a validated main report, a
+validated `not_published` decision, or an explicit failure. Legacy `report.md` is readable for old
+runs but is rejected for new attention-editor objects. The Phase 3 quality receipt lists every
+validated artifact manifest and must agree with those outcomes.
+
+## Phase 4 contract
+
+Phase 4 receives validated reports, Phase 3 quality/failures, `not_published` decisions, source
+health, and compact Watch rows. It never receives authority to change Phase 2 routes or Phase 3
+facts. Its own `quality.json` records required and linked report IDs, missing links, Watch count, and
+whether output came from Codex or the deterministic fallback. Internal unit IDs are rejected from
+the reader-facing Brief.
+
 ## Queue and permissions
 
 The collector seals Phase 1 locally, copies all referenced blobs plus compact bootstrap/history
@@ -149,9 +164,13 @@ Transient non-zero Codex exits preserve the job and checkpoints in `retry_wait` 
 backoff. Lark failures remain in `publish_pending`; the recovery heartbeat retries only after their
 due time. Process locks make tick, worker and publisher recovery single-owner operations.
 
-The publisher validates all local files and internal links before its first external write. Year and
+The publisher validates all formal Phase 3 ledgers, exact object outcomes, Phase 3/4 quality files,
+Watch counts, local files and internal links before its first external write. Year and
 month nodes are materialized navigation indexes; day, main-report and subreport pages contain deterministic
 back-navigation. Only stale content nodes recorded in the same run's publish manifest may be removed.
+The idempotency artifact hash includes research quality, `not_published` and Phase 4 quality so a
+quality-state change cannot reuse a stale notification key. Isolated preflight writes a local
+`05_publish/preflight_receipt.json` and makes no Lark call.
 
 Every Codex call denies the user's Codex data, SSH directory and login Keychains while granting only
 the current phase workspace. Installation performs a consistent SQLite backup, idempotent schema

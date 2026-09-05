@@ -8,9 +8,15 @@ import time
 from pathlib import Path
 from typing import Any, cast
 
-from .artifacts import load_artifact_layout
+from .artifacts import load_artifact_layout, load_not_published_artifacts
 from .config import LarkConfig, resolve_binary
-from .models import PublishManifest, PublishNode, ResearchPackage
+from .models import (
+    Phase2ResearchObject,
+    PublishManifest,
+    PublishNode,
+    ResearchArtifactManifest,
+    ResearchPackage,
+)
 from .store import parse_jsonl_text
 from .utils import atomic_write_json, atomic_write_text
 
@@ -579,12 +585,17 @@ def validate_publish_inputs(run_dir: Path, status: str) -> dict[str, Any]:
     if not isinstance(not_published, list):
         raise LarkError("not_published.json must be an array")
     known_reports: set[str] = set()
+    actual_quality_manifests: dict[str, ResearchArtifactManifest] = {}
     preflight_subreports: dict[str, dict[str, str]] = {}
     content_keys = {"year", "month", "day"}
     subreport_count = 0
     expected_units: dict[str, set[str]] = {}
+    formal_research = False
+    phase2_unit_ids: set[str] = set()
     packages_path = run_dir / "02_routing" / "packages.json"
+    objects_path = run_dir / "02_routing" / "objects.json"
     if packages_path.is_file() and (run_dir / "02_routing" / "phase2_manifest.json").is_file():
+        formal_research = True
         packages = [
             ResearchPackage.model_validate(row)
             for row in json.loads(_read_regular_text(packages_path))
@@ -592,6 +603,21 @@ def validate_publish_inputs(run_dir: Path, status: str) -> dict[str, Any]:
         expected_units = {
             package.package_id: set(package.unit_ids) for package in packages
         }
+    elif objects_path.is_file() and (run_dir / "02_routing" / "phase2_manifest.json").is_file():
+        formal_research = True
+        objects = [
+            Phase2ResearchObject.model_validate(row)
+            for row in json.loads(_read_regular_text(objects_path))
+        ]
+        expected_units = {value.object_id: set(value.unit_ids) for value in objects}
+    units_path = run_dir / "02_routing" / "units.jsonl"
+    if formal_research:
+        phase2_unit_ids = {
+            str(value.get("unit_id") or "")
+            for value in parse_jsonl_text(_read_regular_text(units_path))
+        }
+        if "" in phase2_unit_ids:
+            raise LarkError("Phase 2 units contain an empty unit id")
     for package_id_value, report_path_value in successes.items():
         package_id = str(package_id_value)
         report_path = str(report_path_value)
@@ -609,6 +635,17 @@ def validate_publish_inputs(run_dir: Path, status: str) -> dict[str, Any]:
             )
         except (ValueError, TypeError) as error:
             raise LarkError(str(error)) from error
+        if formal_research and layout.kind != "main_report_v1":
+            raise LarkError(
+                f"formal Phase 3 object used a legacy report contract: {package_id}"
+            )
+        if formal_research:
+            assert layout.manifest_path is not None
+            actual_quality_manifests[package_id] = (
+                ResearchArtifactManifest.model_validate_json(
+                    _read_regular_text(layout.manifest_path)
+                )
+            )
         report = _read_regular_text(layout.main_path)
         known_reports.add(package_id)
         content_keys.add(f"report:{package_id}")
@@ -631,6 +668,98 @@ def validate_publish_inputs(run_dir: Path, status: str) -> dict[str, Any]:
             package_subreports,
         )
         _assert_no_internal_links(rendered_report)
+
+    if formal_research:
+        success_ids = set(str(value) for value in successes)
+        not_published_ids = [str(value) for value in not_published]
+        failure_ids = [
+            str(value.get("package_id") or "")
+            for value in failures
+            if isinstance(value, dict)
+        ]
+        outcome_ids = [*success_ids, *not_published_ids, *failure_ids]
+        if (
+            any(not value for value in failure_ids)
+            or len(outcome_ids) != len(set(outcome_ids))
+            or set(outcome_ids) != set(expected_units)
+        ):
+            raise LarkError("formal Phase 3 outcomes do not exactly cover Phase 2 objects")
+        for package_id in not_published_ids:
+            try:
+                manifest_path, _intake, _evidence = load_not_published_artifacts(
+                    run_dir / "03_research" / package_id,
+                    package_id,
+                    expected_unit_ids=expected_units[package_id],
+                )
+            except (ValueError, TypeError) as error:
+                raise LarkError(str(error)) from error
+            actual_quality_manifests[package_id] = (
+                ResearchArtifactManifest.model_validate_json(
+                    _read_regular_text(manifest_path)
+                )
+            )
+        research_quality_path = run_dir / "03_research" / "quality.json"
+        if not research_quality_path.is_file() or research_quality_path.is_symlink():
+            raise LarkError("formal Phase 3 quality is missing or unsafe")
+        research_quality = _read_regular_json(research_quality_path)
+        if not isinstance(research_quality, dict):
+            raise LarkError("formal Phase 3 quality must be an object")
+        expected_research_status = (
+            "quiet"
+            if not expected_units
+            else "partial"
+            if failures
+            else "success"
+        )
+        if research_quality.get("status") != expected_research_status:
+            raise LarkError("formal Phase 3 quality contradicts research outcomes")
+        quality_rows = research_quality.get("packages")
+        if not isinstance(quality_rows, list):
+            raise LarkError("formal Phase 3 quality packages must be an array")
+        quality_manifests = [
+            ResearchArtifactManifest.model_validate(value) for value in quality_rows
+        ]
+        quality_ids = [value.package_id for value in quality_manifests]
+        if len(quality_ids) != len(set(quality_ids)) or set(quality_ids) != (
+            success_ids | set(not_published_ids)
+        ):
+            raise LarkError("formal Phase 3 quality does not match decided artifacts")
+        quality_by_id = {value.package_id: value for value in quality_manifests}
+        if any(
+            quality_by_id[package_id] != manifest
+            for package_id, manifest in actual_quality_manifests.items()
+        ):
+            raise LarkError("formal Phase 3 quality contains stale artifact manifests")
+
+        phase4_quality_path = run_dir / "04_brief" / "quality.json"
+        if not phase4_quality_path.is_file() or phase4_quality_path.is_symlink():
+            raise LarkError("formal Phase 4 quality is missing or unsafe")
+        phase4_quality = _read_regular_json(phase4_quality_path)
+        if not isinstance(phase4_quality, dict) or phase4_quality.get(
+            "status"
+        ) not in {"success", "partial"}:
+            raise LarkError("formal Phase 4 quality is missing or invalid")
+        required = phase4_quality.get("required_report_ids")
+        linked = phase4_quality.get("linked_report_ids")
+        missing = phase4_quality.get("missing_report_ids")
+        if (
+            not isinstance(required, list)
+            or not isinstance(linked, list)
+            or not isinstance(missing, list)
+            or len(required) != len(set(required))
+            or set(required) != success_ids
+            or set(linked) != success_ids
+            or missing
+            or phase4_quality.get("watch_count") != len(watch)
+        ):
+            raise LarkError("formal Phase 4 quality does not match publish inputs")
+        leaked_unit_ids = sorted(
+            unit_id for unit_id in phase2_unit_ids if unit_id and unit_id in brief
+        )
+        if leaked_unit_ids:
+            raise LarkError(
+                f"daily brief exposes internal Phase 2 unit ids: {leaked_unit_ids[:5]}"
+            )
 
     rendered_brief = _rewrite_report_links(
         brief,
@@ -749,6 +878,21 @@ def _publish_artifact_hash(run_dir: Path, status: str) -> str:
         Path("04_brief/watch.jsonl"),
         Path("04_brief/daily_brief.md"),
     ]
+    formal_contract = (
+        (run_dir / "02_routing" / "phase2_manifest.json").is_file()
+        and any(
+            (run_dir / "02_routing" / name).is_file()
+            for name in ("objects.json", "packages.json")
+        )
+    )
+    if formal_contract:
+        relative_paths.extend(
+            [
+                Path("03_research/not_published.json"),
+                Path("03_research/quality.json"),
+                Path("04_brief/quality.json"),
+            ]
+        )
     successes_path = run_dir / "03_research" / "successes.json"
     if successes_path.exists():
         successes = json.loads(successes_path.read_text(encoding="utf-8"))
