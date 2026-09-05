@@ -56,7 +56,7 @@ def _runtime(tmp_path: Path) -> RuntimeConfig:
     return RuntimeConfig(
         runtime_root=tmp_path,
         shared_runtime_root=tmp_path / "queue",
-        codex=CodexConfig(router_reader_concurrency=1),
+        codex=CodexConfig(phase2_engine="attention_editor_v3", router_reader_concurrency=1),
     )
 
 
@@ -213,8 +213,8 @@ def test_bounded_helper_failure_and_identity_branches(tmp_path: Path) -> None:
         CodexConfig(router_reader_concurrency=0)
     with pytest.raises(ValueError, match="less than or equal to 16"):
         CodexConfig(router_decider_concurrency=17)
-    with pytest.raises(ValueError, match="greater than or equal to 1"):
-        CodexConfig(phase3_daily_agent_limit=0)
+    with pytest.raises(ValueError, match="greater than or equal to 0"):
+        CodexConfig(phase3_daily_agent_limit=-1)
 
     adjudication_prompt = bounded_module.adjudication_batch_prompt(1, 1)
     final_prompt = bounded_module.bounded_finalize_prompt(10, 5, 3, 2)

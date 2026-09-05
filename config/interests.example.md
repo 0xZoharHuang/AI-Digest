@@ -8,8 +8,9 @@ Current attention includes, but is not limited to:
 - AI agents, coding agents, computer use, MCP and multi-agent systems.
 - The models, data, simulation, hardware and infrastructure enabling those systems.
 
-This is not a fixed taxonomy or a Phase 2 exclusion rule: every unit is grouped and reaches a
-Phase 3 Lead. An unexpected topic is publishable only when research establishes a direct, material
+This is not a fixed taxonomy or a Phase 2 exclusion rule: every unit is labelled and candidate
+packages are retained. Phase 3 consumes its budgeted selection, one independent Lead per package.
+An unexpected topic is publishable only when research establishes a direct, material
 connection to these AI/robotics interests; general importance in an unrelated field is not enough.
 
 The reader is a technically and commercially sophisticated builder who crosses research, product and

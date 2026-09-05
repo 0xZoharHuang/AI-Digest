@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -25,6 +25,10 @@ REPO_ROOT = _repo_root()
 
 
 class CodexConfig(BaseModel):
+    phase2_engine: Literal["semantic_labels_v1", "attention_editor_v3"] = "semantic_labels_v1"
+    phase2_label_model: str = "gpt-5.6-luna"
+    phase2_label_reasoning: str = "medium"
+    phase2_text_only: bool = True
     binary: str = "./node_modules/.bin/codex"
     router_model: str = "gpt-5.6-sol"
     router_reasoning: str = "high"
@@ -40,7 +44,7 @@ class CodexConfig(BaseModel):
     brief_reasoning: str = "high"
     phase3_admission_model: str = "gpt-5.6-sol"
     phase3_admission_reasoning: str = "high"
-    phase3_daily_agent_limit: int = Field(default=15, ge=1, le=1000)
+    phase3_daily_agent_limit: int = Field(default=15, ge=0, le=1000)
     top_level_concurrency: int = 3
     subagent_threads: int = 4
     idle_timeout_seconds: int = 900

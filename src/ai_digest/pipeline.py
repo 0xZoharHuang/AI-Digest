@@ -949,6 +949,26 @@ def _import_routing(job: Path, run: Path) -> None:
         )
         manifest_value = json.loads(manifest_content)
         contract = str(manifest_value.get("contract") or "")
+        if contract == "semantic_labels_v1":
+            from .phase2_labels import validate_artifacts
+            from .v3 import validate_unit_item_ids
+
+            contents = {name: _safe_read(source, Path(name), 50_000_000) for name in (
+                "units.jsonl", "labels.jsonl", "packages.json", "catalog.jsonl"
+            )}
+            _safe_read(source, Path("PHASE2_COMPLETE"), 100)
+            validate_artifacts(source)
+            expected = set(json.loads((run / "01_phase1" / "index.json").read_text())["item_ids"])
+            validate_unit_item_ids(expected, [ObservationUnit.model_validate(row)
+                for row in parse_jsonl_text(contents["units.jsonl"])])
+            target = run / "02_routing"
+            target.mkdir(parents=True, exist_ok=True)
+            for name, content in contents.items():
+                atomic_write_text(target / name, content)
+            atomic_write_text(target / "phase2_manifest.json", manifest_content)
+            validate_artifacts(target)
+            atomic_write_text(target / "PHASE2_COMPLETE", contract + "\n")
+            return
         if contract in {
             "attention_editor_v1",
             "attention_editor_v2",
@@ -1143,6 +1163,7 @@ def _import_research(job: Path, run: Path) -> None:
         expected_units = {value.object_id: set(value.unit_ids) for value in objects}
     elif packages_path.exists() and (run / "02_routing" / "phase2_manifest.json").exists():
         formal_research = True
+        admission_required = json.loads((run / "02_routing" / "phase2_manifest.json").read_text()).get("contract") == "semantic_labels_v1"
         packages = [
             ResearchPackage.model_validate(row)
             for row in json.loads(packages_path.read_text(encoding="utf-8"))

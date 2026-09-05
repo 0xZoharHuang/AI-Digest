@@ -63,6 +63,8 @@ class CodexRunner:
         subagent_threads: int = 4,
         resume_thread_id: str | None = None,
         thread_checkpoint_path: Path | None = None,
+        prompt_stdin: bool = False,
+        text_only: bool = False,
     ) -> CodexResult:
         workspace.mkdir(parents=True, exist_ok=True)
         isolated_tmp = workspace / ".tmp"
@@ -110,6 +112,10 @@ class CodexRunner:
             )
         else:
             args.extend(["--disable", "multi_agent"])
+        if text_only:
+            for feature in ("shell_tool", "apps", "plugins", "browser_use", "computer_use",
+                            "image_generation", "view_image", "workspace_dependencies", "code_mode_host"):
+                args.extend(["--disable", feature])
         if web_search:
             args.extend(["-c", 'web_search="live"'])
         else:
@@ -121,10 +127,11 @@ class CodexRunner:
         if resume_thread_id:
             args.extend(["resume", resume_thread_id, prompt])
         else:
-            args.append(prompt)
+            args.append("-" if prompt_stdin else prompt)
 
         process = await asyncio.create_subprocess_exec(
             *args,
+            stdin=asyncio.subprocess.PIPE if prompt_stdin else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             env=_safe_environment(isolated_tmp),
@@ -133,6 +140,13 @@ class CodexRunner:
         assert process.stdout is not None
         result = CodexResult(exit_code=-1)
         try:
+            if prompt_stdin:
+                if resume_thread_id:
+                    raise ValueError("stdin prompt is supported for fresh calls only")
+                assert process.stdin is not None
+                process.stdin.write(prompt.encode())
+                await process.stdin.drain()
+                process.stdin.close()
             while True:
                 try:
                     line = await asyncio.wait_for(

@@ -77,6 +77,40 @@ state, duplicate/revision counts, observed time range, raw completeness and quie
 
 ## Phase 2 contract
 
+New runs use `semantic_labels_v1` (development validation in progress; this description is not
+evidence of production cutover). Every complete normalized unit receives a minimal `signal`
+(`present`, `unclear`, `chatter`), `kind`, and local group ID. Only groups receive short titles;
+there are no per-unit summaries, reasons, value scores, or research conclusions. Both present and
+unclear units enter natural packages; chatter remains in the label ledger with its original data.
+Package count is unbounded and independent of Phase 3's daily budget.
+
+The explicitly configured lightweight model is Luna/medium, with unrelated tool families disabled.
+Independent calls contain at most 32 units or 128 KiB, and receive complete
+input through stdin, avoiding repeated agent file reads. Successful validated outputs are cached by
+input, model, reasoning, prompt and schema hash. Failed/invalid attempts retain receipts and output;
+only an invalid batch is retried. Final file hashes, exact label coverage and package/catalog
+membership must validate before a completion marker can be written.
+
+Cross-batch candidates use a local, pinned Qwen3-Embedding-0.6B model and a rebuildable HNSW index.
+The index combines short subject names with original-content embeddings. The development default
+retrieves up to eight preceding-batch neighbours at cosine similarity >= 0.60.
+This threshold proposes comparisons, never discards records or declares a merge. Luna compares
+complete candidate members in disjoint bounded comparison blocks (32 groups / 128 KiB), returning
+only disjoint sets of group IDs to merge. Graph connectivity is not a semantic merge. Candidate
+edges crossing a comparison block remain unmerged and are recorded for evaluation; uncertain matches
+remain separate packages. Short ordered aliases prevent record-ID binding errors, and code restores
+original immutable IDs. Empty captured bodies abstain as unclear rather than asserting chatter.
+One-batch runs need no cross-batch pass. Install the `semantic` dependency extra for multi-batch runs.
+
+Phase 3 consumes a selected ordered subset, one independent Lead per package. A zero budget makes
+no research or selector calls. Unselected packages remain unresearched. Legacy artifact field names
+such as `selected_object_ids` remain readable and refer to package IDs for this contract.
+Admission reads compact package cards with source-native metrics and dates, rather than rereading
+every full record. Phase 3 researchers still receive their selected package's complete original data.
+
+The following attention-editor contract is retained for historical replay and explicit comparison
+runs (`phase2_engine="attention_editor_v3"`), not the default for new runs.
+
 Deterministic unitization groups only provably identical entities: an X post/conversation, GitHub
 repo, arXiv paper, HN story or canonical article. Semantic similarity never deletes evidence.
 

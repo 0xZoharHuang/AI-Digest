@@ -7,6 +7,10 @@ article_preview_chars = 4000
 x_text_retention_days = 30
 
 [codex]
+phase2_engine = "semantic_labels_v1"
+phase2_label_model = "gpt-5.6-luna"
+phase2_label_reasoning = "medium"
+phase2_text_only = true
 binary = "./node_modules/.bin/codex"
 router_model = "gpt-5.6-sol"
 router_reasoning = "high"

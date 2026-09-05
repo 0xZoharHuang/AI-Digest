@@ -77,3 +77,20 @@ async def test_resume_rejects_a_different_started_thread(tmp_path):
     )
     assert result.error_class == "thread_mismatch"
     assert json.loads(checkpoint.read_text())["thread_id"] == "expected-thread"
+
+
+@pytest.mark.asyncio
+async def test_large_prompt_uses_stdin_without_argument_limit(tmp_path):
+    script = tmp_path / "stdin-codex"
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        "assert sys.argv[-1] == '-'\n"
+        "text = sys.stdin.read()\n"
+        "assert text == '原文' * 100000\n"
+        "print(json.dumps({'type':'turn.completed','usage':{}}), flush=True)\n"
+    )
+    script.chmod(0o755)
+    result = await CodexRunner(str(script)).run(workspace=tmp_path / "w",
+        prompt="原文" * 100000, model="test", reasoning="low", sandbox="read-only", prompt_stdin=True)
+    assert result.success

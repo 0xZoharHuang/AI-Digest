@@ -157,9 +157,7 @@ class Phase2Decision(BaseModel):
         return value.strip()
 
     def model_post_init(self, __context: Any) -> None:
-        if self.route in {"research", "watch"} and (
-            not self.cluster_hint or not self.trigger_zh
-        ):
+        if self.route in {"research", "watch"} and (not self.cluster_hint or not self.trigger_zh):
             raise ValueError("research/watch decisions require cluster_hint and trigger_zh")
 
 
@@ -207,16 +205,12 @@ class Phase2ProvisionalDecision(BaseModel):
         if self.route == "research" and (
             not self.object_key or not self.object_label_zh or not self.reason_zh
         ):
-            raise ValueError(
-                "provisional research decisions require object identity and reason"
-            )
+            raise ValueError("provisional research decisions require object identity and reason")
         if self.route == "watch" and not self.reason_zh:
             raise ValueError("provisional watch decisions require a reason")
         if bool(self.object_key) != bool(self.object_label_zh):
             raise ValueError("provisional object key and label must appear together")
-        if self.route == "archive" and (
-            self.object_key or self.object_label_zh or self.reason_zh
-        ):
+        if self.route == "archive" and (self.object_key or self.object_label_zh or self.reason_zh):
             raise ValueError("provisional archive decisions must not include editorial text")
 
 
@@ -326,9 +320,9 @@ class Phase3Admission(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal[1] = 1
-    daily_agent_limit: int = Field(ge=1)
+    daily_agent_limit: int = Field(ge=0)
     concurrency: int = Field(ge=1)
-    selection_mode: Literal["all", "codex_priority"]
+    selection_mode: Literal["all", "codex_priority", "disabled"]
     selector_model: str = ""
     selector_reasoning: str = ""
     thread_id: str | None = None
@@ -346,14 +340,16 @@ class Phase3Admission(BaseModel):
             or len(not_scheduled) != len(set(not_scheduled))
         ):
             raise ValueError("Phase 3 admission contains duplicate object ids")
-        if len(selected) != min(self.daily_agent_limit, len(available)) or not set(
-            selected
-        ) <= set(available):
+        if len(selected) > min(self.daily_agent_limit, len(available)) or not set(selected) <= set(
+            available
+        ):
             raise ValueError("Phase 3 admission selected set is invalid")
         if not_scheduled != [value for value in available if value not in set(selected)]:
             raise ValueError("Phase 3 admission does not preserve unscheduled objects")
         if self.selection_mode == "all" and selected != available:
             raise ValueError("all-mode admission must select every object")
+        if self.selection_mode == "disabled" and (self.daily_agent_limit != 0 or selected):
+            raise ValueError("disabled admission requires zero budget and no selection")
         if self.selection_mode == "codex_priority" and (
             not self.selector_model or not self.selector_reasoning or not self.thread_id
         ):

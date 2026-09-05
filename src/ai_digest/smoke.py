@@ -258,7 +258,15 @@ def verify_automation_smoke(source_runtime: RuntimeConfig, smoke_root: Path) -> 
     phase2_selection_count = 0
     research_object_count = 0
     scheduled_research_count = 0
-    if str(manifest.get("contract") or "") in {
+    if manifest.get("contract") == "semantic_labels_v1":
+        from .phase2_labels import validate_artifacts
+        labels, packages = validate_artifacts(routing_root)
+        if not packages:
+            raise RuntimeError("smoke produced no candidate package; Phase 3 was not exercised")
+        expected_research_units = {p.package_id: set(p.unit_ids) for p in packages}
+        phase2_selection_count = len(labels)
+        research_object_count = len(packages)
+    elif str(manifest.get("contract") or "") in {
         "attention_editor_v1",
         "attention_editor_v2",
         "attention_editor_v3",

@@ -639,7 +639,7 @@ class LarkPublisher:
                     f"状态：**{status}**  \n"
                     f"研究报告：{len(successes)}，核查后未发布：{not_published_count}，"
                     f"失败：{len(failures)}，Watch：{watch_count}  \n"
-                    f"Phase 2 Research 对象：{research_object_count}，"
+                    f"Phase 2 候选信息包：{research_object_count}，"
                     f"当日已调度：{scheduled_research_count}，"
                     f"未调度：{not_scheduled_research_count}  \n"
                     f"停用来源：{', '.join(disabled) if disabled else '无'}  \n"
@@ -798,6 +798,11 @@ def validate_publish_inputs(run_dir: Path, status: str) -> dict[str, Any]:
     objects_path = run_dir / "02_routing" / "objects.json"
     if packages_path.is_file() and (run_dir / "02_routing" / "phase2_manifest.json").is_file():
         formal_research = True
+        phase2_manifest = _read_regular_json(run_dir / "02_routing" / "phase2_manifest.json")
+        if isinstance(phase2_manifest, dict) and phase2_manifest.get("contract") == "semantic_labels_v1":
+            from .phase2_labels import validate_artifacts
+            validate_artifacts(run_dir / "02_routing")
+            admission_required = True
         packages = [
             ResearchPackage.model_validate(row)
             for row in json.loads(_read_regular_text(packages_path))
