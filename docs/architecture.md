@@ -95,10 +95,12 @@ Cross-batch candidates use a local, pinned Qwen3-Embedding-0.6B model and a rebu
 The index combines short subject names with original-content embeddings. The development default
 retrieves up to eight preceding-batch neighbours at cosine similarity >= 0.60.
 This threshold proposes comparisons, never discards records or declares a merge. Luna compares
-complete candidate members in disjoint bounded comparison blocks (32 groups / 128 KiB), returning
-only disjoint sets of group IDs to merge. Graph connectivity is not a semantic merge. Candidate
-edges crossing a comparison block remain unmerged and are recorded for evaluation; uncertain matches
-remain separate packages. Short ordered aliases prevent record-ID binding errors, and code restores
+compact identity cards in bounded, overlapping comparison scopes, returning only group IDs confirmed
+to describe the same specific object/event. Exact post, paper, repository and canonical-link hints
+supplement vector candidates. Every proposed edge fits a comparison scope or is explicitly deferred.
+Graph similarity is never a semantic merge: only model-confirmed identity relations are combined
+globally. Execution paging therefore does not impose package boundaries. Original complete records
+remain attached to final packages. Short ordered aliases prevent record-ID binding errors, and code restores
 original immutable IDs. Empty captured bodies abstain as unclear rather than asserting chatter.
 One-batch runs need no cross-batch pass. Install the `semantic` dependency extra for multi-batch runs.
 

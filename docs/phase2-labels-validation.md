@@ -2,6 +2,18 @@
 
 Status: implementation and experiments in progress. Not approved for production cutover.
 
+The first complete 6,878-unit run finished structurally but failed semantic acceptance: 6,342
+packages, information retention 193/195 (98.97%) against the independent reference, correct separation
+121/121, but same-object pair recall only 49/117 (41.88%). Of 68 missed pairs, 62 were split across
+execution scopes. This disproves using disjoint execution scopes as final classification boundaries.
+The replacement covers candidate relations with overlapping identity-card scopes and combines only
+model-confirmed equivalence relations across scopes. Its full semantic recheck remains in progress;
+offline candidate co-location coverage of 115/117 is not a semantic pass.
+
+The 1,000,000-vector synthetic index run completed in 2,067.75 seconds at 4,199 MiB peak RSS, using
+four native threads and 1,024 dimensions. Self-retrieval@1 was 0.73 at that scale with ef=64, so those
+parameters are not accepted for million-scale retrieval quality. This is capacity evidence only.
+
 Current candidate: `gpt-5.6-luna`, `medium`, text-only tool profile; 32 records / 128 KiB per
 annotation call. Input aliases follow record order; output contains only signal, kind and short
 group name. Cross-batch review returns only disjoint group-ID sets to merge, with all other groups

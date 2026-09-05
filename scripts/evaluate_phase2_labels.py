@@ -8,6 +8,8 @@ import math
 from pathlib import Path
 
 from ai_digest.phase2_labels import validate_artifacts
+from ai_digest.store import load_jsonl
+from ai_digest.utils import atomic_write_json
 
 
 def evaluate(root: Path, gold: dict) -> dict:
@@ -70,8 +72,8 @@ def evaluate(root: Path, gold: dict) -> dict:
         return [max(0, center - radius), min(1, center + radius)]
 
     enough = (
-        signal_total >= 100
-        and chatter_total >= 100
+        len(observations) >= 200
+        and signal_total >= 100
         and same_total >= 100
         and different_total >= 100
     )
@@ -112,9 +114,28 @@ def evaluate(root: Path, gold: dict) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", type=Path, required=True)
-    parser.add_argument("--gold", type=Path, required=True)
+    parser.add_argument("--gold", type=Path)
+    parser.add_argument("--label-review", type=Path)
+    parser.add_argument("--pair-review", type=Path)
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    result = evaluate(args.run / "02_routing", json.loads(args.gold.read_text()))
+    root = args.run / "02_routing"
+    if args.gold:
+        gold = json.loads(args.gold.read_text())
+    elif args.label_review and args.pair_review:
+        documents = {row["unit_id"]: row for row in load_jsonl(root / "units.jsonl")}
+        for document in load_jsonl(args.label_review / "review_units.jsonl"):
+            if documents.get(document["unit_id"]) != document:
+                raise ValueError("review input differs from evaluated corpus")
+        gold = {"input_hash": json.loads((root / "phase2_manifest.json").read_text())["input_hash"],
+            "review_status": "draft", "labels": load_jsonl(args.label_review / "draft_labels.jsonl"),
+            "pairs": [pair for pair in json.loads((args.pair_review / "draft_pairs.json").read_text()) if not pair["unclear"]]}
+    else:
+        parser.error("provide --gold or both --label-review and --pair-review")
+    result = evaluate(root, gold)
+    result["reference_status"] = gold.get("review_status", "unspecified")
+    if args.output:
+        atomic_write_json(args.output, result)
     print(json.dumps(result, indent=2, ensure_ascii=False))
     if not result["semantic_gate_passed"]:
         raise SystemExit(1)

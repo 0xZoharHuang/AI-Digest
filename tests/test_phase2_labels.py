@@ -57,6 +57,11 @@ def items(count=20):
 
 
 def test_reject_missing_duplicate_and_chatter_package():
+    from ai_digest.phase2_labels import validate_group_merges
+    assert validate_group_merges({"merges": [["a", "a"]]}, {"a", "b"}) == []
+    assert validate_group_merges({"merges": [["a", "b"], ["b", "c"]]}, {"a", "b", "c"}) == [["a", "b", "c"]]
+    with pytest.raises(ValueError, match="unknown"):
+        validate_group_merges({"merges": [["x", "x"]]}, {"a"})
     schema = batch_schema({"a", "b"})
     assert schema["properties"]["labels"]["required"] == ["a", "b"]
     assert schema["properties"]["labels"]["additionalProperties"] is False
@@ -206,7 +211,7 @@ async def test_cross_batch_merge_checks_members_and_reuses_receipt(tmp_path, mon
         async def run(self, **kwargs):
             self.calls += 1
             data = json.loads((kwargs["workspace"] / "input.json").read_text())
-            assert data["groups"][0]["units"] == [{"text": "a"}]
+            assert data["groups"][0]["members"][0]["entity"] == "a"
             atomic_write_json(
                 kwargs["output_file"],
                 {"merges": [[g["group_id"] for g in data["groups"]]]},
@@ -293,6 +298,34 @@ async def test_similarity_chain_is_not_an_automatic_package(tmp_path, monkeypatc
     assert {tuple(sorted(p.unit_ids)) for p in result} == {("a", "b"), ("c",)}
 
 
+@pytest.mark.asyncio
+async def test_confirmed_identity_can_cross_comparison_boundaries(tmp_path, monkeypatch):
+    packages = [ResearchPackage(package_id=k, label_zh=k, scope_note_zh="scope", unit_ids=[k]) for k in ["a", "b", "c"]]
+    monkeypatch.setattr("ai_digest.semantic_index.nearest_groups", lambda *args: {})
+    monkeypatch.setattr("ai_digest.phase2_scopes.comparison_scopes", lambda *args: ([["a", "b"], ["b", "c"]], []))
+    class SameObjectRunner:
+        async def run(self, **kwargs):
+            data = json.loads((kwargs["workspace"] / "input.json").read_text())
+            atomic_write_json(kwargs["output_file"], {"merges": [[g["group_id"] for g in data["groups"]]]})
+            return CodexResult(exit_code=0, thread_id="confirmed")
+    engine = SemanticPhase2(RuntimeConfig(), SameObjectRunner())
+    engine.package_batches = {"a": 0, "b": 1, "c": 2}
+    result = await engine.merge(tmp_path, packages, {k: {"text": k} for k in ["a", "b", "c"]})
+    assert len(result) == 1 and result[0].unit_ids == ["a", "b", "c"]
+
+
+def test_identity_links_do_not_confuse_authors_or_video_query_ids():
+    from ai_digest.phase2_scopes import identifiers
+    def doc(payload):
+        return {"observations": [{"payload": payload}]}
+    result = identifiers(doc({"references": [{"id": "post", "author": {"id": "person"}}]}))
+    assert "post:post" in result and "post:person" not in result
+    a = identifiers(doc({"url": "https://youtube.com/watch?v=a&utm_source=x"}))
+    b = identifiers(doc({"url": "https://youtube.com/watch?v=b"}))
+    assert a.isdisjoint(b)
+    assert identifiers(doc({"url": "https://x.com/person"})) == set()
+
+
 def test_semantic_index_cache_and_candidate_only_search(tmp_path, monkeypatch):
     import sys
     import types
@@ -315,7 +348,9 @@ def test_semantic_index_cache_and_candidate_only_search(tmp_path, monkeypatch):
             if isinstance(value, str):
                 return list(range(len(value)))
             Encoder.calls += 1
-            return np.array([[1.0, 0.0] for _ in value], dtype=np.float32)
+            result = np.zeros((len(value), 1024), dtype=np.float32)
+            result[:, 0] = 1
+            return result
 
         def decode(self, value):
             return "text"
@@ -330,9 +365,9 @@ def test_semantic_index_cache_and_candidate_only_search(tmp_path, monkeypatch):
     documents = {k: {"observations": [{"text": k}]} for k in ["a", "b"]}
     result = nearest_groups(packages, documents, tmp_path)
     assert result == {"a": [], "b": ["a"]}
-    assert Encoder.calls == 2
+    assert Encoder.calls == 1
     assert nearest_groups(packages, documents, tmp_path) == result
-    assert Encoder.calls == 2
+    assert Encoder.calls == 1
     assert nearest_groups(packages, documents, tmp_path, {"a": 0, "b": 0}) == {"a": [], "b": []}
 
 
