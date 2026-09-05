@@ -19,6 +19,20 @@ annotation call. Input aliases follow record order; output contains only signal,
 group name. Cross-batch review returns only disjoint group-ID sets to merge, with all other groups
 retained. Missing captured bodies abstain instead of becoming chatter.
 
+A subsequent census of all 149 initially discarded records found four complete paper abstracts and
+the Semantic Overlays project announcement incorrectly marked as chatter. The 200-record reference
+had not sampled these errors; its aggregate retention score was insufficient evidence to release.
+Production now requires an independent small-context confirmation only for proposed chatter (at most
+8 records / 64 KiB per call, same Luna/medium model, original predictions hidden). Either reading
+retaining information prevents exclusion. No strong-model pass over the entire corpus was added.
+The 149-record check recovered 46 candidates, including all five concrete failures. Its 19 calls
+used 351,415 input tokens (49,920 cached) and 9,058 output tokens. Some recovered items are genuinely
+ambiguous; retention is not an assertion of research value. A fresh full packaging run with these
+corrections is required. Cached first-pass labels and embeddings remain reusable.
+
+Current code regression: 211 tests pass, 85.73% measured coverage. Smoke configuration round-trips
+all Codex settings, including the Phase 2 engine/model/reasoning/tool profile, without default drift.
+
 The acceptance task is information-signal retention and natural research package boundaries,
 not reproduction of historical Research/Watch/Archive decisions. Development labels must distinguish
 clear chatter from incomplete but potentially meaningful signals. Pair examples must distinguish the

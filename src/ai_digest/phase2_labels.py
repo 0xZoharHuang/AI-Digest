@@ -239,6 +239,67 @@ class SemanticPhase2:
         self.calls: list[dict[str, Any]] = []
         self.deferred_merges: list[str] = []
         self.context_abstentions = 0
+        self.rescued_units: set[str] = set()
+
+    async def confirm_exclusions(
+        self, work: Path, payloads: list[dict[str, Any]], results: list[BatchOutput]
+    ) -> int:
+        """Only exclude clear chatter after a second, small-context reading agrees.
+
+        No strong model, value ranking, or review of the already-retained majority.
+        Original predictions are not shown to the verifier.
+        """
+        owners = {label.unit_id: (result, label) for result in results for label in result.labels
+                  if label.signal == "chatter"}
+        parts: list[list[dict[str, Any]]] = []
+        part: list[dict[str, Any]] = []
+        size = 0
+        for row in payloads:
+            if row["unit_id"] not in owners:
+                continue
+            length = len(json.dumps(row, ensure_ascii=False).encode())
+            if part and (len(part) >= 8 or size + length > 64 * 1024):
+                parts.append(part)
+                part, size = [], 0
+            part.append(row)
+            size += length
+        if part:
+            parts.append(part)
+        semaphore = asyncio.Semaphore(self.runtime.codex.router_reader_concurrency)
+
+        async def verify(part: list[dict[str, Any]]) -> None:
+            aliases = {f"r{i:04d}": row["unit_id"] for i, row in enumerate(part)}
+            data = [{**row, "unit_id": alias} for alias, row in zip(aliases, part, strict=True)]
+            async with semaphore:
+                for attempt in range(2):
+                    try:
+                        raw = await self.call(work / "discard-checks", data, batch_schema(set(aliases)),
+                            LABEL_INSTRUCTIONS + "\n逐条独立检查具体信息是否存在。完整论文摘要、方法介绍、产品能力、人员变动或可辨认的事实主张不是纯寒暄。不要把未细读的尾部记录默认标为 chatter。")
+                        break
+                    except (ValueError, FileNotFoundError):
+                        if attempt:
+                            raise
+            checked = validate_batch(raw, set(aliases))
+            for label in checked.labels:
+                if label.signal == "chatter":
+                    continue
+                uid = aliases[label.unit_id]
+                owner, original = owners[uid]
+                title = label.local_group_id
+                original.signal, original.kind = label.signal, label.kind
+                original.local_group_id = "rescued_" + uid
+                owner.groups.append(Group(group_id=original.local_group_id, title=title))
+                self.rescued_units.add(uid)
+
+        tasks = [asyncio.create_task(verify(part)) for part in parts]
+        try:
+            await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+        return len(owners)
 
     async def call(self, work: Path, data: Any, schema: dict[str, Any], prompt: str) -> Any:
         config = self.runtime.codex
@@ -392,6 +453,7 @@ class SemanticPhase2:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
+        exclusion_count = await self.confirm_exclusions(work, payloads, results)
         labels: list[Label] = []
         packages: list[ResearchPackage] = []
         for index, result in enumerate(results):
@@ -423,7 +485,11 @@ class SemanticPhase2:
             label.unit_id: i for i, result in enumerate(results) for label in result.labels
         }
         self.package_batches = {p.package_id: unit_batches[p.unit_ids[0]] for p in packages}
-        if len(batches) > 1:
+        # A rescued record was not grouped with its original retained batch.
+        for index, package in enumerate(packages):
+            if set(package.unit_ids) & self.rescued_units:
+                self.package_batches[package.package_id] = -index - 1
+        if len(batches) > 1 or self.rescued_units:
             packages = await self.merge(work, packages, {r["unit_id"]: r for r in payloads})
         root.mkdir(parents=True, exist_ok=True)
         atomic_write_jsonl(root / "units.jsonl", payloads)
@@ -452,6 +518,9 @@ class SemanticPhase2:
                 "package_count": len(packages),
                 "signal_counts": dict(Counter(x.signal for x in labels)),
                 "context_abstention_count": self.context_abstentions,
+                "discard_verification_version": 1,
+                "discard_verified_count": exclusion_count,
+                "discard_rescued_unit_ids": sorted(self.rescued_units),
                 "calls": self.calls,
                 "deferred_merge_package_ids": self.deferred_merges,
                 "hashes": {

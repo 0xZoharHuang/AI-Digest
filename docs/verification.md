@@ -33,6 +33,27 @@ driver have contract/fixture tests but are not misrepresented by line coverage a
 that the current Phase 2 contract can cross the queue boundary and drive Phase 3–5; it cannot measure
 daily recall, source bias, Research/Watch calibration, or object identity quality.
 
+For the new `semantic_labels_v1` engine, Research/Watch calibration is not a Phase 2 task.
+Use the current acceptance protocol in [phase2-labels-validation.md](phase2-labels-validation.md):
+
+```bash
+uv run --extra semantic python scripts/run_phase2_labels_validation.py \
+  --source /path/to/frozen-run --target /path/to/validation-run
+uv run python scripts/evaluate_phase2_labels.py \
+  --run /path/to/validation-run --gold /path/to/reviewed-reference.json
+```
+
+All inputs receive compact signal/kind labels; all `present` and `unclear` inputs belong to exactly
+one persisted candidate package. Chatter is retained in the original-input/label ledger, not silently
+deleted. Package count is independent of the Phase 3 consumption budget, including a zero budget.
+Acceptance measures information retention and same-object/different-object package boundaries against
+an independently drafted, discrepancy-reviewed reference. Passing schema/coverage, candidate-neighbour
+recall, or a draft reference alone is insufficient. Review large packages for accidental overmerging.
+Keep model settings, original inputs, all attempt receipts, aggregate token usage and reference provenance.
+
+The following bounded-Editor procedure describes historical contracts only; do not use its editorial
+routes as the semantic-label engine's reference labels.
+
 Before changing the production Phase 2 model, prompt, batching policy, or object contract, run the
 candidate against an immutable full-day corpus and keep development-only evidence outside the live
 runtime:

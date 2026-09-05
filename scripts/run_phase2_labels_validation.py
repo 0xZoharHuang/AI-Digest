@@ -7,6 +7,7 @@ import asyncio
 import json
 import shutil
 import time
+from collections import Counter
 from pathlib import Path
 
 from ai_digest.codex_runner import CodexRunner
@@ -48,8 +49,6 @@ async def main() -> None:
     if selected - {unit.unit_id for unit in units}:
         raise ValueError("requested validation IDs are absent from source")
     if args.sample_per_source:
-        from collections import Counter
-
         counts: Counter[str] = Counter()
         for unit in sorted(units, key=lambda u: u.unit_id):
             if any(counts[s] < args.sample_per_source for s in unit.sources):
@@ -77,16 +76,24 @@ async def main() -> None:
         target, items, units, ""
     )
     manifest = json.loads((target / "02_routing" / "phase2_manifest.json").read_text())
+    usage: Counter[str] = Counter()
+    executed_usage: Counter[str] = Counter()
+    for call in manifest["calls"]:
+        tokens = call.get("usage") or {}
+        usage.update(tokens)
+        if not call.get("reused", False):
+            executed_usage.update(tokens)
     print(
         json.dumps(
             {
-                "elapsed_seconds": time.monotonic() - start,
+                "this_invocation_elapsed_seconds": time.monotonic() - start,
                 "units": len(units),
                 "packages": len(routing.bundles),
                 "signals": manifest["signal_counts"],
                 "calls": len(manifest["calls"]),
                 "executed_calls": sum(not c.get("reused", False) for c in manifest["calls"]),
-                "usage": [c.get("usage") for c in manifest["calls"]],
+                "recorded_usage_including_reused_calls": dict(usage),
+                "executed_usage_this_invocation": dict(executed_usage),
             },
             indent=2,
         )

@@ -99,7 +99,7 @@ async def test_unbounded_packages_replay_and_corruption(tmp_path, monkeypatch):
     await engine.run(
         tmp_path, source, build_observation_units(source), "different interests do not reclassify"
     )
-    assert runner.calls == 1
+    assert runner.calls == 2
     assert before == {p.name: p.read_bytes() for p in root.glob("*.json*")}
     from ai_digest.pipeline import _import_routing
 
@@ -124,6 +124,34 @@ async def test_zero_budget_never_calls_model(tmp_path):
     )
     assert admission.selection_mode == "disabled" and not admission.selected_object_ids
     assert runner.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_exclusion_verification_rescues_information_and_reuses_cache(tmp_path):
+    from ai_digest.phase2_labels import BatchOutput, Label
+
+    class Verifier(LabelRunner):
+        async def run(self, **kwargs):
+            assert kwargs["workspace"].parent.name == "discard-checks"
+            data = json.loads((kwargs["workspace"] / "input.json").read_text())
+            assert len(data) <= 8
+            assert all("signal" not in row for row in data)
+            return await super().run(**kwargs)
+
+    docs = [{"unit_id": str(i), "observations": [{"payload": {"text": "A concrete paper"}}]}
+            for i in range(10)]
+    def predictions():
+        return [BatchOutput(labels=[Label(unit_id=str(i), signal="chatter", kind="other",
+            local_group_id="chatter") for i in range(10)], groups=[])]
+    runner = Verifier()
+    engine = SemanticPhase2(RuntimeConfig(), runner)
+    result = predictions()
+    assert await engine.confirm_exclusions(tmp_path, docs, result) == 10
+    assert engine.rescued_units == {str(i) for i in range(10)}
+    assert all(label.signal == "unclear" for label in result[0].labels)
+    assert len(result[0].groups) == 10 and runner.calls == 2
+    await SemanticPhase2(RuntimeConfig(), runner).confirm_exclusions(tmp_path, docs, predictions())
+    assert runner.calls == 2
 
 
 @pytest.mark.asyncio

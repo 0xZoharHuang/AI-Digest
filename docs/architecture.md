@@ -102,7 +102,12 @@ Graph similarity is never a semantic merge: only model-confirmed identity relati
 globally. Execution paging therefore does not impose package boundaries. Original complete records
 remain attached to final packages. Short ordered aliases prevent record-ID binding errors, and code restores
 original immutable IDs. Empty captured bodies abstain as unclear rather than asserting chatter.
-One-batch runs need no cross-batch pass. Install the `semantic` dependency extra for multi-batch runs.
+Only proposed chatter receives a second independent small-context reading (up to 8 records / 64 KiB,
+same inexpensive model); both readings must agree before excluding it from the package catalog.
+The verifier never sees the original prediction. Rescued records return to ordinary candidate
+matching, including against their original batch. This selective negative check is not a required
+extra full-corpus round. One-batch runs without rescued records need no cross-batch pass.
+Install the `semantic` dependency extra for candidate matching.
 
 Phase 3 consumes a selected ordered subset, one independent Lead per package. A zero budget makes
 no research or selector calls. Unselected packages remain unresearched. Legacy artifact field names

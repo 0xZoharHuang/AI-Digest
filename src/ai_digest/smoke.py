@@ -460,6 +460,10 @@ x_text_retention_days = {runtime.x_text_retention_days}
 
 [codex]
 binary = {q(runtime.codex.binary)}
+phase2_engine = {q(runtime.codex.phase2_engine)}
+phase2_label_model = {q(runtime.codex.phase2_label_model)}
+phase2_label_reasoning = {q(runtime.codex.phase2_label_reasoning)}
+phase2_text_only = {str(runtime.codex.phase2_text_only).lower()}
 router_model = {q(runtime.codex.router_model)}
 router_reasoning = {q(runtime.codex.router_reasoning)}
 router_reader_model = {q(runtime.codex.router_reader_model)}

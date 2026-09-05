@@ -1,3 +1,5 @@
+import tomllib
+
 import pytest
 
 from ai_digest.config import RuntimeConfig
@@ -7,6 +9,16 @@ from ai_digest.smoke import (
     promote_smoke_agent_retries,
     runtime_toml,
 )
+
+
+def test_smoke_serialization_preserves_all_codex_settings():
+    runtime = RuntimeConfig()
+    runtime.codex.phase2_engine = "attention_editor_v3"
+    runtime.codex.phase2_label_model = "explicit-test-model"
+    runtime.codex.phase2_label_reasoning = "low"
+    runtime.codex.phase2_text_only = False
+    restored = RuntimeConfig.model_validate(tomllib.loads(runtime_toml(runtime)))
+    assert restored.codex == runtime.codex
 
 
 def test_smoke_runtime_separates_owner_worker_and_production_queue(tmp_path):
