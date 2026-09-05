@@ -99,9 +99,10 @@ keyword or score threshold.
 Each batch response is constrained by JSON Schema and then checked for exact, unique unit coverage.
 An invalid batch is returned to its own saved Codex session with the concrete missing/duplicate IDs;
 valid batches are immutable recovery points. Reader batches may run concurrently. The first pass is
-deliberately high-recall; a second bounded pass of at most 64 units and 192 KiB re-reads every retained
-unit and makes the precise Research/Watch/Archive candidate judgment. Both passes remain flat,
-rebuildable files rather than an opaque workflow state machine.
+deliberately high-recall; a second independent bounded pass of at most 64 units and 192 KiB re-reads
+every unit. Archive requires agreement from both readers; any disagreement retains the unit as Watch
+or Research for final review. Both passes remain flat, rebuildable files rather than an opaque
+workflow state machine.
 
 After both passes are valid, one higher-capability Editor receives Research object candidates with
 their full normalized units and a mechanical `source_signals` view of event/release/growth/engagement

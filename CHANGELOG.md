@@ -10,6 +10,8 @@ versioning for public releases.
 - Decouple Phase 2 semantic Research/Watch/Archive decisions from Phase 3 execution capacity. Phase 2
   retains every Research object; a separate semantic admission step currently selects at most 15
   top-level Phase 3 leads without relabeling the remainder.
+- Require two independent full-record Reader decisions before Phase 2 may Archive a unit; any Reader
+  disagreement remains available to the final Editor, addressing systemic Archive false negatives.
 - Make the Feishu self-DM an independent operational channel for terminal, partial, and retrying
   states, with persistent idempotent receipts and recovery retries even when Wiki content cannot be
   published.

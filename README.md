@@ -74,7 +74,7 @@ stale content nodes that are recorded in the same run's publish manifest.
 | Phase | First-principles job | Main artifacts |
 |---|---|---|
 | 1 — Observe | Save platform-native increments, revisions, receipts, and health without editorial ranking | source JSONL, raw blobs, fetch manifests, `index.json` |
-| 2 — Route | Mechanically form exact units; high-recall and precision bounded Codex passes judge every retained full record, then one Editor selects/merges today's concrete research objects | `units.jsonl`, `decisions.jsonl`, `objects.json`, `phase2_manifest.json` |
+| 2 — Route | Mechanically form exact units; two independent bounded Codex passes judge every full record, Archive requires consensus, then one Editor calibrates and merges all Research objects | `units.jsonl`, `decisions.jsonl`, `objects.json`, `phase2_manifest.json` |
 | 3 — Research | Semantically admit a configured number from all Research objects, then run one lead per selected object | `phase3_admission.json`, `main_report.md`, `intake.jsonl`, `evidence.jsonl`, optional `subreports/*.md` |
 | 4 — Navigate | Build a reader-facing Brief that links to research and exposes failures/unknowns | `daily_brief.md`, quality and source-health files |
 | 5 — Publish | Validate and update Lark content idempotently; independently notify success, partial, retrying, or failure state | `publish_manifest.json`, notification receipts |

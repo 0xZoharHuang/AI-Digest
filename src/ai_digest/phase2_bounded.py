@@ -35,8 +35,8 @@ from .utils import atomic_write_json, atomic_write_jsonl, atomic_write_text
 
 PHASE2_BOUNDED_CONTRACT = "attention_editor_v3"
 PHASE2_BOUNDED_PROMPT_VERSION = "2026-09-05.2"
-PHASE2_ADJUDICATION_PROMPT_VERSION = "2026-09-05.3"
-PHASE2_FINALIZATION_PROMPT_VERSION = "2026-09-05.5"
+PHASE2_ADJUDICATION_PROMPT_VERSION = "2026-09-05.4"
+PHASE2_FINALIZATION_PROMPT_VERSION = "2026-09-05.6"
 PHASE2_BOUNDED_MAX_UNITS = 96
 PHASE2_BOUNDED_MAX_BYTES = 256 * 1024
 PHASE2_ADJUDICATION_MAX_UNITS = 64
@@ -411,11 +411,7 @@ async def adjudicate_reader_candidates(
     runner: CodexRunner,
 ) -> tuple[list[Phase2ProvisionalDecision], list[dict[str, Any]]]:
     reader_by_id = {value.unit_id: value for value in reader_decisions}
-    candidates = [
-        document
-        for document in documents
-        if reader_by_id[document.unit_id].route != "archive"
-    ]
+    candidates = list(documents)
     batches = bounded_review_batches(
         candidates,
         max_units=PHASE2_ADJUDICATION_MAX_UNITS,
@@ -563,9 +559,10 @@ async def adjudicate_reader_candidates(
     for document in documents:
         reader_value = reader_by_id[document.unit_id]
         output.append(
-            reader_value
-            if reader_value.route == "archive"
-            else adjudicated_by_id[document.unit_id]
+            combine_independent_reader_decisions(
+                reader_value,
+                adjudicated_by_id[document.unit_id],
+            )
         )
     validate_provisional_coverage(documents, output)
     atomic_write_jsonl(
@@ -574,6 +571,19 @@ async def adjudicate_reader_candidates(
     )
     summaries = [results[number][1] for number in range(1, len(batches) + 1)]
     return output, summaries
+
+
+def combine_independent_reader_decisions(
+    first: Phase2ProvisionalDecision,
+    second: Phase2ProvisionalDecision,
+) -> Phase2ProvisionalDecision:
+    if first.unit_id != second.unit_id:
+        raise ValueError("independent Phase 2 decisions refer to different units")
+    if first.route == "archive":
+        return second
+    if second.route == "archive":
+        return first
+    return second
 
 
 def prepare_bounded_workspace(
@@ -941,8 +951,9 @@ research 必须填写 object_key、object_label_zh 和一句 reason_zh；watch �
 def adjudication_batch_prompt(number: int, total: int) -> str:
     relative = f"adjudication/batch-{number:04d}"
     return f"""你是 Phase 2 的精确裁决 Reader。第一遍高召回阅读已把本批记录保留下来；现在读取
-`{relative}/units.jsonl` 中每个 unit 的全部 normalized observations，为每个 unit 恰好给出一次正式候选
-判断。你的目标是准确区分语义价值，同时把不确定但直接相关的材料留在 Watch。完全不要考虑 Phase 3
+`{relative}/units.jsonl` 中每个 unit 的全部 normalized observations，为每个 unit 恰好给出一次独立正式
+判断。不要依赖第一遍的 route；你的判断将与第一遍按高召回共识合并，只有两遍都明确判定 Archive 的
+记录才会归档。你的目标是准确区分语义价值，同时把不确定但直接相关的材料留在 Watch。完全不要考虑 Phase 3
 当天有多少 worker、模型价格、并发、时间或用量预算：
 
 - research：若研究资源充足，值得独立核查的具体对象、发布、能力变化、重要方法、基础设施、安全事件

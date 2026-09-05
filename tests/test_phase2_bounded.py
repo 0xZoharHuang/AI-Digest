@@ -232,13 +232,40 @@ def test_bounded_helper_failure_and_identity_branches(tmp_path: Path) -> None:
         bounded_module.persist_thread_id(
             tmp_path / "session.json", "thread-a", "thread-b"
         )
-
     work_root = tmp_path / "work"
     work_root.mkdir()
     (tmp_path / "attention-editor-v3-abandoned-001").mkdir()
     abandoned = bounded_module.abandon_bounded_generation(tmp_path, work_root)
     assert abandoned.name == "attention-editor-v3-abandoned-002"
 
+
+def test_independent_phase2_readers_require_consensus_to_archive():
+    unit_id = "u_00000000000000000001"
+    archive = Phase2ProvisionalDecision(unit_id=unit_id, route="archive")
+    watch = Phase2ProvisionalDecision(
+        unit_id=unit_id,
+        route="watch",
+        object_key="candidate",
+        object_label_zh="候选",
+        reason_zh="任一遍认为相关就保留。",
+    )
+    research = Phase2ProvisionalDecision(
+        unit_id=unit_id,
+        route="research",
+        object_key="candidate",
+        object_label_zh="候选",
+        reason_zh="具有独立研究价值。",
+    )
+
+    assert bounded_module.combine_independent_reader_decisions(archive, archive) == archive
+    assert bounded_module.combine_independent_reader_decisions(archive, watch) == watch
+    assert bounded_module.combine_independent_reader_decisions(research, archive) == research
+    assert bounded_module.combine_independent_reader_decisions(research, watch) == watch
+    with pytest.raises(ValueError, match="different units"):
+        bounded_module.combine_independent_reader_decisions(
+            archive,
+            watch.model_copy(update={"unit_id": "u_00000000000000000002"}),
+        )
 
 class BoundedRunner:
     def __init__(

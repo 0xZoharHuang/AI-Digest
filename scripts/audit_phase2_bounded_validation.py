@@ -77,6 +77,16 @@ async def run(args: argparse.Namespace) -> None:
 
     codex = CodexConfig()
     runner = CodexRunner(codex.binary, idle_timeout_seconds=codex.idle_timeout_seconds)
+    session_path = workspace / "session.json"
+    thread_id = None
+    if session_path.is_file() and not session_path.is_symlink():
+        try:
+            thread_id = str(
+                json.loads(session_path.read_text(encoding="utf-8")).get("thread_id")
+                or ""
+            ) or None
+        except (OSError, ValueError, TypeError):
+            thread_id = None
     result = await runner.run(
         workspace=workspace,
         prompt=audit_prompt(len(research_rows), len(watch_rows), len(archive_rows)),
@@ -87,7 +97,8 @@ async def run(args: argparse.Namespace) -> None:
         output_schema=workspace / "audit.schema.json",
         web_search=False,
         agents=False,
-        thread_checkpoint_path=workspace / "session.json",
+        resume_thread_id=thread_id,
+        thread_checkpoint_path=session_path,
     )
     if not result.success:
         raise SystemExit(result.error or f"Codex exited with {result.exit_code}")
