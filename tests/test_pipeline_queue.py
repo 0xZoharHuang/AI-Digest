@@ -97,6 +97,19 @@ async def test_worker_recovers_done_before_move_and_rejects_symlinks(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_operator_can_process_one_exact_job_without_touching_other_budgets(tmp_path):
+    runtime = RuntimeConfig(runtime_root=tmp_path / "runtime", shared_runtime_root=tmp_path / "shared")
+    for name in ("older", "latest"):
+        job = runtime.shared_runtime_root / "jobs" / name
+        job.mkdir(parents=True)
+        (job / "READY").write_text("ready\n")
+        (job / "DONE").write_text("complete\n")
+    assert await run_agent_worker(runtime, job_id="older") == [runtime.shared_runtime_root / "completed" / "older"]
+    assert (runtime.shared_runtime_root / "jobs" / "latest" / "READY").is_file()
+    assert runtime.codex.phase3_daily_agent_limit == 15
+
+
+@pytest.mark.asyncio
 async def test_transient_worker_failure_is_deferred_and_requeued_when_due(
     tmp_path, monkeypatch
 ):

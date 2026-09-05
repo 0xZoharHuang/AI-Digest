@@ -196,18 +196,18 @@ async def enqueue_pending_agent_jobs(runtime: RuntimeConfig) -> list[Path]:
     return queued
 
 
-async def run_agent_worker(runtime: RuntimeConfig) -> list[Path]:
+async def run_agent_worker(runtime: RuntimeConfig, *, job_id: str | None = None) -> list[Path]:
     lock = _acquire_worker_lock(runtime.shared_runtime_root)
     if lock is None:
         return []
     try:
-        return await _run_agent_worker_unlocked(runtime)
+        return await _run_agent_worker_unlocked(runtime, job_id=job_id)
     finally:
         fcntl.flock(lock, fcntl.LOCK_UN)
         os.close(lock)
 
 
-async def _run_agent_worker_unlocked(runtime: RuntimeConfig) -> list[Path]:
+async def _run_agent_worker_unlocked(runtime: RuntimeConfig, *, job_id: str | None = None) -> list[Path]:
     queue = runtime.shared_runtime_root / "jobs"
     completed_root = runtime.shared_runtime_root / "completed"
     failed_root = runtime.shared_runtime_root / "failed"
@@ -219,6 +219,8 @@ async def _run_agent_worker_unlocked(runtime: RuntimeConfig) -> list[Path]:
     completed = []
     phases = AgentPhases(runtime)
     for job_dir in sorted(queue.iterdir()):
+        if job_id is not None and job_dir.name != job_id:
+            continue
         if job_dir.is_symlink() or not job_dir.is_dir() or not (job_dir / "READY").exists():
             continue
         if not (job_dir / "DONE").exists() and _finish_interrupted_retry_move(
