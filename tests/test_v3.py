@@ -124,35 +124,48 @@ def test_observation_units_mechanically_merge_cross_source_entities():
     }
 
 
-def test_phase3_admission_requires_ordered_prefix_and_complete_suffix():
+def test_phase3_admission_requires_valid_selection_and_complete_suffix():
     valid = Phase3Admission(
         daily_agent_limit=2,
         concurrency=1,
+        selection_mode="codex_priority",
+        selector_model="selector",
+        selector_reasoning="high",
+        thread_id="thread",
         available_object_ids=["a", "b", "c"],
-        selected_object_ids=["a", "b"],
+        selected_object_ids=["b", "a"],
         not_scheduled_object_ids=["c"],
     )
-    assert valid.selected_object_ids == ["a", "b"]
+    assert valid.selected_object_ids == ["b", "a"]
     with pytest.raises(ValueError, match="duplicate"):
         Phase3Admission(
             daily_agent_limit=2,
             concurrency=1,
+            selection_mode="all",
             available_object_ids=["a", "a"],
             selected_object_ids=["a"],
             not_scheduled_object_ids=["a"],
         )
-    with pytest.raises(ValueError, match="ordered prefix"):
+    with pytest.raises(ValueError, match="selected set"):
         Phase3Admission(
             daily_agent_limit=1,
             concurrency=1,
+            selection_mode="codex_priority",
+            selector_model="selector",
+            selector_reasoning="high",
+            thread_id="thread",
             available_object_ids=["a", "b"],
-            selected_object_ids=["b"],
-            not_scheduled_object_ids=["a"],
+            selected_object_ids=["x"],
+            not_scheduled_object_ids=["a", "b"],
         )
     with pytest.raises(ValueError, match="unscheduled"):
         Phase3Admission(
             daily_agent_limit=1,
             concurrency=1,
+            selection_mode="codex_priority",
+            selector_model="selector",
+            selector_reasoning="high",
+            thread_id="thread",
             available_object_ids=["a", "b"],
             selected_object_ids=["a"],
             not_scheduled_object_ids=[],
@@ -1238,7 +1251,6 @@ async def test_attention_objects_use_formal_phase3_phase4_and_publish_contract(
                 "thread_id": "attention-thread",
                 "unit_count": 3,
                 "object_count": 2,
-                "object_order": "semantic_priority_desc",
                 "route_counts": {"research": 2, "watch": 1},
                 "hashes": {
                     name: file_sha256(routing / name)
@@ -1252,7 +1264,11 @@ async def test_attention_objects_use_formal_phase3_phase4_and_publish_contract(
     class FormalRunner:
         async def run(self, **kwargs):  # type: ignore[no-untyped-def]
             workspace = kwargs["workspace"]
-            if workspace.name == "robotics":
+            if workspace.name == "admission-selector":
+                kwargs["output_file"].write_text(
+                    json.dumps({"selected_object_ids": ["robotics"]})
+                )
+            elif workspace.name == "robotics":
                 (workspace / "main_report.md").write_text("# 机器人研究\n\n正式正文。")
                 (workspace / "intake.jsonl").write_text(
                     json.dumps(
@@ -1316,6 +1332,9 @@ async def test_attention_objects_use_formal_phase3_phase4_and_publish_contract(
     assert admission["available_object_ids"] == ["robotics", "overflow"]
     assert admission["selected_object_ids"] == ["robotics"]
     assert admission["not_scheduled_object_ids"] == ["overflow"]
+    assert admission["selection_mode"] == "codex_priority"
+    assert admission["selector_model"] == "gpt-5.6-sol"
+    assert admission["thread_id"] == "admission-selector-thread"
     assert next(
         value for value in decisions if value.unit_id == overflow_id
     ).route == "research"

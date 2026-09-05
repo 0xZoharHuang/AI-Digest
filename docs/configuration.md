@@ -17,8 +17,8 @@ cp config/interests.example.md config/interests.md
 - owner runtime and shared queue roots;
 - source preview/text-retention limits;
 - Codex binary, Phase 2 Reader/Editor models and reasoning, bounded Reader concurrency, Phase 3/4
-  models, `phase3_daily_agent_limit` (currently 15), top-level concurrency, subagent cap, and idle
-  timeout;
+  and admission models, `phase3_daily_agent_limit` (currently 15), top-level concurrency, subagent
+  cap, and idle timeout;
 - Lark CLI, space, self-DM receiver, identity, and Wiki base URL.
 
 Relative binary paths resolve from the installed application snapshot. Production worker and owner

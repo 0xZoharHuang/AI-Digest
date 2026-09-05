@@ -43,10 +43,10 @@ traceable research**:
 - A source adapter records what the platform actually exposed, not what an editorial layer guessed
   was important.
 - A daily run drains every ready, undelivered observation; late arrivals survive outages.
-- Phase 2 gives every normalized unit a bounded Codex review, retains all semantic Research objects
-  in priority order, and consolidates same-object evidence without seeing Phase 3 capacity.
-- A separate admission step currently runs the first 15 Research objects with three concurrent
-  Phase 3 leads; changing model economics changes this limit, not Phase 2 classification.
+- Phase 2 gives every normalized unit a bounded Codex review, retains all semantic Research objects,
+  and consolidates same-object evidence without seeing Phase 3 capacity.
+- A separate semantic admission step currently selects at most 15 Research objects for three
+  concurrent Phase 3 leads; changing model economics changes this limit, not Phase 2 classification.
 - Phase 3 uses each new signal as a starting point for primary-evidence deep research.
 - A Lead may withhold a fully inspected package instead of publishing a filler page.
 - Phase 4 is a reading map. It does not compress the day into a forced grand narrative.
@@ -75,7 +75,7 @@ stale content nodes that are recorded in the same run's publish manifest.
 |---|---|---|
 | 1 — Observe | Save platform-native increments, revisions, receipts, and health without editorial ranking | source JSONL, raw blobs, fetch manifests, `index.json` |
 | 2 — Route | Mechanically form exact units; high-recall and precision bounded Codex passes judge every retained full record, then one Editor selects/merges today's concrete research objects | `units.jsonl`, `decisions.jsonl`, `objects.json`, `phase2_manifest.json` |
-| 3 — Research | Independently admit a configured number of ordered Research objects, then run one lead per selected object | `phase3_admission.json`, `main_report.md`, `intake.jsonl`, `evidence.jsonl`, optional `subreports/*.md` |
+| 3 — Research | Semantically admit a configured number from all Research objects, then run one lead per selected object | `phase3_admission.json`, `main_report.md`, `intake.jsonl`, `evidence.jsonl`, optional `subreports/*.md` |
 | 4 — Navigate | Build a reader-facing Brief that links to research and exposes failures/unknowns | `daily_brief.md`, quality and source-health files |
 | 5 — Publish | Validate and update Lark content idempotently; independently notify success, partial, retrying, or failure state | `publish_manifest.json`, notification receipts |
 

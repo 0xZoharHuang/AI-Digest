@@ -58,8 +58,8 @@ independent audit output are retained together. These scripts and challenge fixt
 tools; production consumes only the compact validated Phase 2 contract.
 
 Phase 2 quality is capacity-independent: tests must demonstrate that more than 15 objects may remain
-Research, while `phase3_admission.json` selects only the configured ordered prefix. Raising the Phase
-3 limit must not require rerunning Phase 2 or modifying any Phase 2 route.
+Research, while `phase3_admission.json` semantically selects only the configured count. Raising the
+Phase 3 limit must not require rerunning Phase 2 or modifying any Phase 2 route.
 
 ## Automation smoke acceptance
 

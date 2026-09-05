@@ -328,6 +328,10 @@ class Phase3Admission(BaseModel):
     schema_version: Literal[1] = 1
     daily_agent_limit: int = Field(ge=1)
     concurrency: int = Field(ge=1)
+    selection_mode: Literal["all", "codex_priority"]
+    selector_model: str = ""
+    selector_reasoning: str = ""
+    thread_id: str | None = None
     available_object_ids: list[str]
     selected_object_ids: list[str]
     not_scheduled_object_ids: list[str]
@@ -342,10 +346,18 @@ class Phase3Admission(BaseModel):
             or len(not_scheduled) != len(set(not_scheduled))
         ):
             raise ValueError("Phase 3 admission contains duplicate object ids")
-        if selected != available[: self.daily_agent_limit]:
-            raise ValueError("Phase 3 admission must select the ordered prefix")
-        if not_scheduled != available[len(selected) :]:
+        if len(selected) != min(self.daily_agent_limit, len(available)) or not set(
+            selected
+        ) <= set(available):
+            raise ValueError("Phase 3 admission selected set is invalid")
+        if not_scheduled != [value for value in available if value not in set(selected)]:
             raise ValueError("Phase 3 admission does not preserve unscheduled objects")
+        if self.selection_mode == "all" and selected != available:
+            raise ValueError("all-mode admission must select every object")
+        if self.selection_mode == "codex_priority" and (
+            not self.selector_model or not self.selector_reasoning or not self.thread_id
+        ):
+            raise ValueError("Codex admission requires selector metadata")
 
 
 class Phase2PackagePlan(BaseModel):

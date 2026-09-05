@@ -116,9 +116,9 @@ The formal output remains deliberately small:
 
 - `decisions.jsonl`: one final `research/watch/archive` decision per unit. Research has a concrete
   object and one-sentence reason; Watch has one sentence; Archive carries no editorial rewrite.
-- `objects.json`: every Research object, ordered by capacity-independent expected research value,
-  with all same-object Research units and any explicitly linked Watch support. Each object must
-  contain at least one Research unit.
+- `objects.json`: every Research object with all same-object Research units and any explicitly linked
+  Watch support. Each object must contain at least one Research unit; its list position is not an
+  execution decision.
 
 Phase 2 does not write research scope, questions, evidence plans, scores, per-item summaries or
 report structure. Phase 3 owns those decisions. The application validates exact decision coverage,
@@ -126,10 +126,12 @@ object membership, hashes and the final Editor session; historical Phase 2 contr
 
 ## Phase 3 contract
 
-Phase 3 admission reads the ordered Phase 2 objects and currently selects at most 15 top-level leads
-with concurrency 3. It writes `phase3_admission.json` containing the full ordered list, selected
-prefix, and unscheduled suffix. Unscheduled objects keep their Phase 2 Research route and are not
-automatically carried into later days. Changing the limit or model never changes Phase 2 artifacts.
+When Research objects exceed the configured limit, one isolated Phase 3 admission selector reads all
+objects and their complete units, then currently selects at most 15 top-level leads with concurrency
+3. It cannot modify Phase 2 routes or membership. `phase3_admission.json` records the full available
+list, selected priority order, and unscheduled complement. Unscheduled objects keep their Phase 2
+Research route and are not automatically carried into later days. Changing the limit or admission
+model never changes Phase 2 artifacts; when all objects fit, admission selects all without a model call.
 
 Each admitted object is mechanically adapted to the formal Phase 3 package interface; this adapter
 adds no scope or editorial decision. Each package lead receives `AGENTS.md`,

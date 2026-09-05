@@ -36,7 +36,7 @@ from .utils import atomic_write_json, atomic_write_jsonl, atomic_write_text
 PHASE2_BOUNDED_CONTRACT = "attention_editor_v3"
 PHASE2_BOUNDED_PROMPT_VERSION = "2026-09-05.2"
 PHASE2_ADJUDICATION_PROMPT_VERSION = "2026-09-05.3"
-PHASE2_FINALIZATION_PROMPT_VERSION = "2026-09-05.4"
+PHASE2_FINALIZATION_PROMPT_VERSION = "2026-09-05.5"
 PHASE2_BOUNDED_MAX_UNITS = 96
 PHASE2_BOUNDED_MAX_BYTES = 256 * 1024
 PHASE2_ADJUDICATION_MAX_UNITS = 64
@@ -356,7 +356,6 @@ class BoundedAttentionPhase2:
             "audit_count": len(audit_documents),
             "route_counts": dict(Counter(value.route for value in decisions.values())),
             "object_count": len(objects),
-            "object_order": "semantic_priority_desc",
             "hashes": {
                 name: file_sha256(root / name)
                 for name in ("units.jsonl", "decisions.jsonl", "objects.json")
@@ -1029,9 +1028,9 @@ HN points/comments、官方作者与跨来源重复。source_signals 只是机�
 1. `decisions.jsonl`：每个 unit 恰好一行，仅含 unit_id、route、object_id、reason_zh。Research 必须指向
    objects.json 且理由一句；Watch 写一句理由，在确属某个 Research 对象的支持材料时可填写该 object_id，
    否则留空；Archive 的 object_id/reason_zh 为空。
-2. `objects.json`：JSON 数组，仅含 object_id、label_zh、unit_ids。包含全部 Research 对象，并按“若资源
-   充足时对目标读者的预期研究价值”从高到低排列；排序不改变任何 route。每个 Research unit 恰好属于一个具体
-   对象；带 object_id 的 Watch 支持材料也必须列入同一对象。每个对象至少含一个 Research unit。
+2. `objects.json`：JSON 数组，仅含 object_id、label_zh、unit_ids，包含全部 Research 对象。每个 Research
+   unit 恰好属于一个具体对象；带 object_id 的 Watch 支持材料也必须列入同一对象。每个对象至少含一个
+   Research unit。对象顺序不表达 Phase 3 容量或执行决定。
    Phase 3 自主决定 scope，不要写研究问题、摘要、分数或报告结构。
 
 可用脚本把 provisional 判断机械转换为最终文件，但脚本不得重新按规则赋 route。写完后检查全部覆盖、
