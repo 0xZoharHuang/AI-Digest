@@ -26,6 +26,7 @@ async def main() -> None:
     parser.add_argument("--reuse-work", type=Path)
     parser.add_argument("--text-only", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--reasoning", choices=["low", "none", "medium"], default="medium")
+    parser.add_argument("--concurrency", type=int, choices=range(1, 17), default=4)
     args = parser.parse_args()
     source = args.source.resolve()
     target = args.target.resolve()
@@ -60,7 +61,8 @@ async def main() -> None:
         units = [u for u in units if u.unit_id in selected]
         keep = {item for u in units for item in u.item_ids}
         items = {key: item for key, item in items.items() if key in keep}
-    config = CodexConfig(phase2_label_reasoning=args.reasoning, phase2_text_only=args.text_only)
+    config = CodexConfig(phase2_label_reasoning=args.reasoning, phase2_text_only=args.text_only,
+        router_reader_concurrency=args.concurrency)
     if args.reuse_work:
         previous = args.reuse_work.resolve() / "02_routing" / "semantic_labels_v1"
         for stage in ("labels", "index"):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -40,6 +41,34 @@ class LabelRunner:
                 groups.append({"group_id": group, "title": text})
         atomic_write_json(kwargs["output_file"], {"labels": labels, "groups": groups})
         return CodexResult(exit_code=0, thread_id="test-thread")
+
+
+@pytest.mark.asyncio
+async def test_parent_cancellation_does_not_cancel_subprocess_cleanup_twice(tmp_path):
+    ready = asyncio.Event()
+    started = cleaned = 0
+
+    class SlowRunner:
+        async def run(self, **kwargs):
+            nonlocal started, cleaned
+            started += 1
+            if started == 3:
+                ready.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.01)
+                cleaned += 1
+                raise
+
+    source = items(65)
+    task = asyncio.create_task(SemanticPhase2(RuntimeConfig(), SlowRunner()).run(
+        tmp_path, source, build_observation_units(source), ""))
+    await asyncio.wait_for(ready.wait(), timeout=2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert cleaned == started == 3
 
 
 def items(count=20):

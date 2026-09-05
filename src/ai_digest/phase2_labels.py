@@ -311,7 +311,8 @@ class SemanticPhase2:
             await asyncio.gather(*tasks)
         except BaseException:
             for task in tasks:
-                task.cancel()
+                if not task.done() and not task.cancelling():
+                    task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
         return len(owners)
@@ -467,7 +468,8 @@ class SemanticPhase2:
             results = await asyncio.gather(*tasks)
         except BaseException:
             for task in tasks:
-                task.cancel()
+                if not task.done() and not task.cancelling():
+                    task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
         exclusion_count = await self.confirm_exclusions(work, payloads, results)
@@ -528,6 +530,7 @@ class SemanticPhase2:
                 "contract": CONTRACT,
                 "prompt_version": PROMPT_VERSION,
                 "grouping_contract": "unit_identity_assignments_v1",
+                "execution_concurrency": self.runtime.codex.router_reader_concurrency,
                 "input_hash": input_hash,
                 "unit_count": len(units),
                 "package_count": len(packages),
@@ -606,7 +609,8 @@ class SemanticPhase2:
             consolidated.append(exact_duplicate_groups(packages, documents))
         except BaseException:
             for task in tasks:
-                task.cancel()
+                if not task.done() and not task.cancelling():
+                    task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
         # Only explicit model-confirmed identity relations are transitive, never ANN similarity.
