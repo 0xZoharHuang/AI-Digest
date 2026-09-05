@@ -579,11 +579,8 @@ def combine_independent_reader_decisions(
 ) -> Phase2ProvisionalDecision:
     if first.unit_id != second.unit_id:
         raise ValueError("independent Phase 2 decisions refer to different units")
-    if first.route == "archive":
-        return second
-    if second.route == "archive":
-        return first
-    return second
+    priority = {"archive": 0, "watch": 1, "research": 2}
+    return second if priority[second.route] >= priority[first.route] else first
 
 
 def prepare_bounded_workspace(

@@ -260,7 +260,8 @@ def test_independent_phase2_readers_require_consensus_to_archive():
     assert bounded_module.combine_independent_reader_decisions(archive, archive) == archive
     assert bounded_module.combine_independent_reader_decisions(archive, watch) == watch
     assert bounded_module.combine_independent_reader_decisions(research, archive) == research
-    assert bounded_module.combine_independent_reader_decisions(research, watch) == watch
+    assert bounded_module.combine_independent_reader_decisions(research, watch) == research
+    assert bounded_module.combine_independent_reader_decisions(watch, research) == research
     with pytest.raises(ValueError, match="different units"):
         bounded_module.combine_independent_reader_decisions(
             archive,
