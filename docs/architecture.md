@@ -122,6 +122,13 @@ no research or selector calls. Unselected packages remain unresearched. Legacy a
 such as `selected_object_ids` remain readable and refer to package IDs for this contract.
 Admission reads compact package cards with source-native metrics and dates, rather than rereading
 every full record. Phase 3 researchers still receive their selected package's complete original data.
+Large catalogs use bounded, independently cached shortlist calls followed by a global shortlist
+selection. Every card is considered; each window may nominate at most the daily limit, and final
+selection remains within that limit. Temporary short IDs are restored to the original package IDs.
+The windows normally contain at most 200,000 serialized characters, below Codex's single-input
+limit; unusually large unsupported budgets fail explicitly rather than looping or truncating data.
+Selection cannot merge packages or change any Phase 2 label. Its calls are planning, not additional
+research leads. Final selection and individual-call outputs are hash-checked on replay.
 
 The following attention-editor contract is retained for historical replay and explicit comparison
 runs (`phase2_engine="attention_editor_v3"`), not the default for new runs.

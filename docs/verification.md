@@ -105,6 +105,11 @@ The smoke must prove:
 The receipt is written below the chosen smoke root as `automation_smoke_receipt.json`.
 It is evidence for integration and recovery only, not Phase 2 semantic quality.
 
+Also exercise Phase 3 admission against the full Phase 2 package catalog without launching research.
+A small research smoke does not prove that thousands of candidate cards fit the selector's input
+contract. Verify exact selected/unselected coverage, the configured budget, cache replay and unchanged
+Phase 2 hashes. Large catalogs use bounded shortlisting rather than one unbounded prompt.
+
 For an attention-editor run, the smoke additionally fails unless:
 
 - Phase 3 uses `main_report.md`, `intake.jsonl`, `evidence.jsonl`, and

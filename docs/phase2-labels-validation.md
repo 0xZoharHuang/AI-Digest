@@ -38,6 +38,14 @@ establish a million-record daily pipeline SLA.
 
 ## Development history
 
+Installed snapshot `7194de6` passed doctor with the actual Luna/medium, Sol/high, Sol/medium and
+Terra/high profiles and a real isolated smoke in 595.66 seconds (3 reports, zero failures, no live
+Lark writes). A subsequent full-catalog admission test correctly blocked release of that snapshot:
+its 1,990,503-character prompt exceeded the 1,048,576-character input limit. Bounded Phase 3
+shortlisting then consumed all 6,130 cards and selected 15 packages in 7 calls across 2 levels,
+using 559,633 input and 5,412 output tokens. All Phase 2 artifacts remained unchanged. The newer
+selector must be included in the final installed snapshot; the earlier snapshot is not cut over.
+
 The first complete 6,878-unit run finished structurally but failed semantic acceptance: 6,342
 packages, information retention 193/195 (98.97%) against the independent reference, correct separation
 121/121, but same-object pair recall only 49/117 (41.88%). Of 68 missed pairs, 62 were split across
