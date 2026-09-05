@@ -118,6 +118,13 @@ When the Mac is off, no local collector runs. After login/wake:
 
 ## Upgrade and rollback
 
+When deliberately resuming previously disabled AI Digest services, inspect
+`launchctl print-disabled gui/$(id -u)` first. A persisted disabled override can make a valid plist's
+bootstrap fail with error 5. After authorization to resume the pipeline, enable only the relevant
+AI Digest labels before cutover (`launchctl enable gui/<uid>/com.ai-digest.agent-runner` and
+`launchctl enable gui/<uid>/com.ai-digest.recover`). Plist validation alone does not prove a service
+can start. Do not change unrelated disabled services.
+
 ```bash
 ./scripts/install_macos.sh --apply
 uv run ai-digest doctor

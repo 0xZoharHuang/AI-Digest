@@ -1,7 +1,8 @@
 # Semantic labels validation
 
 Status: Phase 2 semantic release gates passed on the frozen corpus after evidence adjudication.
-Immutable-snapshot verification and production cutover are still separate pending gates.
+Local production cutover to `4a78bf219082` completed on 2026-09-06; see
+[the deployment record](release-2026-09-06.md) for installed/background and live-publishing evidence.
 
 ## Release candidate evidence
 
