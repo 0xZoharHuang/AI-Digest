@@ -32,11 +32,16 @@ phase3_admission_model = "gpt-5.6-sol"
 phase3_admission_reasoning = "high"
 phase3_exploration_fraction = 0.2
 phase3_daily_agent_limit = 15
+phase3_tail_batch_size = 10
+phase3_tail_batch_max_bytes = 256000
+phase3_tail_parallel_pool = true
 top_level_concurrency = 3
 subagent_threads = 4
 idle_timeout_seconds = 900
 
 [lark]
+home_node_token = ""
+history_node_token = ""
 binary = "./node_modules/.bin/lark-cli"
 space_id = ""
 receiver_open_id = ""

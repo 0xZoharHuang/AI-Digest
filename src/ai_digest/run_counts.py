@@ -37,13 +37,17 @@ def run_counts(run_dir: Path) -> dict[str, int]:
             "scheduled_information": len(scheduled_units),
             "reviewed_information": len(reviewed & scheduled_units),
             "unscheduled_packages": len(packages) - len(selected),
+            "research_jobs": len(selected) - sum(map(len, admission.get("tail_batches", []))) + len(admission.get("tail_batches", [])),
+            "tail_batches": len(admission.get("tail_batches", [])),
             "exploration_packages": len(admission.get("exploration_object_ids", []))}
 
 
 def count_sentence(run_dir: Path) -> str:
     c = run_counts(run_dir)
+    tail = (f"其中 {c['exploration_packages']} 包安排为 {c['tail_batches']} 批长尾研究"
+            if c["tail_batches"] else f"含 {c['exploration_packages']} 个长尾探索包")
     return (f"原始观察 {c['observations']:,} 条，标准化信息 {c['information']:,} 条；"
             f"其中 {c['candidate_information']:,} 条归入 {c['packages']:,} 个候选信息包。"
-            f"本日调度 {c['scheduled_packages']} 个包（含 {c['exploration_packages']} 个长尾探索包），"
+            f"本日调度 {c['scheduled_packages']} 个包（{tail}），"
             f"覆盖 {c['scheduled_information']:,} 条输入信息，研究记录已审阅 {c['reviewed_information']:,} 条。"
             f"其余 {c['unscheduled_packages']:,} 个包已保存、尚未研究；未调度不代表价值判断。")

@@ -19,9 +19,25 @@ from .models import (
     ResearchArtifactManifest,
     ResearchPackage,
 )
-from .run_counts import count_sentence
+from .run_counts import run_counts
 from .store import parse_jsonl_text
 from .utils import atomic_write_json, atomic_write_text
+
+
+def daily_notification(run_dir: Path, date: str, status: str, day_url: str, home_url: str,
+                       reports: int, not_published: int, failures: int,
+                       source_issues: list[str]) -> str:
+    counts = run_counts(run_dir)
+    label = {"SUCCESS": "已完成", "PARTIAL": "部分完成", "FAILED": "失败"}.get(status.upper(), status)
+    lines = [f"## AI Intelligence Radar · {date}", "", f"{label}｜{reports} 份研究报告 · {not_published} 个未成稿结论 · {failures} 个研究失败",
+             "", f"本次安排 {counts['scheduled_packages']} 个信息包，涉及 {counts['scheduled_information']:,} 条输入信息；"
+             f"其余 {counts['unscheduled_packages']:,} 个候选包已保存。",
+             "", f"[阅读今日简报]({day_url})"]
+    if home_url:
+        lines[-1] += f" · [Wiki 固定入口与历史报告]({home_url})"
+    if source_issues:
+        lines += ["", f"来源受限：{', '.join(source_issues)}。具体状态见简报末尾。"]
+    return "\n".join(lines)
 
 
 class LarkError(RuntimeError):
@@ -411,7 +427,7 @@ def retry_pending_notifications(
     return sent
 
 class LarkPublisher:
-    NAVIGATION_VERSION = 3
+    NAVIGATION_VERSION = 4
 
     def __init__(self, config: LarkConfig):
         self.config = config
@@ -464,10 +480,10 @@ class LarkPublisher:
         month_title = f"{year}-{month} · 日报索引"
         day_title = f"{date} · AI Intelligence Brief"
         try:
-            year_node = self._ensure_cached_node(
-                year_title,
-                None,
-                manifest.nodes.get("year"),
+            year_node = (
+                _restore_node_state(self._fixed_root(self.config.history_node_token), manifest.nodes.get("year"))
+                if self.config.history_node_token else
+                self._ensure_cached_node(year_title, None, manifest.nodes.get("year"))
             )
             manifest.nodes["year"] = year_node
             month_node = self._ensure_cached_node(
@@ -586,7 +602,8 @@ class LarkPublisher:
             _assert_no_internal_links(brief)
             brief = _replace_markdown_title(brief, day_title)
             brief = _page_breadcrumb(
-                [(year, year_node.url), (f"{year}-{month}", month_node.url)]
+                [("历史日报" if self.config.history_node_token else year, year_node.url),
+                 (f"{year}-{month}", month_node.url)]
             ) + brief
             brief_hash = hashlib.sha256(brief.encode()).hexdigest()
             if day_node.content_hash != brief_hash or day_node.status != "written":
@@ -617,43 +634,23 @@ class LarkPublisher:
                 failures = json.loads(
                     (run_dir / "03_research" / "failures.json").read_text(encoding="utf-8")
                 )
-                watch_count = int(preflight["watch_count"])
                 not_published_count = int(preflight["not_published_count"])
-                research_object_count = int(preflight["research_object_count"])
-                scheduled_research_count = int(
-                    preflight["scheduled_research_count"]
-                )
-                not_scheduled_research_count = int(
-                    preflight["not_scheduled_research_count"]
-                )
                 source_health = json.loads(
                     (run_dir / "01_phase1" / "source_health.json").read_text(
                         encoding="utf-8"
                     )
                 )
-                disabled = [
-                    name
-                    for name, value in source_health.items()
-                    if value.get("status") == "disabled"
-                ]
                 source_issues = [
                     name
                     for name, value in source_health.items()
                     if value.get("status") in {"partial", "failed"}
                 ]
-                message = (
-                    f"## AI Intelligence Radar · {date}\n\n"
-                    f"状态：**{status}**  \n"
-                    f"研究报告：{len(successes)}，核查后未发布：{not_published_count}，"
-                    f"失败：{len(failures)}，Watch：{watch_count}  \n"
-                    f"Phase 2 候选信息包：{research_object_count}，"
-                    f"当日已调度：{scheduled_research_count}，"
-                    f"未调度：{not_scheduled_research_count}  \n"
-                    f"{count_sentence(run_dir)}  \n"
-                    f"停用来源：{', '.join(disabled) if disabled else '无'}  \n"
-                    f"异常来源：{', '.join(source_issues) if source_issues else '无'}  \n"
-                    f"[打开今日 Brief]({day_node.url})"
-                )
+                home_url = (self.config.wiki_base_url.rstrip("/") + "/" + self.config.home_node_token
+                            if self.config.home_node_token else "")
+                if not day_node.url:
+                    raise LarkError("daily node has no reading URL")
+                message = daily_notification(run_dir, date, status, str(day_node.url), home_url,
+                    len(successes), not_published_count, len(failures), source_issues)
                 sent = _send_notification_with_receipt(
                     self.cli,
                     run_dir,
@@ -681,6 +678,17 @@ class LarkPublisher:
             raise
         atomic_write_json(manifest_path, manifest.model_dump(mode="json"))
         return manifest
+
+    def _fixed_root(self, token: str) -> PublishNode:
+        """Resolve configured identity, never silently recreate a moved/missing root."""
+        matches = [row for row in self.cli.list_nodes(None)
+                   if row.get("node_token") == token]
+        if len(matches) != 1:
+            raise LarkError(f"configured navigation root unavailable: {token}")
+        row = matches[0]
+        return PublishNode(key=token, title=str(row["title"]), node_token=token,
+            obj_token=str(row["obj_token"]),
+            url=self.config.wiki_base_url.rstrip("/") + "/" + token)
 
     def _ensure_cached_node(
         self,
@@ -710,8 +718,12 @@ class LarkPublisher:
             and (key.startswith("report:") or key.startswith("subreport:"))
         ]
         for key in sorted(stale, key=lambda value: (not value.startswith("subreport:"), value)):
-            self.cli.delete_node(manifest.nodes[key])
-            del manifest.nodes[key]
+            if self.config.history_node_token:
+                # Historical publication is evidence: remove only active bookkeeping.
+                manifest.nodes["retained:" + key] = manifest.nodes.pop(key)
+            else:
+                self.cli.delete_node(manifest.nodes[key])
+                del manifest.nodes[key]
 
     def _write_navigation_indexes(
         self,
@@ -759,6 +771,25 @@ class LarkPublisher:
             node.content_hash = digest
             node.status = "written"
             manifest.nodes[key] = node
+
+        if self.config.home_node_token:
+            home = _restore_node_state(self._fixed_root(self.config.home_node_token), manifest.nodes.get("home"))
+            recent_days = list(day_children)
+            for title, url in month_children[:2]:
+                token = url.rsplit("/", 1)[-1]
+                if token != month_node.node_token and re.match(r"\d{4}-\d{2}", title):
+                    recent_days.extend(_navigation_children(
+                        self.cli.list_nodes(token), self.config.wiki_base_url))
+            recent = sorted(set(recent_days), key=lambda row: (_navigation_date(row[0]), row[0]), reverse=True)[:7]
+            content = _navigation_index("首页", "近期日报", recent)
+            content += f"\n\n[全部历史日报]({year_node.url})\n\n日报持续更新；本入口不改变阅读权限。\n"
+            digest = hashlib.sha256(content.encode()).hexdigest()
+            if home.content_hash != digest or home.status != "written":
+                self.cli.write_markdown(home, content, publish_root,
+                    required_substrings=[str(year_node.url), *[url for _, url in recent]])
+            home.content_hash = digest
+            home.status = "written"
+            manifest.nodes["home"] = home
 
 
 def validate_publish_inputs(run_dir: Path, status: str) -> dict[str, Any]:
@@ -1090,6 +1121,11 @@ def _restore_node_state(node: PublishNode, cached: PublishNode | None) -> Publis
         node.content_hash = cached.content_hash
         node.status = cached.status
     return node
+
+
+def _navigation_date(title: str) -> str:
+    match = re.search(r"(\d{4})\s*[-年]\s*(\d{1,2})\s*[-月]\s*(\d{1,2})", title)
+    return "-".join(f"{int(v):02d}" for v in match.groups()) if match else ""
 
 
 def _navigation_children(

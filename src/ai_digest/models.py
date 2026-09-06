@@ -319,10 +319,10 @@ class ResearchPackage(BaseModel):
 class Phase3Admission(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     daily_agent_limit: int = Field(ge=0)
     concurrency: int = Field(ge=1)
-    selection_mode: Literal["all", "codex_priority", "disabled"]
+    selection_mode: Literal["all", "codex_priority", "disabled", "batch_sampling"]
     selector_model: str = ""
     selector_reasoning: str = ""
     thread_id: str | None = None
@@ -333,6 +333,8 @@ class Phase3Admission(BaseModel):
     exploration_seed: str | None = None
     exploration_object_ids: list[str] = Field(default_factory=list)
     exploration_strata: dict[str, int] = Field(default_factory=dict)
+    tail_batches: list[list[str]] = Field(default_factory=list)
+    tail_batch_size: int = Field(default=1, ge=1, le=40)
 
     def model_post_init(self, __context: Any) -> None:
         available = self.available_object_ids
@@ -347,7 +349,16 @@ class Phase3Admission(BaseModel):
             or len(not_scheduled) != len(set(not_scheduled))
         ):
             raise ValueError("Phase 3 admission contains duplicate object ids")
-        if len(selected) > min(self.daily_agent_limit, len(available)) or not set(selected) <= set(
+        tail = [pid for batch in self.tail_batches for pid in batch]
+        if self.schema_version == 1 and self.tail_batches:
+            raise ValueError("legacy admission cannot contain batches")
+        if self.schema_version == 2 and (
+            len(tail) != len(set(tail)) or set(tail) != set(self.exploration_object_ids)
+            or any(not batch or len(batch) > self.tail_batch_size for batch in self.tail_batches)
+        ):
+            raise ValueError("invalid tail batch membership")
+        jobs = len(selected) - len(tail) + len(self.tail_batches)
+        if jobs > min(self.daily_agent_limit, len(available)) or not set(selected) <= set(
             available
         ):
             raise ValueError("Phase 3 admission selected set is invalid")

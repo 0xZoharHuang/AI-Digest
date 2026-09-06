@@ -50,6 +50,9 @@ class CodexConfig(BaseModel):
     phase3_admission_reasoning: str = "high"
     phase3_daily_agent_limit: int = Field(default=15, ge=0, le=1000)
     phase3_exploration_fraction: float = Field(default=0.2, ge=0, le=1)
+    phase3_tail_batch_size: int = Field(default=1, ge=1, le=40)
+    phase3_tail_batch_max_bytes: int = Field(default=256_000, ge=1)
+    phase3_tail_parallel_pool: bool = False
     top_level_concurrency: int = 3
     subagent_threads: int = 4
     idle_timeout_seconds: int = 900
@@ -61,6 +64,8 @@ class LarkConfig(BaseModel):
     receiver_open_id: str = ""
     wiki_name: str = "AI Intelligence Radar"
     wiki_base_url: str = "https://feishu.cn/wiki"
+    home_node_token: str = ""
+    history_node_token: str = ""
     identity: str = "user"
     dm_identity: str = "bot"
 

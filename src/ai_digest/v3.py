@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import shutil
+import time
 from datetime import UTC
 from pathlib import Path
 from typing import Any
@@ -58,7 +59,7 @@ PHASE2_LEGACY_PROMPT_VERSIONS = (
 )
 PHASE2_PROMPT_VERSION = "2026-09-01.4"
 PHASE2_WORKING_MAP_MAX_BYTES = 64 * 1024
-PHASE3_ADMISSION_PROMPT_VERSION = "2026-09-05.1"
+PHASE3_ADMISSION_PROMPT_VERSION = "2026-09-06.2"
 
 
 def summary_schema(unit_ids: set[str]) -> dict[str, Any]:
@@ -833,6 +834,7 @@ class V3Phases:
         return routing_from_v3(packages, units)
 
     async def research(self, run_dir: Path, routing: RoutingOutput | None = None) -> dict[str, str]:
+        phase3_started = time.monotonic()
         available_packages, units, catalog = load_phase3_inputs(run_dir / "02_routing")
         root = run_dir / "03_research"
         root.mkdir(parents=True, exist_ok=True)
@@ -842,6 +844,7 @@ class V3Phases:
             self.runtime,
             self.runner,
         )
+        admission_seconds = time.monotonic() - phase3_started
         atomic_write_json(root / "phase3_admission.json", admission.model_dump(mode="json"))
         package_by_id = {value.package_id: value for value in available_packages}
         packages = [package_by_id[pid] for pid in admission.selected_object_ids]
@@ -861,6 +864,8 @@ class V3Phases:
             return {}
         items = load_phase1_items(run_dir / "01_phase1")
         semaphore = __import__("asyncio").Semaphore(self.runtime.codex.top_level_concurrency)
+        tail_semaphore = (__import__("asyncio").Semaphore(3)
+                          if self.runtime.codex.phase3_tail_parallel_pool else semaphore)
         failures: list[dict[str, Any]] = []
         quality: list[dict[str, Any]] = []
         successes: dict[str, str] = {}
@@ -936,7 +941,68 @@ class V3Phases:
                     successes[package.package_id] = f"{package.package_id}/main_report.md"
                 quality.append(manifest.model_dump(mode="json"))
 
-        await __import__("asyncio").gather(*(run_package(package) for package in packages))
+        async def run_tail(batch: list[str]) -> None:
+            from .phase3_batches import run_batch, validate_batch_package
+
+            async with tail_semaphore:
+                batch_packages = [package_by_id[pid] for pid in batch]
+                batch_id = "tail-" + hashlib.sha256(json.dumps(batch).encode()).hexdigest()[:16]
+                try:
+                    result = await run_batch(root / "tail-batches" / batch_id, batch_packages,
+                        units, catalog, items, run_dir, self.runtime, self.runner)
+                except Exception as error:
+                    for package in batch_packages:
+                        try:
+                            manifest = validate_batch_package(root / package.package_id, package)
+                        except Exception:
+                            failures.append({"package_id": package.package_id, "label": package.label_zh,
+                                "error_class": getattr(error, "error_class", "batch_execution"), "error": str(error),
+                                "retryable": isinstance(error, RetryableCodexError)})
+                        else:
+                            quality.append(manifest.model_dump(mode="json"))
+                            if manifest.status == "not_published":
+                                not_published.append(package.package_id)
+                            else:
+                                successes[package.package_id] = f"{package.package_id}/main_report.md"
+                    return
+                for pid, record in result["completed"].items():
+                    quality.append(record)
+                    if record["status"] == "not_published":
+                        not_published.append(pid)
+                    else:
+                        successes[pid] = f"{pid}/main_report.md"
+                last = result["calls"][-1] if result["calls"] else {}
+                failures.extend({"package_id": pid, "label": package_by_id[pid].label_zh,
+                    "error_class": last.get("error_class") or "batch_artifact_validation", "error": reason,
+                    "thread_id": last.get("thread_id"), "retryable": bool(last.get("error_class"))}
+                    for pid, reason in result["errors"].items())
+
+        batched = {pid for batch in admission.tail_batches for pid in batch}
+        priority_tasks = [run_package(package) for package in packages if package.package_id not in batched]
+        tail_tasks = [run_tail(batch) for batch in admission.tail_batches]
+        # Interleave admission to the shared pool; the optional separate pool lets
+        # all three tail agents overlap with the existing three priority workers.
+        tasks = []
+        while priority_tasks or tail_tasks:
+            if tail_tasks:
+                tasks.append(tail_tasks.pop(0))
+            if priority_tasks:
+                tasks.append(priority_tasks.pop(0))
+        await __import__("asyncio").gather(*tasks)
+        atomic_write_json(root / "timing.json", {"phase3_seconds": time.monotonic() - phase3_started,
+            "admission_seconds": admission_seconds,
+            "execution_jobs": len(packages) - len(batched) + len(admission.tail_batches),
+            "priority_packages": len(packages) - len(batched), "tail_batches": len(admission.tail_batches),
+            "tail_packages": len(batched), "priority_concurrency": self.runtime.codex.top_level_concurrency,
+            "separate_tail_pool": self.runtime.codex.phase3_tail_parallel_pool})
+        if admission.tail_batches:
+            entries = []
+            for pid in admission.exploration_object_ids:
+                path = root / pid / "decision.md"
+                entries.append({"package_id": pid, "label": package_by_id[pid].label_zh,
+                    "status": "reported" if pid in successes else "not_published" if pid in not_published else "failed",
+                    "decision": path.read_text().strip() if path.is_file() and not path.is_symlink() else "研究未完成；不代表信息无价值。"})
+            atomic_write_json(root / "tail_decisions.json", entries)
         failures.sort(key=lambda value: str(value.get("package_id") or ""))
         quality.sort(key=lambda value: str(value.get("package_id") or ""))
         atomic_write_json(root / "failures.json", failures)
@@ -950,7 +1016,6 @@ class V3Phases:
                 "admission": admission.model_dump(mode="json"),
             },
         )
-        atomic_write_text(root / "PHASE3_COMPLETE", "v3 complete\n")
         retryable = [row for row in failures if row.get("retryable") is True]
         if retryable:
             first = retryable[0]
@@ -963,6 +1028,7 @@ class V3Phases:
                     error=str(first.get("error") or "retryable package failure"),
                 ),
             )
+        atomic_write_text(root / "PHASE3_COMPLETE", "v3 complete\n")
         return successes
 
     async def brief(
@@ -2091,6 +2157,18 @@ async def select_phase3_admission(
     runtime: RuntimeConfig,
     runner: CodexRunner,
 ) -> Phase3Admission:
+    if runtime.codex.phase3_tail_batch_size > 1:
+        from .phase3_batches import batch_admission
+        return await batch_admission(run_dir, packages, runtime, runner)
+    return await select_single_phase3_admission(run_dir, packages, runtime, runner)
+
+
+async def select_single_phase3_admission(
+    run_dir: Path,
+    packages: list[ResearchPackage],
+    runtime: RuntimeConfig,
+    runner: CodexRunner,
+) -> Phase3Admission:
     available_ids = [value.package_id for value in packages]
     limit = runtime.codex.phase3_daily_agent_limit
     if limit == 0:
@@ -2161,8 +2239,17 @@ async def select_phase3_admission(
             metrics: dict[str, float] = {}
             changes: set[str] = set()
             dates: list[str] = []
+            titles: list[str] = []
+            excerpts: list[tuple[str, str, str]] = []
             for uid in package.unit_ids:
                 for observation in documents[uid].observations:
+                    title = str(observation.payload.get("title") or observation.payload.get("full_name") or "")
+                    if title and title not in titles:
+                        titles.append(title)
+                    for field in ("text", "abstract", "description", "quoted_text"):
+                        value = observation.payload.get(field)
+                        if isinstance(value, str) and value.strip():
+                            excerpts.append((observation.source, field, value.strip()))
                     changes.add(observation.change)
                     if observation.occurred_at:
                         dates.append(observation.occurred_at.astimezone(UTC).isoformat())
@@ -2174,7 +2261,10 @@ async def select_phase3_admission(
                                 if isinstance(number, (int, float)):
                                     name = f"{key}.{metric}"
                                     metrics[name] = max(metrics.get(name, 0), number)
-            return {"changes": sorted(changes), "latest_occurred_at": max(dates) if dates else None,
+            best = max(excerpts, key=lambda row: len(row[2]), default=("", "", ""))
+            return {"evidence_hint": {"titles": [title[:120] for title in titles[:2]],
+                                      "source": best[0], "field": best[1], "excerpt": best[2][:240]},
+                    "changes": sorted(changes), "latest_occurred_at": max(dates) if dates else None,
                     "native_metrics": metrics}
         candidate_rows = [{"object_id": package.package_id, "label_zh": package.label_zh,
             **native_hints(package),
@@ -2217,7 +2307,7 @@ async def select_phase3_admission(
     input_hash = hashlib.sha256(
         (
             PHASE3_ADMISSION_PROMPT_VERSION
-            + ("\0bounded-catalog-v1" if label_contract else "")
+            + ("\0bounded-catalog-v2" if label_contract else "")
             + "\0"
             + runtime.codex.phase3_admission_model
             + "\0"
@@ -2517,6 +2607,10 @@ report://<package-id> 链接；如实呈现来源、研究失败，以及有多�
 不要生成任何全局采集、候选、调度、剩余、覆盖数量或统计开场段落；这些由程序统一插入。
 正文从“## 研究报告”开始，所有研究报告链接放在该标题之后，不写总起段落。
 未调度仅表示当前执行容量，不得写成 Watch、Archive、低质量或不值得研究。
+如果 admission 中存在 tail_batches，在该标题下用“重点研究”和“长尾发现”组织报告入口，
+每个入口以一两句表达新增信息和读后增量，不重复整篇摘要；不发布说明由程序加入，不要重复生成。
+入口必须说具体问题、事实或机制及关键限制，避免“深入分析”“值得关注”等空泛介绍。
+不要把独立主题强行收敛成宏观主线。失败和运行统计由程序补充，不重复生成技术错误信息。
 
 上述文件名和 package ID 只用于读取与链接校验。最终正文不得出现 Phase 1/2/3/4、Lead、package、
 unit、Agent 调度等内部实现词；使用“研究报告”“研究主题”“研究状态”等读者语言。
@@ -2531,9 +2625,10 @@ source_health 描述采集器运行状态，不等于当天研究 corpus 是否�
 
 def phase4_prompt(successes: dict[str, str]) -> str:
     required = ", ".join(sorted(successes)) or "none"
-    return f"""生成完整的中文日报导航，required report ids: {required}。开头简要说明今日采集与
-研究状态，随后按 main report 列出具体研究内容和链接，最后列出 failures。不要输出宏观
-结论章节。只返回 Markdown 正文。"""
+    return f"""生成完整的中文日报导航，required report ids: {required}。从“## 研究报告”开始，
+按 AGENTS.md 用紧凑的研究入口和认知推进介绍每份 main report，保留全部 report:// 链接。
+不要重算采集、候选、调度或覆盖数，不输出宏观结论，也不重复程序负责的运行状态和不发布目录。
+只返回 Markdown 正文。"""
 
 
 def fallback_brief(run_dir: Path, successes: dict[str, str]) -> str:
@@ -2541,7 +2636,11 @@ def fallback_brief(run_dir: Path, successes: dict[str, str]) -> str:
     date = str(manifest.get("date") or run_dir.parent.name)
     lines = [f"# AI 智能日报｜{date}", "", "## 今日研究导航", ""]
     if successes:
-        lines.extend(f"- [{package_id}](report://{package_id})" for package_id in successes)
+        for number, package_id in enumerate(successes, 1):
+            report = run_dir / "03_research" / package_id / "main_report.md"
+            title = next((line[2:].strip() for line in report.read_text().split("\n") if line.startswith("# ")), "") if report.is_file() and not report.is_symlink() else ""
+            title = (title or f"研究报告 {number}").replace("[", "（").replace("]", "）")
+            lines.append(f"- [{title}](report://{package_id})")
     else:
         lines.append("- 今日没有完成可发布的研究档案。")
     return "\n".join(lines) + "\n"
@@ -2578,7 +2677,15 @@ def append_run_status(path: Path, run_dir: Path, successes: dict[str, str]) -> N
         addition += "- 分包提示：主题名称较多，采用有界局部归一；跨组同义名称可能仍分包，未丢弃材料。\n"
     if deferred_primary := phase2_manifest.get("deferred_primary_count", 0):
         addition += f"- 分包提示：{deferred_primary} 条超出歧义复核容量，暂按独立信息包保留。\n"
+    if failures:
+        reasons = {"quota": "额度不足", "network": "联网异常", "authentication": "认证异常",
+                   "idle_timeout": "长时间无响应", "artifact_validation": "报告校验未通过",
+                   "batch_artifact_validation": "报告校验未通过", "batch_execution": "研究执行异常"}
+        addition += "\n未完成的研究主题：\n\n"
+        addition += "\n".join(f"- {row.get('label') or '研究主题'}：{reasons.get(str(row.get('error_class')), '研究未完成')}。"
+                              for row in failures if isinstance(row, dict)) + "\n"
     body = path.read_text(encoding="utf-8").rstrip()
+    body = re.split(r"\n(?:---\n\n)?## (?:长尾处理目录|运行状态)\n", body, maxsplit=1)[0].rstrip()
     # The model owns report navigation, never aggregate accounting. Drop accidental
     # generated accounting paragraphs instead of showing contradictory units.
     report_heading = re.search(r"^## (?:今日)?研究报告\s*$", body, flags=re.MULTILINE)
@@ -2591,8 +2698,13 @@ def append_run_status(path: Path, run_dir: Path, successes: dict[str, str]) -> N
                     and re.search(r"(?:候选信息|候选包|未调度|未进入当日研究)", paragraph)))
     for package in _read_json(run_dir / "02_routing" / "packages.json", []):
         if "package_id" in package and "unit_ids" in package:
-            pattern = r"(\]\(report://" + re.escape(package["package_id"]) + r"\))"
+            pattern = r"(\]\(report://" + re.escape(package["package_id"]) + r"\))(?:（输入信息：\d+ 条）)?"
             body = re.sub(pattern, rf"\1（输入信息：{len(package['unit_ids'])} 条）", body)
+    tail_decisions = _read_json(run_dir / "03_research/tail_decisions.json", [])
+    remaining = [row for row in tail_decisions if row["status"] != "reported"]
+    if remaining:
+        body += "\n\n## 长尾处理目录\n\n"
+        body += "\n\n".join(f"- {row['label']}：{row['decision']}" for row in remaining)
     atomic_write_json(run_dir / "04_brief" / "run_counts.json", run_counts(run_dir))
     atomic_write_text(path, "## 今日处理概况\n\n" + count_sentence(run_dir) + "\n\n" + body + addition)
 

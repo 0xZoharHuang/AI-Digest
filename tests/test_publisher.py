@@ -12,6 +12,7 @@ from ai_digest.publisher import (
     LarkError,
     LarkPublisher,
     _extract_envelope,
+    _navigation_date,
     _rewrite_report_links,
     notify_run_issue,
     retry_pending_notifications,
@@ -69,6 +70,12 @@ class FakeLark:
         self.deleted.append(node.node_token)
 
 
+def test_navigation_sorts_legacy_chinese_dates_chronologically():
+    assert _navigation_date("AI 智能日报｜2026 年 8 月 31 日") == "2026-08-31"
+    assert _navigation_date("2026-09-06 · AI Intelligence Brief") == "2026-09-06"
+    assert _navigation_date("旧版记录") == ""
+
+
 class FailOnceDMLark(FakeLark):
     def __init__(self):
         super().__init__()
@@ -81,7 +88,8 @@ class FailOnceDMLark(FakeLark):
         return super().send_dm(markdown, idempotency_key)
 
 
-def test_lark_publisher_builds_tree_rewrites_links_and_is_idempotent(tmp_path):
+@pytest.mark.parametrize("fixed_navigation", [False, True])
+def test_lark_publisher_builds_tree_rewrites_links_and_is_idempotent(tmp_path, fixed_navigation):
     run_dir = tmp_path / "runs" / "2026-08-30" / "attempt-0001"
     report = run_dir / "03_research" / "b1" / "report.md"
     report.parent.mkdir(parents=True)
@@ -101,6 +109,11 @@ def test_lark_publisher_builds_tree_rewrites_links_and_is_idempotent(tmp_path):
 
     publisher = LarkPublisher(LarkConfig(space_id="space", receiver_open_id="user"))
     fake = FakeLark()
+    if fixed_navigation:
+        home = fake.ensure_node("首页")
+        history = fake.ensure_node("历史日报")
+        publisher.config.home_node_token = home.node_token
+        publisher.config.history_node_token = history.node_token
     publisher.cli = fake  # type: ignore[assignment]
     first = publisher.publish(run_dir, "SUCCESS")
     manifest_path = run_dir / "05_publish" / "publish_manifest.json"
@@ -125,7 +138,7 @@ def test_lark_publisher_builds_tree_rewrites_links_and_is_idempotent(tmp_path):
     assert len(fake.messages) == 2
     assert fake.messages[0][1] != fake.messages[1][1]
     assert any("https://lark.test/" in content for _, content in fake.writes)
-    assert third.navigation_version == 3
+    assert third.navigation_version == LarkPublisher.NAVIGATION_VERSION
     assert any("日报索引" in content for _, content in fake.writes)
     day_token = third.nodes["day"].node_token
     day_writes = [content for token, content in fake.writes if token == day_token]
@@ -134,13 +147,16 @@ def test_lark_publisher_builds_tree_rewrites_links_and_is_idempotent(tmp_path):
     ) and "# 2026-08-30 · AI Intelligence Brief" in day_writes[-1]
     year_node = third.nodes["year"]
     month_node = third.nodes["month"]
-    assert (None, "2026 · AI Intelligence Radar") in fake.nodes
+    assert ((None, "2026 · AI Intelligence Radar") in fake.nodes) is (not fixed_navigation)
     assert (year_node.node_token, "2026-08 · 日报索引") in fake.nodes
     assert (
         month_node.node_token,
         "2026-08-30 · AI Intelligence Brief",
     ) in fake.nodes
-    assert fake.deleted == ["node-stale"]
+    assert fake.deleted == ([] if fixed_navigation else ["node-stale"])
+    if fixed_navigation:
+        assert "retained:report:stale" in third.nodes
+        assert "Wiki 固定入口与历史报告" in fake.messages[-1][0]
 
 
 def test_cached_node_is_reused_when_markdown_import_changed_its_title():
@@ -374,7 +390,8 @@ def test_publish_preflight_parses_unicode_jsonl_and_prevents_partial_writes(tmp_
     assert fake.nodes == {}
 
 
-def test_dm_retry_does_not_rewrite_unchanged_wiki_pages(tmp_path):
+@pytest.mark.parametrize("fixed_navigation", [False, True])
+def test_dm_retry_does_not_rewrite_unchanged_wiki_pages(tmp_path, fixed_navigation):
     run_dir = tmp_path / "runs" / "2026-08-31" / "attempt-0001"
     report = run_dir / "03_research" / "b1" / "report.md"
     report.parent.mkdir(parents=True)
@@ -394,6 +411,9 @@ def test_dm_retry_does_not_rewrite_unchanged_wiki_pages(tmp_path):
 
     publisher = LarkPublisher(LarkConfig(space_id="space", receiver_open_id="user"))
     fake = FailOnceDMLark()
+    if fixed_navigation:
+        publisher.config.home_node_token = fake.ensure_node("首页").node_token
+        publisher.config.history_node_token = fake.ensure_node("历史日报").node_token
     publisher.cli = fake  # type: ignore[assignment]
     with pytest.raises(LarkError, match="offline"):
         publisher.publish(run_dir, "SUCCESS")

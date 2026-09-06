@@ -480,6 +480,9 @@ phase3_admission_model = {q(runtime.codex.phase3_admission_model)}
 phase3_admission_reasoning = {q(runtime.codex.phase3_admission_reasoning)}
 phase3_daily_agent_limit = {runtime.codex.phase3_daily_agent_limit}
 phase3_exploration_fraction = {runtime.codex.phase3_exploration_fraction}
+phase3_tail_batch_size = {runtime.codex.phase3_tail_batch_size}
+phase3_tail_batch_max_bytes = {runtime.codex.phase3_tail_batch_max_bytes}
+phase3_tail_parallel_pool = {str(runtime.codex.phase3_tail_parallel_pool).lower()}
 phase2_comparison_max_groups = {runtime.codex.phase2_comparison_max_groups}
 phase2_subject_keys = {str(runtime.codex.phase2_subject_keys).lower()}
 phase2_alias_model = {q(runtime.codex.phase2_alias_model)}
@@ -494,6 +497,8 @@ space_id = ""
 receiver_open_id = ""
 wiki_name = {q(runtime.lark.wiki_name)}
 wiki_base_url = {q(runtime.lark.wiki_base_url)}
+home_node_token = {q(runtime.lark.home_node_token)}
+history_node_token = {q(runtime.lark.history_node_token)}
 identity = {q(runtime.lark.identity)}
 dm_identity = {q(runtime.lark.dm_identity)}
 """
@@ -639,6 +644,8 @@ def _verify_wiki_tree(run_dir: Path, status: str) -> dict[str, Any]:
     )
     publisher = LarkPublisher(config)
     fake = _SmokeLark(config.wiki_base_url)
+    config.home_node_token = fake.ensure_node("首页").node_token
+    config.history_node_token = fake.ensure_node("历史日报").node_token
     publisher.cli = fake  # type: ignore[assignment]
     manifest = publisher.publish(run_dir, status)
     if manifest.navigation_version != LarkPublisher.NAVIGATION_VERSION:
