@@ -21,6 +21,8 @@ def codex_profiles(runtime: RuntimeConfig) -> set[tuple[str, str]]:
                 (config.phase3_admission_model, config.phase3_admission_reasoning)}
     if config.phase2_engine == "semantic_labels_v1":
         profiles.add((config.phase2_label_model, config.phase2_label_reasoning))
+        if config.phase2_subject_keys:
+            profiles.add((config.phase2_alias_model, config.phase2_alias_reasoning))
     else:
         profiles.update({(config.router_model, config.router_reasoning),
             (config.router_reader_model, config.router_reader_reasoning),

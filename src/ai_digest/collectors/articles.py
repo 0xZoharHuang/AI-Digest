@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import calendar
 import hashlib
+import json
 import time
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime, timedelta
@@ -10,6 +11,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import feedparser
+import httpx
 import trafilatura
 from bs4 import BeautifulSoup
 
@@ -32,9 +34,11 @@ class ArticleCollector(Collector):
         super().__init__({"enabled": True}, store, state)
         self.sources = sources
         self.preview_chars = preview_chars
+        self.deferred_bodies: dict[str, int] = {}
 
     async def collect(self, now: datetime) -> CollectorResult:
         started = time.monotonic()
+        self.deferred_bodies = {}
         client = SafeHTTPClient(timeout=40)
         items: list[SourceItem] = []
         manifests = []
@@ -76,6 +80,7 @@ class ArticleCollector(Collector):
                     )
                     for row, outcome in zip(rows, outcomes, strict=True):
                         if isinstance(outcome, BaseException):
+                            source_stats[source_id]["extraction_failures"] += 1
                             errors.append(
                                 f"{source_config.get('id', 'article')}:{row.get('url')}: "
                                 f"{type(outcome).__name__}: {outcome}"
@@ -93,9 +98,10 @@ class ArticleCollector(Collector):
                                 source_stats[source_id]["extraction_failures"] += 1
                     source_stats[source_id]["status"] = (
                         "partial"
-                        if source_stats[source_id]["extraction_failures"]
+                        if source_stats[source_id]["extraction_failures"] or self.deferred_bodies.get(source_id)
                         else "success"
                     )
+                    source_stats[source_id]["deferred_bodies"] = self.deferred_bodies.get(source_id, 0)
                     cursor_updates[f"article-source:{source_id}:initialized"] = now.isoformat()
                     successful_sources += 1
                 except Exception as error:
@@ -110,6 +116,8 @@ class ArticleCollector(Collector):
             f"{source_id}: {count} article body extraction failure(s); metadata preserved"
             for source_id, count in sorted(extraction_failures.items())
         )
+        errors.extend(f"{source_id}: {count} article bodies awaiting retry; not recovered"
+                      for source_id, count in sorted(self.deferred_bodies.items()) if count)
         for item in items:
             self.store.write_revision(item)
         for manifest in manifests:
@@ -130,7 +138,7 @@ class ArticleCollector(Collector):
             ),
         )
         result.health.surfaces = source_stats
-        result.health.raw_receipts_complete = not bool(extraction_failures)
+        result.health.raw_receipts_complete = not bool(errors)
         return result
 
     async def _discover(self, client, config, now):  # type: ignore[no-untyped-def]
@@ -279,6 +287,17 @@ class ArticleCollector(Collector):
             return None, {}
         entity = hashlib.sha256(url.encode()).hexdigest()[:24]
         discovery_key = f"article-discovery:{config['id']}:{entity}"
+        retry_key = f"article-retry:{config['id']}:{entity}"
+        retry: dict[str, Any] = {}
+        try:
+            retry = json.loads(await self.state.get_cursor(retry_key) or "{}")
+            next_retry = parse_datetime(retry.get("next_retry_at"))
+        except (ValueError, TypeError, AttributeError):
+            retry, next_retry = {}, None
+        if next_retry and now < next_retry:
+            source_id = str(config["id"])
+            self.deferred_bodies[source_id] = self.deferred_bodies.get(source_id, 0) + 1
+            return None, {}
         discovery_value = (
             f"{url}:{now.date().isoformat()}"
             if config.get("kind") == "index"
@@ -298,7 +317,7 @@ class ArticleCollector(Collector):
         raw_refs: list[str] = []
         extraction_error = None
         try:
-            response = await client.request("GET", url, data_limit=4_000_000)
+            response = await client.request("GET", url, data_limit=4_000_000, validate_public_url=True)
             html_ref = self.store.write_blob(response.text, ".html")
             raw_refs.append(html_ref)
             content_selector = config.get("content_selector")
@@ -328,14 +347,20 @@ class ArticleCollector(Collector):
             metadata = trafilatura.extract_metadata(response.text, default_url=str(response.url))
             if metadata and metadata.date:
                 page_date = parse_datetime(metadata.date)
+            if not clean_text.strip():
+                raise ValueError("empty article body")
         except Exception as error:
             extraction_error = f"{type(error).__name__}: {error}"
+            error_kind = article_error_kind(error)
+            clean_text = ""
+            if isinstance(error, httpx.HTTPStatusError) and len(error.response.content) <= 4_000_000:
+                raw_refs.append(self.store.write_blob(error.response.text, ".html"))
 
         clean_hash = sha256_text(clean_text) if clean_text else "metadata"
         cursor_key = f"article:{config['id']}:{entity}"
         previous_hash = await self.state.get_cursor(cursor_key)
-        if previous_hash == clean_hash:
-            return None, {discovery_key: discovery_value}
+        if previous_hash == clean_hash and not extraction_error:
+            return None, {discovery_key: discovery_value, retry_key: None}
         content_status = (
             ContentStatus.FULL
             if clean_text
@@ -395,11 +420,32 @@ class ArticleCollector(Collector):
                 "full_text_ref": raw_refs[-1] if clean_text else None,
                 "clean_text_hash": clean_hash,
                 "extraction_error": extraction_error,
+                "extraction_error_kind": error_kind if extraction_error else None,
             },
         )
         if not clean_text:
-            return item, {}
-        return item, {cursor_key: clean_hash, discovery_key: discovery_value}
+            try:
+                failures = max(0, int(retry.get("failures", 0))) + 1
+            except (TypeError, ValueError):
+                failures = 1
+            delay = (1, 6, 24)[min(failures - 1, 2)]
+            return item, {retry_key: json.dumps({"failures": failures,
+                "next_retry_at": (now + timedelta(hours=delay)).isoformat(),
+                "error_kind": error_kind, "last_attempt_at": now.isoformat()})}
+        return item, {cursor_key: clean_hash, discovery_key: discovery_value, retry_key: None}
+
+
+def article_error_kind(error: Exception) -> str:
+    if isinstance(error, httpx.HTTPStatusError):
+        status = error.response.status_code
+        return "access_denied" if status in {401, 403} else "not_found" if status in {404, 410} else "http_error"
+    if isinstance(error, httpx.TimeoutException):
+        return "timeout"
+    if "selector did not match" in str(error):
+        return "selector_mismatch"
+    if "empty article body" in str(error):
+        return "empty_body"
+    return "parse_or_transport_error"
 
 
 def _feed_time(value: Any) -> datetime | None:

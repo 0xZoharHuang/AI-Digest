@@ -33,6 +33,10 @@ async def main() -> None:
     parser.add_argument("--reasoning", choices=["low", "none", "medium"], default="medium")
     parser.add_argument("--concurrency", type=int, choices=range(1, 17), default=4)
     parser.add_argument("--cache-only", action="store_true")
+    parser.add_argument("--comparison-max-groups", type=int, default=256)
+    parser.add_argument("--subject-keys", action="store_true")
+    parser.add_argument("--alias-model", default="gpt-5.6-luna")
+    parser.add_argument("--alias-reasoning", default="medium", choices=["low", "medium", "high"])
     args = parser.parse_args()
     source = args.source.resolve()
     target = args.target.resolve()
@@ -68,10 +72,12 @@ async def main() -> None:
         keep = {item for u in units for item in u.item_ids}
         items = {key: item for key, item in items.items() if key in keep}
     config = CodexConfig(phase2_label_reasoning=args.reasoning, phase2_text_only=args.text_only,
-        router_reader_concurrency=args.concurrency)
+        router_reader_concurrency=args.concurrency,
+        phase2_comparison_max_groups=args.comparison_max_groups, phase2_subject_keys=args.subject_keys,
+        phase2_alias_model=args.alias_model, phase2_alias_reasoning=args.alias_reasoning)
     if args.reuse_work:
         previous = args.reuse_work.resolve() / "02_routing" / "semantic_labels_v1"
-        for stage in ("labels", "index", "discard-checks", "merge-blocks"):
+        for stage in ("labels", "index", "discard-checks", "merge-blocks", "subject-aliases", "primary-review"):
             if (previous / stage).is_dir():
                 shutil.copytree(
                     previous / stage,

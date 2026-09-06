@@ -329,11 +329,18 @@ class Phase3Admission(BaseModel):
     available_object_ids: list[str]
     selected_object_ids: list[str]
     not_scheduled_object_ids: list[str]
+    selection_contract: str = "priority-v1"
+    exploration_seed: str | None = None
+    exploration_object_ids: list[str] = Field(default_factory=list)
+    exploration_strata: dict[str, int] = Field(default_factory=dict)
 
     def model_post_init(self, __context: Any) -> None:
         available = self.available_object_ids
         selected = self.selected_object_ids
         not_scheduled = self.not_scheduled_object_ids
+        if (len(self.exploration_object_ids) != len(set(self.exploration_object_ids))
+            or not set(self.exploration_object_ids) <= set(selected)):
+            raise ValueError("invalid exploration membership")
         if (
             len(available) != len(set(available))
             or len(selected) != len(set(selected))

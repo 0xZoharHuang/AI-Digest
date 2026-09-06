@@ -19,6 +19,7 @@ from .models import (
     ResearchArtifactManifest,
     ResearchPackage,
 )
+from .run_counts import count_sentence
 from .store import parse_jsonl_text
 from .utils import atomic_write_json, atomic_write_text
 
@@ -487,6 +488,10 @@ class LarkPublisher:
             )
             report_urls: dict[str, str] = {}
             brief_subreport_urls: dict[str, dict[str, str]] = {}
+            package_path = run_dir / "02_routing" / "packages.json"
+            package_counts = {p["package_id"]: len(p["unit_ids"])
+                              for p in json.loads(package_path.read_text())
+                              if "package_id" in p and "unit_ids" in p} if package_path.exists() else {}
             for bundle_id, report_path in successes.items():
                 if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", str(bundle_id)):
                     raise LarkError(
@@ -506,6 +511,8 @@ class LarkPublisher:
                     raise LarkError(f"research report is not a regular file: {bundle_id}")
                 content = source.read_text(encoding="utf-8")
                 title = _markdown_title(content) or bundle_id
+                if bundle_id in package_counts:
+                    content += f"\n\n> 本报告的输入信息：{package_counts[bundle_id]} 条；不含研究时另行查阅的外部资料。\n"
                 manifest_key = f"report:{bundle_id}"
                 node = manifest.nodes.get(manifest_key)
                 if node is None:
@@ -642,6 +649,7 @@ class LarkPublisher:
                     f"Phase 2 候选信息包：{research_object_count}，"
                     f"当日已调度：{scheduled_research_count}，"
                     f"未调度：{not_scheduled_research_count}  \n"
+                    f"{count_sentence(run_dir)}  \n"
                     f"停用来源：{', '.join(disabled) if disabled else '无'}  \n"
                     f"异常来源：{', '.join(source_issues) if source_issues else '无'}  \n"
                     f"[打开今日 Brief]({day_node.url})"

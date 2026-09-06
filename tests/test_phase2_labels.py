@@ -87,7 +87,9 @@ def items(count=20):
 
 def test_reject_missing_duplicate_and_chatter_package():
     from ai_digest.phase2_labels import validate_group_merges, validate_identities
-    assert validate_identities({"a": "a", "b": "a", "c": "b"}, {"a", "b", "c"}) == [["a", "b", "c"]]
+    assert validate_identities({"a": "a", "b": "a", "c": "a"}, {"a", "b", "c"}) == [["a", "b", "c"]]
+    with pytest.raises(ValueError, match="chains or cycles"):
+        validate_identities({"a": "a", "b": "a", "c": "b"}, {"a", "b", "c"})
     for invalid in ({"a": "a"}, {"a": "a", "b": "x"}, {"a": "a", "b": []}):
         with pytest.raises(ValueError, match="coverage"):
             validate_identities(invalid, {"a", "b"})
@@ -462,7 +464,7 @@ async def test_similarity_chain_is_not_an_automatic_package(tmp_path, monkeypatc
 async def test_confirmed_identity_can_cross_comparison_boundaries(tmp_path, monkeypatch):
     packages = [ResearchPackage(package_id=k, label_zh=k, scope_note_zh="scope", unit_ids=[k]) for k in ["a", "b", "c"]]
     monkeypatch.setattr("ai_digest.semantic_index.nearest_groups", lambda *args: {})
-    monkeypatch.setattr("ai_digest.phase2_scopes.comparison_scopes", lambda *args: ([["a", "b"], ["b", "c"]], []))
+    monkeypatch.setattr("ai_digest.phase2_scopes.comparison_scopes", lambda *args, **kwargs: ([["a", "b"], ["b", "c"]], []))
     class SameObjectRunner:
         async def run(self, **kwargs):
             data = json.loads((kwargs["workspace"] / "input.json").read_text())

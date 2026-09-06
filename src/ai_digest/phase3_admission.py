@@ -18,6 +18,34 @@ VERSION = "bounded-catalog-v1"
 BASE_WINDOW_CHARS = 200_000
 MAX_WINDOW_CHARS = 900_000
 COLUMNS = ["id", "title", "units", "kinds", "signals", "sources", "latest", "changes", "metrics"]
+EXPLORATION_VERSION = "stratified-small-packages-v1"
+
+
+def explore(rows: list[dict[str, Any]], excluded: set[str], count: int,
+            seed: str) -> tuple[list[str], dict[str, int]]:
+    """Stable source-balanced sampling without replacement; never edits packages."""
+    strata: dict[str, list[str]] = {}
+    def order(value: str) -> str:
+        return hashlib.sha256((seed + "\0" + value).encode()).hexdigest()
+    for row in rows:
+        if row["object_id"] in excluded or not 1 <= row.get("unit_count", 0) <= 3 or not row.get("readable", False):
+            continue
+        source = row.get("primary_source") or (sorted(row.get("sources", [])) or ["unknown"])[0]
+        strata.setdefault(source, []).append(row["object_id"])
+    for ids in strata.values():
+        ids.sort(key=order, reverse=True)
+    selected: list[str] = []
+    counts: Counter[str] = Counter()
+    while len(selected) < count:
+        active = sorted((source for source, ids in strata.items() if ids), key=order)
+        if not active:
+            break
+        for source in active:
+            selected.append(strata[source].pop())
+            counts[source] += 1
+            if len(selected) == count:
+                break
+    return selected, dict(counts)
 
 
 def compact_row(row: dict[str, Any], alias: str) -> list[Any]:

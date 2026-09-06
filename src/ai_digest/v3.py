@@ -1060,6 +1060,15 @@ class V3Phases:
         }
         assert_reader_output_is_clean(output, internal_unit_ids - {""})
         append_run_status(output, run_dir, successes)
+        # Formatting must not invalidate a previously complete report index.
+        # Rebuild deterministically before sealing if generated heading placement
+        # caused the accounting normalizer to remove a required link.
+        if any(f"report://{pid}" not in output.read_text(encoding="utf-8") for pid in successes):
+            used_fallback = True
+            atomic_write_text(output, fallback_brief(run_dir, successes))
+            append_run_status(output, run_dir, successes)
+        if any(f"report://{pid}" not in output.read_text(encoding="utf-8") for pid in successes):
+            raise RuntimeError("Phase 4 normalization lost required report links")
         atomic_write_json(root / "codex.json", codex_summary(result))
         linked = sorted(
             package_id
@@ -2145,7 +2154,7 @@ async def select_phase3_admission(
     if label_contract:
         from collections import Counter
 
-        from .phase2_labels import Label
+        from .phase2_labels import Label, has_captured_anchor
         labels = {row.unit_id: row for row in (Label.model_validate(value)
             for value in load_jsonl(routing_root / "labels.jsonl"))}
         def native_hints(package: ResearchPackage) -> dict[str, Any]:
@@ -2170,6 +2179,9 @@ async def select_phase3_admission(
         candidate_rows = [{"object_id": package.package_id, "label_zh": package.label_zh,
             **native_hints(package),
             "unit_count": len(package.unit_ids),
+            "readable": any(has_captured_anchor(documents[uid].model_dump(mode="json")) for uid in package.unit_ids),
+            "primary_source": sorted(Counter(source for uid in package.unit_ids for source in documents[uid].sources).items(),
+                                     key=lambda item: (-item[1], item[0]))[0][0],
             "kinds": dict(Counter(labels[uid].kind for uid in package.unit_ids)),
             "signals": dict(Counter(labels[uid].signal for uid in package.unit_ids)),
             "sources": sorted({source for uid in package.unit_ids for source in documents[uid].sources})}
@@ -2212,6 +2224,8 @@ async def select_phase3_admission(
             + runtime.codex.phase3_admission_reasoning
             + "\0"
             + str(limit)
+            + "\0" + str(_read_json(run_dir / "00_run_manifest.json", {}).get("date", run_dir.name))
+            + (f"\0stratified-small-packages-v1:{runtime.codex.phase3_exploration_fraction}" if label_contract else "")
             + "\0"
             + interests
             + "\0"
@@ -2249,13 +2263,19 @@ async def select_phase3_admission(
     result = CodexResult(exit_code=0, thread_id=thread_id)
     bounded_summary: dict[str, Any] | None = None
     if selected is None and label_contract:
-        from .phase3_admission import select_bounded
+        from .phase3_admission import explore, select_bounded
 
-        selected, bounded_summary = await select_bounded(
-            root, candidate_rows, interests, target_count, runtime, runner
-        )
+        exploration_budget = int(limit * runtime.codex.phase3_exploration_fraction)
+        # Rank once at the full budget so unused exploration capacity can be filled
+        # without another model call. Final priority prefix reserves exploration slots.
+        ranked, bounded_summary = await select_bounded(root, candidate_rows, interests, target_count, runtime, runner)
+        selected = ranked[:target_count - exploration_budget]
+        exploration_ids, strata = explore(candidate_rows, set(selected), exploration_budget, input_hash)
+        selected += exploration_ids
+        selected += [pid for pid in ranked if pid not in selected][:target_count - len(selected)]
         thread_id = str(bounded_summary.get("thread_id") or "") or None
-        atomic_write_json(output, {"selected_object_ids": selected})
+        atomic_write_json(output, {"selected_object_ids": selected,
+                                  "exploration_object_ids": exploration_ids, "exploration_strata": strata})
     for attempt in range(1, 3):
         if selected is not None:
             break
@@ -2298,6 +2318,7 @@ async def select_phase3_admission(
         summary["output_hash"] = file_sha256(output)
         atomic_write_json(checkpoint_path, summary)
     selected_set = set(selected)
+    exploration_receipt = _read_json(output, {}) if label_contract else {}
     return Phase3Admission(
         daily_agent_limit=limit,
         concurrency=runtime.codex.top_level_concurrency,
@@ -2308,6 +2329,10 @@ async def select_phase3_admission(
         available_object_ids=available_ids,
         selected_object_ids=selected,
         not_scheduled_object_ids=[value for value in available_ids if value not in selected_set],
+        selection_contract="stratified-small-packages-v1" if label_contract else "priority-v1",
+        exploration_seed=input_hash if label_contract else None,
+        exploration_object_ids=exploration_receipt.get("exploration_object_ids", []),
+        exploration_strata=exploration_receipt.get("exploration_strata", {}),
     )
 
 
@@ -2489,8 +2514,9 @@ def phase4_agents_md() -> str:
 report://<package-id> 链接；如实呈现来源、研究失败，以及有多少研究主题经核查后未形成报告，
 但不要向读者列内部 package ID。
 
-如实说明发现多少候选信息包、当天调度多少、还有多少未调度；未调度仅表示当前执行容量，
-不得写成 Watch、Archive、低质量或不值得研究。
+不要生成任何全局采集、候选、调度、剩余、覆盖数量或统计开场段落；这些由程序统一插入。
+正文从“## 研究报告”开始，所有研究报告链接放在该标题之后，不写总起段落。
+未调度仅表示当前执行容量，不得写成 Watch、Archive、低质量或不值得研究。
 
 上述文件名和 package ID 只用于读取与链接校验。最终正文不得出现 Phase 1/2/3/4、Lead、package、
 unit、Agent 调度等内部实现词；使用“研究报告”“研究主题”“研究状态”等读者语言。
@@ -2522,6 +2548,7 @@ def fallback_brief(run_dir: Path, successes: dict[str, str]) -> str:
 
 
 def append_run_status(path: Path, run_dir: Path, successes: dict[str, str]) -> None:
+    from .run_counts import count_sentence, run_counts
     health = json.loads((run_dir / "01_phase1" / "source_health.json").read_text())
     quality = _read_json(run_dir / "03_research" / "quality.json", {})
     failures = _read_json(run_dir / "03_research" / "failures.json", [])
@@ -2543,7 +2570,31 @@ def append_run_status(path: Path, run_dir: Path, successes: dict[str, str]) -> N
         f"- 研究失败：{len(failures)}\n"
         f"- 异常来源：{', '.join(issues) if issues else '无'}\n"
     )
-    atomic_write_text(path, path.read_text(encoding="utf-8").rstrip() + addition)
+    phase2_manifest = _read_json(run_dir / "02_routing" / "phase2_manifest.json", {})
+    deferred_names = phase2_manifest.get("deferred_alias_name_count", 0)
+    if deferred_names:
+        addition += f"- 分包提示：{deferred_names} 个名称因比较容量限制暂未归一，原始材料及候选仍保留。\n"
+    if phase2_manifest.get("alias_registry_mode") == "bounded_local":
+        addition += "- 分包提示：主题名称较多，采用有界局部归一；跨组同义名称可能仍分包，未丢弃材料。\n"
+    if deferred_primary := phase2_manifest.get("deferred_primary_count", 0):
+        addition += f"- 分包提示：{deferred_primary} 条超出歧义复核容量，暂按独立信息包保留。\n"
+    body = path.read_text(encoding="utf-8").rstrip()
+    # The model owns report navigation, never aggregate accounting. Drop accidental
+    # generated accounting paragraphs instead of showing contradictory units.
+    report_heading = re.search(r"^## (?:今日)?研究报告\s*$", body, flags=re.MULTILINE)
+    if report_heading:
+        body = body[report_heading.start():]
+    else:
+        body = "\n\n".join(paragraph for paragraph in body.split("\n\n")
+            if not ("report://" not in paragraph
+                    and re.match(r"(?:今日(?:发现|共)|本日(?:发现|共)|本次运行|未调度)", paragraph)
+                    and re.search(r"(?:候选信息|候选包|未调度|未进入当日研究)", paragraph)))
+    for package in _read_json(run_dir / "02_routing" / "packages.json", []):
+        if "package_id" in package and "unit_ids" in package:
+            pattern = r"(\]\(report://" + re.escape(package["package_id"]) + r"\))"
+            body = re.sub(pattern, rf"\1（输入信息：{len(package['unit_ids'])} 条）", body)
+    atomic_write_json(run_dir / "04_brief" / "run_counts.json", run_counts(run_dir))
+    atomic_write_text(path, "## 今日处理概况\n\n" + count_sentence(run_dir) + "\n\n" + body + addition)
 
 
 def safe_child(root: Path, value: str) -> Path:
