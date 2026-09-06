@@ -1,7 +1,8 @@
 # Independent long-tail research batches
 
-Status: implemented; isolated acceptance and immutable installation in progress.
-**Not deployed.** Current production remains `08f1bcd5770a`.
+Status: deployed locally as `6beac11858bf` after source, mixed-pipeline, installed-package
+and background-authentication verification. Natural full-volume daily canary remains
+for September 7. Previous application snapshot `08f1bcd5770a` is retained.
 
 ## Contract
 
@@ -53,7 +54,13 @@ Status: implemented; isolated acceptance and immutable installation in progress.
   40 supported decisions, 40 recognized signals, zero cross-package claims;
   grounding/information-gain/readability means 3.125/2.925/3.55. These are
   model-assisted evidence-backed judgments, not a guarantee of every factual detail.
-- Matched V2 size 20 remains under evaluation; do not conflate its result with V1.
+- Matched V2 size 20 completed 40/40 in 805.39 seconds, with 10,189,784 input,
+  9,709,824 cached, 479,960 noncached and 59,908 output tokens. Draft review found
+  39 supported decisions, all signals recognized and no cross-package claims;
+  mean grounding/information gain/readability 3.25/2.825/3.8. Several added details
+  were not present in the provided retrieval excerpts; this is an audit evidence gap,
+  not proof the underlying statements are false. Deploy the better-evidenced size 10
+  for this canary instead of expanding batch size now.
   No size 30/40 claims are made. Prefer the quality-passing smaller size for rollout
   unless the larger size demonstrates a clear advantage.
 
@@ -74,7 +81,27 @@ Status: implemented; isolated acceptance and immutable installation in progress.
   ten, deterministic replay and unchanged Phase 2 artifact hashes. Native evidence
   hints inform priority without modifying classification or treating popularity as value.
 
-## Remaining acceptance
+## Production handoff
+
+- Local snapshot: `app-6beac11858bf-20260906T143722Z`.
+- Source 265 tests, Ruff/Mypy pass; source and installed doctors pass.
+- Real mixed smoke: 7 observations → 6 packages → 5 reports and 1 not-published
+  outcome, zero failures, complete Brief links, jobs → completed → archived,
+  715.55 seconds first pass. Fresh installed Wiki dry-run validates 9 nonempty pages
+  with no unresolved links and no live messages.
+- Actual LaunchAgent environment authenticated Codex and Lark and verified owner
+  recipient, without sending a test message. All three production services now point
+  to the new snapshot; 07:00 daily start and existing catch-up triggers preserved.
+- Configuration: 12 priority jobs and 3 tail jobs of up to 10 independent packages,
+  separate concurrency pools of 3, 256 KB original-document bound per tail task.
+- Detailed receipts are retained under runtime `deployments/20260906-tail` and
+  `validation/wiki-organization-20260906`.
+
+## Remaining natural acceptance
+
+Tomorrow's real daily volume and reader-perceived quality remain a natural production
+canary, not something the small integration run proves. The checks below document
+the evaluation approach; completed gates above need not be rerun without a change.
 
 Finish the size comparison, independently review outputs, and validate on a second
 sample/order. Keep critiques and uncertain source claims rather than silently fixing
