@@ -1,10 +1,21 @@
 # Phase 2 quality follow-up — 2026-09-06
 
-Status: semantic, cost, large-package review and source-tree integration gates passed;
-installed acceptance and production cutover are pending.
+Status: semantic, cost, large-package review and installed integration gates passed;
+final packaging and production cutover are pending.
 **Not deployed.**
 
 ## Current continuation checkpoint
+
+Installed snapshot `e0c6c2e1681f` reproduced all four frozen Phase 2 artifact hashes
+with zero model calls and passed the unchanged semantic gate. Its real installed
+smoke completed three reports with zero failures, successful queue traversal and
+publish preflight, and zero live Lark writes. Background Codex succeeded; the first
+Lark probe failed before parsing stdout, then two bounded retests succeeded without
+account/config changes. The initial auth failure was not reproduced; logs are retained.
+
+A final deterministic accounting fix also supports historical `objects.json` and
+legacy package membership fields, and rejects dangling admission IDs rather than
+printing negative counts. It does not alter any Phase 2 algorithm or model prompt.
 
 The accepted frozen semantic candidate is `phase2-quality-frozen-20260906-bounded-events`:
 6,878 units, 5,813 packages, retention 193/195, same-object 110/113, separation 118/118,

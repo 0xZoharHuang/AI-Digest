@@ -14,7 +14,13 @@ def run_counts(run_dir: Path) -> dict[str, int]:
     routing = run_dir / "02_routing"
     path = routing / "units.jsonl"
     units = cast(list[dict[str, Any]], load_jsonl(path)) if path.exists() else []
-    packages = read(routing / "packages.json", [])
+    packages = read(routing / "packages.json", None)
+    if packages is None:
+        packages = [{**row, "package_id": row["object_id"]}
+                    for row in read(routing / "objects.json", [])]
+    packages = [{**row, "unit_ids": row.get("unit_ids", sorted(set(
+        row.get("investigate_unit_ids", []) + row.get("supporting_unit_ids", []))))}
+        for row in packages]
     admission = read(run_dir / "03_research" / "phase3_admission.json", {})
     selected = set(admission.get("selected_object_ids", []))
     candidate_units = {uid for p in packages for uid in p.get("unit_ids", [])}
@@ -23,7 +29,9 @@ def run_counts(run_dir: Path) -> dict[str, int]:
     for manifest in (run_dir / "03_research").glob("*/research_manifest.json"):
         value = read(manifest, {})
         reviewed.update(value.get("reviewed_unit_ids", []))
-    return {"observations": sum(len(u.get("observations", [])) for u in units),
+    if not selected <= {p["package_id"] for p in packages}:
+        raise ValueError("admission references missing packages; cannot publish misleading counts")
+    return {"observations": sum(len(u.get("observations", u.get("item_ids", []))) for u in units),
             "information": len(units), "candidate_information": len(candidate_units),
             "packages": len(packages), "scheduled_packages": len(selected),
             "scheduled_information": len(scheduled_units),

@@ -75,6 +75,22 @@ def test_counts_do_not_confuse_information_and_packages(tmp_path):
     assert "[阅读](report://a)（输入信息：3 条）" in content
 
 
+def test_counts_support_historical_objects_and_legacy_packages(tmp_path):
+    routing = tmp_path / "02_routing"
+    atomic_write_jsonl(routing / "units.jsonl", [{"unit_id": "u", "item_ids": ["one", "two"]}])
+    atomic_write_json(routing / "objects.json", [{"object_id": "a", "unit_ids": ["u"]}])
+    admission = tmp_path / "03_research/phase3_admission.json"
+    atomic_write_json(admission, {"selected_object_ids": ["a"]})
+    counts = run_counts(tmp_path)
+    assert counts["observations"] == 2 and counts["scheduled_information"] == 1
+    assert counts["packages"] == 1 and counts["unscheduled_packages"] == 0
+    atomic_write_json(routing / "packages.json", [{"package_id": "a", "investigate_unit_ids": ["u"], "supporting_unit_ids": ["u"]}])
+    assert run_counts(tmp_path) == counts
+    atomic_write_json(admission, {"selected_object_ids": ["missing"]})
+    with pytest.raises(ValueError, match="missing packages"):
+        run_counts(tmp_path)
+
+
 @pytest.mark.asyncio
 async def test_article_retry_is_durable_and_recovers():
     class State:
