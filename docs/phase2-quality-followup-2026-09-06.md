@@ -1,8 +1,7 @@
 # Phase 2 quality follow-up — 2026-09-06
 
-Status: semantic, cost, large-package review and installed integration gates passed;
-final packaging and production cutover are pending.
-**Not deployed.**
+Status: semantic, cost, large-package review and installed integration gates passed.
+**Deployed locally: `08f1bcd5770a`.** See [the deployment record](release-quality-2026-09-06.md).
 
 ## Current continuation checkpoint
 
@@ -146,7 +145,7 @@ be claimed as a demonstrated cause of production fragmentation**.
   reuses annotation/embedding caches; no collection, research leads or publication.
 - Do not switch production until semantic errors, all large-package membership audits,
   cross-day regression gates, cost comparison and installed smoke are complete.
-- Current production snapshot and existing published reports remain untouched.
+- During isolated experiments, the prior production snapshot and published reports were not modified.
 
 ## First full-corpus result (not accepted)
 
