@@ -5,7 +5,7 @@
   "description": "Pinned external CLIs used by AI Intelligence Radar",
   "license": "MIT",
   "dependencies": {
-    "@larksuite/cli": "1.0.68",
-    "@openai/codex": "0.151.0"
+    "@larksuite/cli": "1.0.93",
+    "@openai/codex": "0.153.2"
   }
 }
