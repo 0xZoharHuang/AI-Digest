@@ -124,7 +124,7 @@ The active final checks are Phase 2 context-guard runs for September 6–8, thei
 review and retention audit, the precision regression, and the final mixed pipeline smoke.
 Production is still `6beac11858bf`; no feature flags have been enabled in its configuration.
 
-## Current release decision: NO-GO for the proposed Phase 2 question partition
+## Previous release decision: NO-GO for the proposed Phase 2 question partition
 
 Latest source checks passed: 286 tests, 86.68% measured core coverage, Ruff and Mypy.
 All supervised experiments have finished or were explicitly stopped; no new production
@@ -143,3 +143,63 @@ inside independently tracked multi-package tasks. Keep the tested dynamic task m
 identity/context safeguards, immutable evidence and owner-only Wiki publishing; remove the
 default requirement to split Phase 2 objects into research questions. Do not enable the new
 production flags merely because structural tests pass.
+
+## Approved boundary correction: grounded objects, independent research tasks
+
+The user approved removing forced research-question subdivision. `grounded_objects_v1`
+now preserves the upstream grounded object/event partition, IDs, labels and memberships.
+The former question organizer only attaches identity/fingerprint history context; it makes
+zero model calls and never re-partitions evidence. Canonical paper grounding, exact article
+identity and missing-context abstention remain. Phase 3 owns research questions and depth.
+
+Fresh full-day cache replays (unchanged imported policy hashes, zero new model calls):
+
+| Day | Normalized information | Packages | Singleton packages | Largest package |
+| --- | ---: | ---: | ---: | ---: |
+| September 6 | 3,217 | 2,605 | 2,529 | 167 |
+| September 7 | 3,098 | 2,508 | 2,433 | 141 |
+| September 8 | 3,766 | 2,986 | 2,858 | 126 |
+
+These distributions do not prove perfect classification: they show why coverage should
+also improve through independently tracked multi-package research rather than forced
+large-group merging. September 8 budget-zero replay has exactly the same five Phase 2
+artifact hashes. The 20-package precision regression completed with 20 supported decisions,
+20 recognized signals and zero cross-package claims in the source-grounded draft review;
+manual precision checks remain necessary alongside that model review.
+
+New object-level pair reviews explicitly accept grounded shared objects as well as shared
+events/questions, but not a generic company/domain relationship. They retain the old relation
+labels and evidence, and record the changed acceptance contract. Previous failed strict
+question-partition reviews remain unchanged; new results are not comparable population
+accuracy estimates. Deployment is still gated on these reviews, joint dynamic admission
+and the final no-publish pipeline smoke.
+
+## Production selection: dynamic Phase 3, stable Phase 2 partition
+
+The additional full-source grounding review did not reliably beat the installed
+object/event partition. The final candidate's September 7 fixed diagnostic had 24
+disagreements, equal to the baseline's 24, with different errors. These are diagnostic
+pairs, not population accuracy. Stronger verification is not proof of a better aggregate
+partition; do not enable `phase2_evidence_packets` in this release. The forced question
+organizer has been removed from code, and further grounded-object experiments stay gated.
+
+Production configuration selects `phase2_evidence_packets=false`,
+`phase3_dynamic_tasks=true`, `phase3_task_max_packages=20`, and 15 daily research tasks.
+Existing Luna/medium labels, Sol/high aliases and admission, Sol/medium research and
+Terra/high brief profiles are preserved. Priority/exploration are selection roles rather
+than fixed 12+3 worker pools. Large cases can occupy a whole task; small packages share
+a thread but retain separate sources, decisions and reports. Phase 2 is never truncated
+to match daily research budget.
+
+The current-code stable Phase 2 September 8 cache replay reproduced all 2,869 package IDs
+and memberships, labels.jsonl, units.jsonl and catalog.jsonl byte-for-byte. The sole package
+label difference is normalized DOI spelling (`doi:10.1073/pnas.2520070123`), not membership.
+The experimental joint allocation selected 84 packages / 217 information units into 15
+tasks (16 exploration), compared with the old day's 42 packages / 174 units. This is planned
+coverage, not completed reports, and is not the final stable-partition allocation receipt.
+
+Current full suite: 289 tests, 86.63% measured core coverage, Ruff and Mypy passed.
+The no-publish dynamic smoke completed 6/6 package outcomes (2 reports, 4 not-published),
+with no failures, six non-empty Wiki pages, no unresolved internal links and queue traversal
+through archive. Its Phase 2 artifacts also match a current-code deterministic replay.
+Installed-runtime checks and stable-partition joint admission remain the cutover gates.

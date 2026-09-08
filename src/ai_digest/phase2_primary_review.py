@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+from .phase2_subjects import has_subject_mention
 from .utils import atomic_write_json
 
 INSTRUCTIONS = (
@@ -23,7 +24,7 @@ INSTRUCTIONS = (
 
 async def review_primary(root: Path, votes: list[dict[str, str]], documents: dict[str, Any],
                          units: dict[str, str], call: Callable[..., Awaitable[Any]],
-                         concurrency: int) -> dict[str, str]:
+                         concurrency: int, *, verify_grounding: bool = False) -> dict[str, str]:
     choices: dict[str, set[str]] = defaultdict(set)
     owners: dict[str, set[str]] = defaultdict(set)
     for vote in votes:
@@ -37,7 +38,10 @@ async def review_primary(root: Path, votes: list[dict[str, str]], documents: dic
     deferred = []
     for pid, names in sorted(choices.items()):
         document = documents[units[pid]]
-        if (len(names) < 2 or not any(len(owners[key]) > 1 for key in names)
+        needs_grounding = verify_grounding and any(
+            key.startswith("topic:") or (key.startswith("object:") and not has_subject_mention(key, document))
+            for key in names)
+        if ((len(names) < 2 and not needs_grounding) or not any(len(owners[key]) > 1 for key in names)
             or any(o.get("item_type") in {"paper", "hf_daily_paper", "github_repository"} for o in document["observations"])):
             continue
         # Full source payloads, without repeated storage hashes/cursor bookkeeping.

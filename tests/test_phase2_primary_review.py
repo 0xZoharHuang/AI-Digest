@@ -6,6 +6,17 @@ import pytest
 from ai_digest.phase2_primary_review import review_primary
 
 
+@pytest.mark.asyncio
+async def test_single_topic_proposal_still_needs_original_grounding(tmp_path):
+    docs = {key: {"observations": [{"item_type": "post", "payload": {"text": text}}]}
+            for key, text in {"a": "A specific index update", "b": "There's a lot of those now"}.items()}
+    async def call(root, data, schema, prompt):
+        return {alias: "unresolved" for alias in data}
+    result = await review_primary(tmp_path, [{"a": "topic:index", "b": "topic:index"}],
+        docs, {key: key for key in docs}, call, 1, verify_grounding=True)
+    assert result == {"a": "unit:a", "b": "unit:b"}
+
+
 def test_doctor_checks_alias_profile_only_when_enabled():
     from ai_digest.config import CodexConfig, RuntimeConfig
     from ai_digest.doctor import codex_profiles

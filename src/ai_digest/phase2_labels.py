@@ -569,7 +569,7 @@ class SemanticPhase2:
             manifest = json.loads((root / "phase2_manifest.json").read_text())
             if (manifest.get("input_hash") != input_hash
                 or manifest.get("evidence_packets_version", 0) != (2 if self.runtime.codex.phase2_evidence_packets else 0)
-                or (self.runtime.codex.phase2_evidence_packets and (manifest.get("grouping_contract") != "evidence_questions_v3"
+                or (self.runtime.codex.phase2_evidence_packets and (manifest.get("grouping_contract") != "grounded_objects_v3"
                     or manifest.get("context_policy_version") != 2 or manifest.get("paper_grounding_version") != 1))):
                 raise ValueError("sealed Phase 2 input changed")
             return load_routing(root)
@@ -722,7 +722,7 @@ class SemanticPhase2:
                 "contract": CONTRACT,
                 "evidence_packets_version": 2 if self.runtime.codex.phase2_evidence_packets else 0,
                 "prompt_version": PROMPT_VERSION,
-                "grouping_contract": "evidence_questions_v3" if self.runtime.codex.phase2_evidence_packets else
+                "grouping_contract": "grounded_objects_v3" if self.runtime.codex.phase2_evidence_packets else
                     "named_primary_subjects_v1" if self.runtime.codex.phase2_subject_keys else "primary_subject_identities_v2",
                 "subject_grounding_version": 1 if self.runtime.codex.phase2_subject_keys else 0,
                 "subject_alias_version": 1 if self.runtime.codex.phase2_subject_keys else 0,
@@ -867,8 +867,16 @@ class SemanticPhase2:
             original_votes = named_votes
             named_votes = [{pid: aliases.get(key, key) or ("unit:" + pid) for pid, key in vote.items()}
                            for vote in named_votes]
-            overrides = await review_primary(work / "primary-review", named_votes, documents,
-                {p.package_id: p.unit_ids[0] for p in packages}, self.call, self.runtime.codex.router_reader_concurrency)
+            review_start = len(alias_engine.calls)
+            try:
+                overrides = await review_primary(work / "primary-review", named_votes, documents,
+                    {p.package_id: p.unit_ids[0] for p in packages},
+                    alias_engine.call if self.runtime.codex.phase2_evidence_packets else self.call,
+                    self.runtime.codex.router_reader_concurrency,
+                    verify_grounding=self.runtime.codex.phase2_evidence_packets)
+            finally:
+                self.calls.extend({**call, "stage": "primary_grounding"}
+                                  for call in alias_engine.calls[review_start:])
             self.deferred_primary_count = len(json.loads((work / "primary-review" / "plan.json").read_text())["deferred_package_ids"])
             components, subject_keys = subject_components(list(by_id), named_votes, documents,
                 {p.package_id: p.unit_ids[0] for p in packages}, exact_duplicate_groups(packages, documents), overrides,
@@ -899,6 +907,7 @@ class SemanticPhase2:
                 if subject_keys:
                     key = subject_keys[package.package_id]
                     label = (unresolved_subject_label(documents[package.unit_ids[0]]) if key.startswith("unit:")
+                             else package.label_zh if key.startswith("post:")
                              else (titles[package.package_id] or key.split(":", 1)[1]) if key.startswith("paper:")
                              else key.split(":", 1)[1])
                 result.append(package.model_copy(update={"label_zh": label}))
@@ -906,7 +915,7 @@ class SemanticPhase2:
             ids = sorted(uid for package in originals for uid in package.unit_ids)
             representative = max(originals, key=lambda p: (bool(titles[p.package_id]), anchored[p.package_id], support[p.package_id], p.package_id))
             key = subject_keys.get(representative.package_id, "unit:")
-            label = key.split(":", 1)[1] if not key.startswith(("unit:", "paper:")) else (titles[representative.package_id] or representative.label_zh)
+            label = key.split(":", 1)[1] if not key.startswith(("unit:", "paper:", "post:")) else (titles[representative.package_id] or representative.label_zh)
             result.append(ResearchPackage(package_id="p_" + digest(ids)[:20], label_zh=label,
                 scope_note_zh="同一具体对象、事件或窄问题；研究范围由本包独立 Agent 确定。", unit_ids=ids))
         return result

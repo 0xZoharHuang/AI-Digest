@@ -172,7 +172,8 @@ def subject_components(ids: list[str], votes: list[dict[str, str]],
             if not grounded_paper_assignment(key, document, names, aliases):
                 keys[pid] = "unit:" + pid
                 continue
-        if key.startswith("object:") and not has_subject_mention(key, document):
+        if (key.startswith("object:") and not has_subject_mention(key, document)
+            and not (identities is not None and (overrides or {}).get(pid) == key)):
             references = [str(ref.get("id")) for o in document.get("observations", [])
                           for ref in o.get("payload", {}).get("references") or [] if isinstance(ref, dict)]
             if not any(key in post_subjects.get(ref, set()) or any(
@@ -184,6 +185,21 @@ def subject_components(ids: list[str], votes: list[dict[str, str]],
         key = next(iter(subjects)) if len(subjects) == 1 else "unit:" + min(group)
         for pid in group:
             keys[pid] = key
+    if identities is not None:
+        # Abstaining from a named object need not discard an explicit shared
+        # quotation anchor. Only unresolved units with one captured quotation
+        # participate; named objects and multi-target comparisons cannot bridge.
+        for pid, key in list(keys.items()):
+            if not key.startswith("unit:"):
+                continue
+            quoted_references = [ref for o in documents[units[pid]].get("observations", [])
+                          for ref in o.get("payload", {}).get("references") or [] if isinstance(ref, dict)]
+            targets = {str(ref["id"]) for ref in quoted_references if ref.get("id") and ref.get("text")
+                       and ref.get("type") in {"quoted", "retweeted"}}
+            all_targets = {str(ref["id"]) for ref in quoted_references if ref.get("id")
+                           and ref.get("type") in {"quoted", "retweeted"}}
+            if len(targets) == 1 and targets == all_targets:
+                keys[pid] = "post:" + next(iter(targets))
     groups: dict[str, list[str]] = defaultdict(list)
     for pid in ids:
         groups[keys[pid]].append(pid)

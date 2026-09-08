@@ -10,8 +10,26 @@ from ai_digest.evidence_identity import (
 )
 
 
+def test_unresolved_quoted_anchors_do_not_bridge_named_objects_or_multiple_targets():
+    from ai_digest.phase2_subjects import subject_components
+    quote = {"id": "123", "text": "Original report", "type": "quoted"}
+    docs = {uid: {"observations": [{"payload": {"references": [quote]}}]} for uid in "abcd"}
+    docs["d"] = {"observations": [{"payload": {"references": [quote, {**quote, "id": "456"}]}}]}
+    _, keys = subject_components(list(docs), [{"c": "topic:different"}], docs,
+                                 {uid: uid for uid in docs}, identities={})
+    assert keys == {"a": "post:123", "b": "post:123", "c": "topic:different", "d": "unit:d"}
+
+
 def document(kind, **payload):
     return {"observations": [{"item_type": kind, "payload": payload}]}
+
+
+def test_full_original_review_can_confirm_a_translated_object_name():
+    from ai_digest.phase2_subjects import subject_components
+    docs = {"a": document("post", text="A specific English product announcement")}
+    _, keys = subject_components(["a"], [{"a": "object:经核实的中文名称"}], docs, {"a": "a"},
+        overrides={"a": "object:经核实的中文名称"}, identities={})
+    assert keys["a"] == "object:经核实的中文名称"
 
 
 def test_exact_title_repost_joins_paper_not_comparison_or_ambiguous_title():

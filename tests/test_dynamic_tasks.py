@@ -32,7 +32,7 @@ def test_dynamic_contract_covers_every_selected_package_once():
 
 
 @pytest.mark.asyncio
-async def test_object_facets_preserve_members_and_exact_paper_identity(tmp_path):
+async def test_context_preserves_upstream_partition_without_research_planning(tmp_path):
     def doc(kind, **payload):
         return {"observations": [{"item_type": kind, "payload": payload}]}
     docs = {"paper": doc("paper", arxiv_id="2609.04661", title="Interpretability for Turing Machines"),
@@ -44,10 +44,11 @@ async def test_object_facets_preserve_members_and_exact_paper_identity(tmp_path)
     class Labeler:
         runtime = RuntimeConfig()
         async def call(self, work, data, schema, prompt):
-            return {row["group_id"]: row["group_id"] for row in data["groups"]}
+            raise AssertionError("context generation must not call a model")
     packages = [package("p_paper", ["paper"]), package("p_tweet", ["tweet"]), package("p_astra", ["pricing", "robot"])]
     output, context = await organize_packets(tmp_path, packages, docs, Labeler())
-    assert {frozenset(p.unit_ids) for p in output} == {frozenset(["paper", "tweet"]), frozenset(["pricing"]), frozenset(["robot"])}
+    assert output == packages
+    assert context["p_paper"]["identity_key"] == context["p_tweet"]["identity_key"] == "paper:2609.04661"
     assert set(context) == {p.package_id for p in output}
     assert json.loads((tmp_path / "packet_context.json").read_text()) == context
 

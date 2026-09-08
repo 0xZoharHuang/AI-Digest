@@ -23,6 +23,8 @@ async def main():
     args = parser.parse_args()
     source, target = args.source.resolve(), args.target.resolve()
     runtime = load_runtime_config()
+    runtime.codex.phase3_dynamic_tasks = True
+    runtime.codex.phase3_task_max_packages = args.capacity
     if (target == source or target in source.parents or source in target.parents
         or target == runtime.runtime_root.resolve() or target == runtime.shared_runtime_root.resolve()):
         raise ValueError("experiment must be isolated")
@@ -44,8 +46,6 @@ async def main():
         _copy_recent_history(runtime, run, run)
     before = {p.name: file_sha256(p) for p in routing.iterdir() if p.is_file()}
     packages, _, _ = load_phase3_inputs(routing)
-    runtime.codex.phase3_dynamic_tasks = True
-    runtime.codex.phase3_task_max_packages = args.capacity
     runner = CodexRunner(runtime.codex.binary)
     result = await dynamic_admission(run, packages, runtime, runner)
     replay = await dynamic_admission(run, packages, runtime, runner)
