@@ -203,3 +203,21 @@ The no-publish dynamic smoke completed 6/6 package outcomes (2 reports, 4 not-pu
 with no failures, six non-empty Wiki pages, no unresolved internal links and queue traversal
 through archive. Its Phase 2 artifacts also match a current-code deterministic replay.
 Installed-runtime checks and stable-partition joint admission remain the cutover gates.
+
+### Cutover result
+
+Deployed `app-a791e341c5cc-20260908T111433Z` locally on September 8. Stable-partition
+joint admission selected 88 packages / 247 normalized information units / 414 observations
+into 15 tasks (16 exploration; actual task sizes 1–8). This is planned coverage, not 88
+completed reports. Installed no-publish smoke passed: 6/6 outcomes, 4 reports, 2 not-published,
+zero failures, eight non-empty Wiki pages, valid links and complete queue traversal.
+Installed doctor, real launchd Codex/Lark authentication, exact-reference read-only probe,
+module byte comparison and budget 0-versus-15 Phase 2 hash equivalence passed.
+
+All three loaded services point to the new snapshot, with exit 0 and empty active queues.
+Rollback is `app-6beac11858bf-20260906T143722Z`; retention deleted no snapshots. The detailed
+local receipt is under `deployments/20260908-dynamic/acceptance.md` in the runtime root.
+Natural next-day editorial quality and duration remain unobserved. Experimental Phase 2
+evidence routing stays OFF: the new grouping candidates did not establish stable superiority
+over the existing partition, so the release must not be described as solving all Phase 2
+classification errors.
