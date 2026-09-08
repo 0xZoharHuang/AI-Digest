@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .codex_runner import CodexRunner, RetryableCodexError
 from .config import RuntimeConfig
-from .evidence_identity import primary_identities
+from .evidence_identity import missing_context, primary_identities
 from .models import Assignment, Bundle, ObservationUnit, ResearchPackage, RoutingOutput, SourceItem
 from .phase2_attention import build_phase2_unit_documents, codex_summary, file_sha256
 from .store import parse_jsonl_text
@@ -314,6 +314,10 @@ def validate_artifacts(root: Path) -> tuple[list[Label], list[ResearchPackage]]:
         or {x.unit_id for x in labels} != set(ids)
     ):
         raise ValueError("final label coverage mismatch")
+    if manifest.get("context_policy_version") == 2:
+        originals = {row["unit_id"]: row for row in units}
+        if any(label.signal == "chatter" and missing_context(originals[label.unit_id]) for label in labels):
+            raise ValueError("missing context cannot be sealed as pure chatter")
     packages = [
         ResearchPackage.model_validate(x) for x in json.loads((root / "packages.json").read_text())
     ]
@@ -565,7 +569,8 @@ class SemanticPhase2:
             manifest = json.loads((root / "phase2_manifest.json").read_text())
             if (manifest.get("input_hash") != input_hash
                 or manifest.get("evidence_packets_version", 0) != (2 if self.runtime.codex.phase2_evidence_packets else 0)
-                or (self.runtime.codex.phase2_evidence_packets and manifest.get("grouping_contract") != "evidence_questions_v3")):
+                or (self.runtime.codex.phase2_evidence_packets and (manifest.get("grouping_contract") != "evidence_questions_v3"
+                    or manifest.get("context_policy_version") != 2))):
                 raise ValueError("sealed Phase 2 input changed")
             return load_routing(root)
         work = root / CONTRACT
@@ -626,7 +631,8 @@ class SemanticPhase2:
                     types = {o["item_type"] for o in document["observations"]}
                     if types and types <= {"paper", "hf_daily_paper"}:
                         label.kind = "paper"
-                    if label.signal == "chatter" and incomplete_context(document):
+                    if label.signal == "chatter" and (incomplete_context(document)
+                        or (self.runtime.codex.phase2_evidence_packets and missing_context(document))):
                         label.signal = "unclear"
                         label.local_group_id = f"unobserved_{label.unit_id}"
                         title = next((str(o["payload"]["title"]) for o in document["observations"]
@@ -734,6 +740,7 @@ class SemanticPhase2:
                 "eligibility_version": 1,
                 "eligibility_counts": dict(Counter(x.research_eligibility for x in labels)),
                 "context_abstention_count": self.context_abstentions,
+                "context_policy_version": 2 if self.runtime.codex.phase2_evidence_packets else 1,
                 "discard_verification_version": 1,
                 "discard_verified_count": exclusion_count,
                 "discard_rescued_unit_ids": sorted(self.rescued_units),

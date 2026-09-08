@@ -2,7 +2,12 @@ from copy import deepcopy
 
 import pytest
 
-from ai_digest.evidence_identity import content_fingerprint, paper_identity, primary_identities
+from ai_digest.evidence_identity import (
+    content_fingerprint,
+    missing_context,
+    paper_identity,
+    primary_identities,
+)
 
 
 def document(kind, **payload):
@@ -38,6 +43,18 @@ def test_explicit_unique_doi_alias_shares_arxiv_identity():
     docs = {"a": document("paper", arxiv_id="2609.04661", doi="10.1234/paper", title="Paper title sufficiently long"),
             "b": document("paper", doi="https://doi.org/10.1234/PAPER", title="Published paper title")}
     assert primary_identities(docs) == {"a": "paper:2609.04661", "b": "paper:2609.04661"}
+
+
+def test_missing_parent_and_uninspected_media_are_uncertain_not_chatter():
+    reply = document("x_post", post_id="child", text="Interesting!",
+        references=[{"id": "parent", "type": "replied_to"}])
+    assert missing_context(reply)
+    reply["observations"].append({"payload": {"post_id": "parent", "text": "A concrete release"}})
+    assert not missing_context(reply)
+    assert missing_context(document("x_post", text="wow", entities={"media": [{"url": "https://example.test/photo"}]}))
+    assert missing_context(document("x_post", text="wow", media_urls=["https://pbs.twimg.com/media/photo"]))
+    assert missing_context(document("x_post", text="See https://t.co/unknown"))
+    assert not missing_context(document("x_post", text="hello"))
 
 
 def test_packet_context_is_hashed_and_checked_against_originals(tmp_path):

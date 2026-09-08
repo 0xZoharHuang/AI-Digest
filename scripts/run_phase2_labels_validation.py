@@ -39,6 +39,8 @@ async def main() -> None:
     parser.add_argument("--comparison-max-groups", type=int, default=256)
     parser.add_argument("--subject-keys", action="store_true")
     parser.add_argument("--evidence-packets", action="store_true")
+    parser.add_argument("--phase3-limit", type=int, choices=range(0, 1001), default=15,
+                        help="Verify Phase 2 is independent of downstream task limits")
     parser.add_argument("--alias-model", default="gpt-5.6-luna")
     parser.add_argument("--alias-reasoning", default="medium", choices=["low", "medium", "high"])
     args = parser.parse_args()
@@ -79,6 +81,7 @@ async def main() -> None:
         router_reader_concurrency=args.concurrency,
         phase2_comparison_max_groups=args.comparison_max_groups, phase2_subject_keys=args.subject_keys,
         phase2_evidence_packets=args.evidence_packets,
+        phase3_daily_agent_limit=args.phase3_limit,
         phase2_alias_model=args.alias_model, phase2_alias_reasoning=args.alias_reasoning)
     if args.reuse_work:
         previous = args.reuse_work.resolve() / "02_routing" / "semantic_labels_v1"

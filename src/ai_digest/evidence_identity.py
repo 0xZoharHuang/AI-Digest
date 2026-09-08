@@ -86,6 +86,28 @@ def content_fingerprint(document: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(encoded, ensure_ascii=False).encode()).hexdigest()
 
 
+def missing_context(document: dict[str, Any]) -> bool:
+    """A missing parent or uninspected media is not proof of pure chatter."""
+    observations = document.get("observations", [])
+    def readable(value: Any) -> bool:
+        return isinstance(value, str) and bool(value.strip())
+    captured = {str(o.get("payload", {}).get("post_id")) for o in observations
+                if o.get("payload", {}).get("post_id") and readable(o.get("payload", {}).get("text"))}
+    for observation in observations:
+        payload = observation.get("payload", {})
+        for ref in payload.get("references") or []:
+            if (isinstance(ref, dict) and ref.get("type") in {"quoted", "replied_to", "retweeted"}
+                and not readable(ref.get("text")) and (not ref.get("id") or str(ref.get("id")) not in captured)):
+                return True
+        entities = payload.get("entities") if isinstance(payload.get("entities"), dict) else {}
+        attachments = payload.get("attachments") if isinstance(payload.get("attachments"), dict) else {}
+        media = (payload.get("media") or payload.get("media_urls") or payload.get("images") or payload.get("videos")
+                 or entities.get("media") or attachments.get("media_keys"))
+        if media or payload.get("expanded_links") or re.search(r"https?://", str(payload.get("text") or "")):
+            return True
+    return False
+
+
 def canonical_source_url(value: str) -> str | None:
     """Stable URL key, without weakening URL-host boundaries or removing queries."""
     try:

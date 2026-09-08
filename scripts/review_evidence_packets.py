@@ -26,13 +26,15 @@ async def main():
     docs = {r["unit_id"]: r for r in load_jsonl(args.candidate / "02_routing/units.jsonl")}
     old = {uid: p["package_id"] for p in baseline for uid in p["unit_ids"]}
     new = {uid: p["package_id"] for p in candidate for uid in p["unit_ids"]}
-    if set(old) != set(new):
-        raise ValueError("membership changed; first resolve retention differences")
+    common = set(old) & set(new)
+    retention = {"dropped": sorted(set(old) - set(new)), "added": sorted(set(new) - set(old))}
+    atomic_write_json(args.target / "retention_changes.json", retention)
     strata = defaultdict(set)
     for label, packages in [("baseline_group", baseline), ("candidate_group", candidate)]:
         for package in packages:
             # Fixed bounded source-order sample inside large groups, not all pairs.
-            members = sorted(package["unit_ids"], key=lambda u: hashlib.sha256(u.encode()).hexdigest())[:20]
+            members = sorted((u for u in package["unit_ids"] if u in common),
+                             key=lambda u: hashlib.sha256(u.encode()).hexdigest())[:20]
             strata[label].update(combinations(sorted(members), 2))
     for pair in strata["baseline_group"] | strata["candidate_group"]:
         a, b = pair
@@ -41,7 +43,7 @@ async def main():
     identities = primary_identities(docs)
     regression = set()
     for identity in ["paper:2609.04661", "paper:2607.19704", "paper:2502.09740"]:
-        members = sorted(uid for uid, key in identities.items() if key == identity and uid in new)
+        members = sorted(uid for uid, key in identities.items() if key == identity and uid in common)
         regression.update(combinations(members, 2))
     pairs = set(regression)
     for name, limit in [("changed", 48), ("candidate_group", 32), ("baseline_group", 16)]:
@@ -80,6 +82,7 @@ async def main():
     def errors(key):
         return [r for r in decided if r[key] != (r["relation"] == "same_question")]
     atomic_write_json(args.target / "receipt.json", {"status": "model_assisted_draft", "pairs": len(rows),
+        "retention_changes": retention, "retention_review_required": bool(retention["dropped"]),
         "uncertain": len(rows) - len(decided), "baseline_errors": errors("baseline_same"),
         "candidate_errors": errors("candidate_same"), "calls": reviewer.calls,
         "note": "Stratified diagnostic sample, not a population accuracy estimate; review disagreements against original evidence."})

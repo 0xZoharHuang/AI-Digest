@@ -71,3 +71,34 @@ Preserve original evidence, independent package outcomes and the private Wiki/ow
   Their relative references and hashes remain stable when queue directories move.
 - `scripts/evaluate_dynamic_admission.py` exercises full-catalog admission and deterministic
   replay without launching research or publishing any messages.
+
+## September 8 validation updates (not deployment acceptance yet)
+
+- Source checkpoint: 284 tests passed, 86.64% measured core coverage; Ruff/Mypy passed.
+- Mixed pipeline with evidence packets and dynamic tasks completed 7 observations / 6 packages,
+  4 reports and 2 not-published outcomes, zero failures, full queue import and Wiki dry-run.
+  This proves integration, not full-day semantic quality.
+- Wide-window dynamic admission (`bounded-catalog-v5`) selected 81 packages into 15 tasks
+  from the unchanged 2,869-package baseline, with 14 exploration packages and identical replay.
+  This is planned coverage, not 81 completed research findings. The earlier K+1-window trial
+  was stopped because broad K caused very slow shortlist reduction; all receipts retained.
+- Same 40-package capacity experiment: size 10/20/40 all completed exactly 40 independent
+  outcomes. Source-grounded blind draft scores (grounding / gain / readability):
+  10 = 3.325 / 3.2 / 3.825; 20 = 3.15 / 3.125 / 3.8; 40 = 3.125 / 3.175 / 3.775.
+  Size 10 and 20 had no unsupported decisions, signal misses or cross-package claims in that
+  review. Size 40 had one readership-relevance disagreement; its reverse-order run additionally
+  produced an unsupported capability claim and missed supplied quoted context. Do not deploy 40.
+  Size 20 reverse-order review remains a gate. These small diagnostic scores are not universal
+  quality estimates, and concurrent development load makes timings unsuitable as a daily SLA.
+- Phase 2's 81-pair question-boundary diagnostic had 3 uncertain cases; the initial candidate
+  reduced draft errors from 34 to 14 but introduced avoidable splits of paper commentary and
+  already-coherent events. The implementation now preserves those groups and skips redundant
+  identity decisions on mechanically identified records; do not treat the old pair score as
+  final-candidate acceptance.
+- Label changes on terse replies exposed a retention boundary: missing parent/media/link
+  context now forces abstention from a pure-chatter decision. `context_policy_version=2`
+  validates this at sealing. This preserves uncertainty rather than inventing missing context.
+- Current Phase 2 frozen runs are `evidence-packets-20260906-context-guard`,
+  `evidence-packets-20260907-context-guard`, and `evidence-packets-20260908-context-guard`.
+  Invocation receipts include the actual imported policy-file hashes before/after execution.
+  Require unchanged implementation hashes before treating a run as final-version evidence.
