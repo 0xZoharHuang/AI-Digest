@@ -7,7 +7,7 @@ from collections import Counter, defaultdict
 from typing import Any
 from urllib.parse import urlsplit
 
-from .evidence_identity import paper_identity
+from .evidence_identity import grounded_paper_assignment, normalized_title, paper_identity
 
 INSTRUCTIONS = (
     "为每张卡片标注主要研究对象的规范短名称；同一对象复用完全相同的名称。"
@@ -162,6 +162,16 @@ def subject_components(ids: list[str], votes: list[dict[str, str]],
                 post_subjects[str(post_id)].add(key)
     for pid, key in list(keys.items()):
         document = documents[units[pid]]
+        if identities is not None and key.startswith("paper:"):
+            names = {normalized_title(name.removeprefix("paper:")) for name, targets in paper_aliases.items()
+                     if key in targets and not name.startswith("paper:doi:")}
+            subject_name = key.removeprefix("paper:")
+            if not paper_identity(subject_name) and not subject_name.startswith("doi:"):
+                names.add(normalized_title(subject_name))
+            aliases = {name for name, targets in paper_aliases.items() if key in targets and name.startswith("paper:doi:")}
+            if not grounded_paper_assignment(key, document, names, aliases):
+                keys[pid] = "unit:" + pid
+                continue
         if key.startswith("object:") and not has_subject_mention(key, document):
             references = [str(ref.get("id")) for o in document.get("observations", [])
                           for ref in o.get("payload", {}).get("references") or [] if isinstance(ref, dict)]

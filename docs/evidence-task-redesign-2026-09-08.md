@@ -123,3 +123,23 @@ known cases at beginning/middle/end positions; do not count this as a controlled
 The active final checks are Phase 2 context-guard runs for September 6–8, their semantic
 review and retention audit, the precision regression, and the final mixed pipeline smoke.
 Production is still `6beac11858bf`; no feature flags have been enabled in its configuration.
+
+## Current release decision: NO-GO for the proposed Phase 2 question partition
+
+Latest source checks passed: 286 tests, 86.68% measured core coverage, Ruff and Mypy.
+All supervised experiments have finished or were explicitly stopped; no new production
+deployment or live publication was performed.
+
+The full-day diagnostics still show meaningful same-event evidence being separated: an
+official research-acceleration report's metrics and responses, and reports/responses about
+the same Wiki incident. Exact article URL/title normalization and unsupported paper-name
+assignment guards are implemented and tested, but these local fixes do not establish that
+the question-partitioning architecture meets the semantic acceptance gate.
+
+Recommended boundary revision, awaiting user direction: Phase 2 should label signals and
+aggregate grounded object/event evidence without preplanning or forcing research-question
+subdivision. Phase 3 should own question selection, depth and report/subreport structure
+inside independently tracked multi-package tasks. Keep the tested dynamic task machinery,
+identity/context safeguards, immutable evidence and owner-only Wiki publishing; remove the
+default requirement to split Phase 2 objects into research questions. Do not enable the new
+production flags merely because structural tests pass.

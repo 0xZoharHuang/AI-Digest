@@ -20,6 +20,7 @@ async def main():
     parser.add_argument("--baseline", type=Path, required=True)
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--target", type=Path, required=True)
+    parser.add_argument("--exclude-review", type=Path, action="append", default=[])
     args = parser.parse_args()
     baseline = json.loads((args.baseline / "02_routing/packages.json").read_text())
     candidate = json.loads((args.candidate / "02_routing/packages.json").read_text())
@@ -46,8 +47,11 @@ async def main():
         members = sorted(uid for uid, key in identities.items() if key == identity and uid in common)
         regression.update(combinations(members, 2))
     pairs = set(regression)
+    excluded = {tuple(sorted([r["left"], r["right"]])) for path in args.exclude_review
+                for r in json.loads(path.read_text())}
+    pairs -= excluded
     for name, limit in [("changed", 48), ("candidate_group", 32), ("baseline_group", 16)]:
-        pairs.update(sorted(strata[name], key=lambda p: hashlib.sha256(json.dumps(p).encode()).hexdigest())[:limit])
+        pairs.update(sorted(strata[name] - excluded, key=lambda p: hashlib.sha256(json.dumps(p).encode()).hexdigest())[:limit])
     pairs = sorted(pairs)
     runtime = load_runtime_config()
     runtime.codex.phase2_label_model = "gpt-5.6-sol"

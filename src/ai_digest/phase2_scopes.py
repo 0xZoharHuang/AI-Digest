@@ -26,8 +26,14 @@ def exact_duplicate_groups(packages: list[ResearchPackage], documents: dict[str,
                     parsed = urlsplit(url)
                 except ValueError:
                     continue
-                if title and parsed.scheme in {"http", "https"} and parsed.hostname and parsed.path.strip("/"):
-                    owners[(url, title)].add(package.package_id)
+                if (title and parsed.scheme in {"http", "https"} and parsed.hostname and parsed.path.strip("/")
+                    and not parsed.username and not parsed.password):
+                    query = urlencode(sorted((key, value) for key, value in parse_qsl(parsed.query)
+                        if not key.startswith("utm_") and key not in {"fbclid", "gclid"}))
+                    normalized = f"{parsed.scheme}://{parsed.netloc.casefold()}{parsed.path.rstrip('/')}"
+                    if query:
+                        normalized += "?" + query
+                    owners[(normalized, title)].add(package.package_id)
     return [sorted(group) for group in owners.values() if len(group) > 1]
 
 

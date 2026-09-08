@@ -570,7 +570,7 @@ class SemanticPhase2:
             if (manifest.get("input_hash") != input_hash
                 or manifest.get("evidence_packets_version", 0) != (2 if self.runtime.codex.phase2_evidence_packets else 0)
                 or (self.runtime.codex.phase2_evidence_packets and (manifest.get("grouping_contract") != "evidence_questions_v3"
-                    or manifest.get("context_policy_version") != 2))):
+                    or manifest.get("context_policy_version") != 2 or manifest.get("paper_grounding_version") != 1))):
                 raise ValueError("sealed Phase 2 input changed")
             return load_routing(root)
         work = root / CONTRACT
@@ -741,6 +741,7 @@ class SemanticPhase2:
                 "eligibility_counts": dict(Counter(x.research_eligibility for x in labels)),
                 "context_abstention_count": self.context_abstentions,
                 "context_policy_version": 2 if self.runtime.codex.phase2_evidence_packets else 1,
+                "paper_grounding_version": 1 if self.runtime.codex.phase2_evidence_packets else 0,
                 "discard_verification_version": 1,
                 "discard_verified_count": exclusion_count,
                 "discard_rescued_unit_ids": sorted(self.rescued_units),

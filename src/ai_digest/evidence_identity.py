@@ -86,6 +86,33 @@ def content_fingerprint(document: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(encoded, ensure_ascii=False).encode()).hexdigest()
 
 
+def grounded_paper_assignment(key: str, document: dict[str, Any],
+                              titles: set[str], aliases: set[str] | None = None) -> bool:
+    """Similarity to a known paper's topic is not evidence of paper identity."""
+    accepted = {key, *(aliases or set())}
+    for link in document.get("resolved_links", []):
+        if paper_identity(str(link)) in accepted:
+            return True
+    for observation in document.get("observations", []):
+        payload = observation.get("payload", {})
+        links = [payload.get("arxiv_id"), payload.get("doi"), payload.get("url"),
+                 *(payload.get("expanded_links") or [])]
+        if any(paper_identity(str(value or "")) in accepted for value in links):
+            return True
+        texts = [str(payload.get(field) or "") for field in ("title", "text", "quoted_text")]
+        texts += [str(ref.get("text") or "") for ref in payload.get("references") or [] if isinstance(ref, dict)]
+        for text in texts:
+            urls = re.findall(r"https?://[^\s)\]>]+", text)
+            if any(paper_identity(url) in accepted for url in urls):
+                return True
+            explicit_ids = re.findall(r"\barxiv:\s*(\d{4}\.\d{4,5}(?:v\d+)?)", text, re.IGNORECASE)
+            if any(paper_identity(identifier) in accepted for identifier in explicit_ids):
+                return True
+            if any(len(title) >= 20 and title in normalized_title(text) for title in titles):
+                return True
+    return False
+
+
 def missing_context(document: dict[str, Any]) -> bool:
     """A missing parent or uninspected media is not proof of pure chatter."""
     observations = document.get("observations", [])

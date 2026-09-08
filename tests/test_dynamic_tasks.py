@@ -147,3 +147,19 @@ async def test_broad_pool_reduces_geometrically_instead_of_k_plus_one(tmp_path):
     before = ranker.calls
     assert (await select_bounded(tmp_path, rows, "", 300, runtime, ranker))[0] == selected
     assert ranker.calls == before
+
+
+@pytest.mark.asyncio
+async def test_exact_primary_article_is_not_split_by_question_estimates(tmp_path):
+    docs = {uid: {"observations": [{"item_type": kind, "payload": {
+        "title": "An Alien Mind", "url": "https://openai.com/index/an-alien-mind/"}}]}
+        for uid, kind in [("a", "article"), ("b", "hackernews_story")]}
+    docs["a"]["observations"][0]["payload"]["url"] = "https://openai.com/index/an-alien-mind?utm_source=rss"
+    package = ResearchPackage(package_id="old", label_zh="An Alien Mind", scope_note_zh="article", unit_ids=["a", "b"])
+    class Labeler:
+        runtime = RuntimeConfig()
+        async def call(self, work, data, schema, prompt):
+            return {row["group_id"]: row["group_id"] for row in data["groups"]}
+    result, _ = await organize_packets(tmp_path, [package], docs, Labeler(),
+        {"a": "object:an alien mind", "b": "object:an alien mind"})
+    assert len(result) == 1 and result[0].unit_ids == ["a", "b"]

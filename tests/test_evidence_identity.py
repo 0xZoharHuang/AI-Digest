@@ -57,6 +57,20 @@ def test_missing_parent_and_uninspected_media_are_uncertain_not_chatter():
     assert not missing_context(document("x_post", text="hello"))
 
 
+def test_topic_similarity_cannot_authorize_a_paper_assignment():
+    from ai_digest.phase2_subjects import subject_components
+    docs = {"a": document("paper", arxiv_id="2608.26178", title="AI Revealed Preferences"),
+            "b": document("x_post", text="Verifiability facilitates communication when preferences are misaligned",
+                          expanded_links=["https://www.nber.org/papers/w35712"])}
+    groups, _ = subject_components(["pa", "pb"], [{"pa": "paper:2608.26178", "pb": "paper:2608.26178"}],
+        docs, {"pa": "a", "pb": "b"}, identities=primary_identities(docs))
+    assert {frozenset(g) for g in groups} == {frozenset(["pa"]), frozenset(["pb"])}
+    docs["b"]["observations"][0]["payload"]["expanded_links"] = ["https://arxiv.org/abs/2608.26178"]
+    groups, _ = subject_components(["pa", "pb"], [{"pa": "paper:2608.26178", "pb": "paper:2608.26178"}],
+        docs, {"pa": "a", "pb": "b"}, identities=primary_identities(docs))
+    assert groups == [["pa", "pb"]]
+
+
 def test_packet_context_is_hashed_and_checked_against_originals(tmp_path):
     from ai_digest.phase2_attention import file_sha256
     from ai_digest.phase2_labels import validate_artifacts
