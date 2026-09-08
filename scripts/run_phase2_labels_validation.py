@@ -10,9 +10,12 @@ import time
 from collections import Counter
 from pathlib import Path
 
+import ai_digest
 from ai_digest.codex_runner import CodexRunner
 from ai_digest.config import CodexConfig, RuntimeConfig
+from ai_digest.phase2_attention import file_sha256
 from ai_digest.phase2_labels import SemanticPhase2
+from ai_digest.utils import atomic_write_json
 from ai_digest.v3 import build_observation_units, load_phase1_items
 
 
@@ -89,6 +92,14 @@ async def main() -> None:
                 )
     runtime = RuntimeConfig(codex=config)
     start = time.monotonic()
+    policy_root = Path(ai_digest.__file__).parent
+    policy_files = [policy_root / name for name in (
+        "phase2_labels.py", "phase2_subjects.py", "phase2_aliases.py", "phase2_primary_review.py",
+        "phase2_scopes.py", "semantic_index.py", "evidence_identity.py", "evidence_packets.py", "link_identity.py")]
+    policy_before = {p.name: file_sha256(p) for p in policy_files}
+    invocation = target / "validation_invocations" / f"{time.time_ns()}.json"
+    atomic_write_json(invocation, {"status": "started", "source": str(source),
+        "policy_hashes": policy_before, "codex_config": config.model_dump()})
     runner = CacheOnlyRunner(config.binary) if args.cache_only else CodexRunner(config.binary)
     routing = await SemanticPhase2(runtime, runner).run(
         target, items, units, ""
@@ -101,6 +112,13 @@ async def main() -> None:
         usage.update(tokens)
         if not call.get("reused", False):
             executed_usage.update(tokens)
+    policy_after = {p.name: file_sha256(p) for p in policy_files}
+    atomic_write_json(invocation, {"status": "completed", "source": str(source),
+        "policy_hashes": policy_before, "policy_hashes_after": policy_after,
+        "implementation_unchanged_during_run": policy_before == policy_after,
+        "codex_config": config.model_dump(), "unit_count": len(units),
+        "package_count": len(routing.bundles), "elapsed_seconds": time.monotonic() - start,
+        "executed_usage": dict(executed_usage)})
     print(
         json.dumps(
             {

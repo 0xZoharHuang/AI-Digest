@@ -23,6 +23,8 @@ def test_exact_title_repost_joins_paper_not_comparison_or_ambiguous_title():
 def test_identity_and_content_revision_are_separate():
     assert paper_identity("https://arxiv.org/pdf/2609.04661v2.pdf") == "paper:2609.04661"
     assert paper_identity("https://arxiv.org.evil.test/abs/2609.04661") is None
+    assert paper_identity("https://doi.org/10.1234/Example.X") == "paper:doi:10.1234/example.x"
+    assert paper_identity("https://doi.org.evil.test/10.1234/Example.X") is None
     old = document("paper", arxiv_id="2609.04661", title="Title", version=1, metrics={"likes": 1})
     new = deepcopy(old)
     new["observations"][0]["payload"]["metrics"]["likes"] = 99
@@ -30,6 +32,12 @@ def test_identity_and_content_revision_are_separate():
     new["observations"][0]["payload"]["version"] = 2
     assert content_fingerprint(old) != content_fingerprint(new)
     assert primary_identities({"old": old, "new": new})["old"] == primary_identities({"old": old, "new": new})["new"]
+
+
+def test_explicit_unique_doi_alias_shares_arxiv_identity():
+    docs = {"a": document("paper", arxiv_id="2609.04661", doi="10.1234/paper", title="Paper title sufficiently long"),
+            "b": document("paper", doi="https://doi.org/10.1234/PAPER", title="Published paper title")}
+    assert primary_identities(docs) == {"a": "paper:2609.04661", "b": "paper:2609.04661"}
 
 
 def test_packet_context_is_hashed_and_checked_against_originals(tmp_path):
@@ -55,3 +63,28 @@ def test_packet_context_is_hashed_and_checked_against_originals(tmp_path):
     seal()
     with pytest.raises(ValueError, match="original evidence"):
         validate_artifacts(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_complete_typed_paper_needs_no_model_for_existence_or_identity(tmp_path):
+    import json
+
+    from ai_digest.config import RuntimeConfig
+    from ai_digest.models import SourceItem
+    from ai_digest.phase2_labels import SemanticPhase2, validate_artifacts
+    from ai_digest.v3 import build_observation_units
+    item = SourceItem(item_id="paper-one", source="arxiv", surface="arxiv", item_type="paper",
+        entity_key="arxiv:2609.04661", payload={"arxiv_id": "2609.04661", "title": "Interpretability for Turing Machines",
+            "abstract": "We examine the interpretability of a concrete computational model."})
+    items = {item.item_id: item}
+    runtime = RuntimeConfig()
+    runtime.codex.phase2_evidence_packets = True
+    runtime.codex.phase2_subject_keys = True
+    class NoModel:
+        async def run(self, **kwargs):
+            raise AssertionError("typed complete paper is mechanically identifiable")
+    await SemanticPhase2(runtime, NoModel()).run(tmp_path, items, build_observation_units(items), "")
+    labels, packages = validate_artifacts(tmp_path / "02_routing")
+    assert labels[0].signal == "present" and labels[0].kind == "paper"
+    assert len(packages) == 1
+    assert json.loads((tmp_path / "02_routing/phase2_manifest.json").read_text())["calls"] == []

@@ -41,5 +41,5 @@ async def test_resolution_is_cached_bounded_and_preserves_originals(monkeypatch,
     assert len(calls) == 2 and docs == original
     assert first["2"]["resolved_links"] == []
     second = await resolve_documents(docs, tmp_path, limit=2)
-    assert len(calls) == 3
-    assert all(d["resolved_links"] for d in second.values())
+    assert len(calls) == 2
+    assert second == first

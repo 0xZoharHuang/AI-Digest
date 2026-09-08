@@ -104,3 +104,46 @@ def test_history_uses_run_date_not_mtime_and_excludes_future(tmp_path):
     text = (target / "history_index.md").read_text()
     assert "2026-09-06" in text
     assert "2026-09-07" not in text and "2026-09-08" not in text
+
+
+@pytest.mark.asyncio
+async def test_existing_paper_commentary_and_coherent_event_are_not_split(tmp_path):
+    def doc(kind, **payload):
+        return {"observations": [{"item_type": kind, "payload": payload}]}
+    docs = {"p": doc("paper", arxiv_id="2609.04382", title="Privacy Leakage from Gradients in Split-LLM Training"),
+            "x": doc("post", text="Important privacy result https://arxiv.org/abs/2609.04382"),
+            "a": doc("post", text="The benchmark updated today"),
+            "b": doc("post", text="This update reveals which model overfits")}
+    def p(pid, ids):
+        return ResearchPackage(package_id=pid, label_zh=pid, scope_note_zh="evidence", unit_ids=ids)
+    class Labeler:
+        runtime = RuntimeConfig()
+        async def call(self, *args):
+            raise AssertionError("confirmed identity or coherent event does not need another model pass")
+    result, _ = await organize_packets(tmp_path, [p("paper", ["p", "x"]), p("event", ["a", "b"])],
+        docs, Labeler(), {"p": "paper:2609.04382", "x": "paper:2609.04382", "a": "topic:benchmark update", "b": "topic:benchmark update"})
+    assert {frozenset(p.unit_ids) for p in result} == {frozenset(["p", "x"]), frozenset(["a", "b"])}
+
+
+@pytest.mark.asyncio
+async def test_broad_pool_reduces_geometrically_instead_of_k_plus_one(tmp_path):
+    from ai_digest.codex_runner import CodexResult
+    from ai_digest.phase3_admission import select_bounded
+    from ai_digest.utils import atomic_write_json
+    runtime = RuntimeConfig()
+    runtime.codex.phase3_dynamic_tasks = True
+    class Ranker:
+        calls = 0
+        async def run(self, **kwargs):
+            self.calls += 1
+            schema = json.loads(kwargs["output_schema"].read_text())["properties"]["selected_object_ids"]
+            atomic_write_json(kwargs["output_file"], {"selected_object_ids": schema["items"]["enum"][:schema["maxItems"]]})
+            return CodexResult(exit_code=0, thread_id=f"rank-{self.calls}")
+    rows = [{"object_id": str(i), "label_zh": str(i) + "x" * 200} for i in range(2400)]
+    ranker = Ranker()
+    selected, receipt = await select_bounded(tmp_path, rows, "", 300, runtime, ranker)
+    assert len(selected) == 300 and ranker.calls <= 5
+    assert receipt["selection_levels"] <= 2
+    before = ranker.calls
+    assert (await select_bounded(tmp_path, rows, "", 300, runtime, ranker))[0] == selected
+    assert ranker.calls == before

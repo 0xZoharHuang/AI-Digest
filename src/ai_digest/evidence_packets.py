@@ -29,7 +29,8 @@ QUESTION_PROMPT = (
 
 
 async def organize_packets(work: Path, packages: list[ResearchPackage],
-                           documents: dict[str, Any], labeler: SemanticPhase2
+                           documents: dict[str, Any], labeler: SemanticPhase2,
+                           subjects: dict[str, str] | None = None,
                            ) -> tuple[list[ResearchPackage], dict[str, Any]]:
     identities = primary_identities(documents)
     # Repair exact primary-paper identity across old packages, but never absorb
@@ -37,8 +38,14 @@ async def organize_packets(work: Path, packages: list[ResearchPackage],
     groups: dict[str, list[str]] = defaultdict(list)
     labels: dict[str, str] = {}
     for p in packages:
+        known = {identities[uid] for uid in p.unit_ids if uid in identities}
+        inherited = None
+        if len(known) == 1 and subjects:
+            identity = next(iter(known))
+            if all(subjects.get(uid, "").startswith("unit:") or subjects.get(uid) == identity for uid in p.unit_ids):
+                inherited = identity
         for uid in p.unit_ids:
-            key = identities.get(uid, "legacy:" + p.package_id)
+            key = identities.get(uid, inherited or "legacy:" + p.package_id)
             groups[key].append(uid)
             labels.setdefault(key, p.label_zh)
     result: list[ResearchPackage] = []
@@ -47,7 +54,9 @@ async def organize_packets(work: Path, packages: list[ResearchPackage],
 
     async def organize(key: str, ids: list[str]) -> None:
         questions: dict[str, list[str]] = defaultdict(list)
-        if len(ids) == 1 or key.startswith("paper:"):
+        primary = {subjects.get(uid) for uid in ids} if subjects else set()
+        coherent_topic = len(primary) == 1 and str(next(iter(primary))).startswith("topic:")
+        if len(ids) == 1 or key.startswith("paper:") or coherent_topic:
             questions[labels[key]].extend(ids)
         else:
             # Labels already read full originals. Here bounded source cards only
@@ -86,7 +95,10 @@ async def organize_packets(work: Path, packages: list[ResearchPackage],
             pid = "p_" + digest(members)[:20]
             # Legacy package IDs are not stable object IDs. A name is an identity
             # hint, not an authorization to merge across days.
-            identity = key if not key.startswith("legacy:") else "subject:" + normalized_title(labels[key])
+            subject = normalized_title(labels[key])
+            identity = key if not key.startswith("legacy:") else (
+                "subject:" + subject if subject and subject not in {"其他", "unknown", "unclear"}
+                else "unresolved:" + digest(members)[:20])
             title = labels[key] if question.startswith(("unresolved:", "representative:")) else question
             if question.startswith("representative:"):
                 doc = documents[question.removeprefix("representative:")]
@@ -98,7 +110,8 @@ async def organize_packets(work: Path, packages: list[ResearchPackage],
                         break
             result.append(ResearchPackage(package_id=pid, label_zh=title,
                 scope_note_zh="独立证据包；同对象的其他问题可检索参考，但不得强求关联。", unit_ids=members))
-            metadata[pid] = {"identity_key": identity, "identity_confirmed": not key.startswith("legacy:"),
+            metadata[pid] = {"identity_key": identity,
+                "identity_confirmed": all(identities.get(uid) == key for uid in members),
                 "question_anchor": question, "unit_fingerprints": {
                     uid: content_fingerprint(documents[uid]) for uid in members}}
 

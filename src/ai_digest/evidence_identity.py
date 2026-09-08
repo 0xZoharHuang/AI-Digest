@@ -17,7 +17,10 @@ def normalized_title(text: str) -> str:
 
 def paper_identity(value: str) -> str | None:
     match = re.fullmatch(r"(?:https?://(?:www\.)?arxiv\.org/(?:abs|pdf)/)?(\d{4}\.\d{4,5})(?:v\d+)?(?:\.pdf)?/?", value.strip())
-    return "paper:" + match[1] if match else None
+    if match:
+        return "paper:" + match[1]
+    doi = re.fullmatch(r"(?:https?://(?:dx\.)?doi\.org/|doi:\s*)?(10\.\d{4,9}/[^\s]+)", value.strip(), re.IGNORECASE)
+    return "paper:doi:" + doi[1].casefold() if doi else None
 
 
 def primary_identities(documents: dict[str, Any]) -> dict[str, str]:
@@ -29,14 +32,18 @@ def primary_identities(documents: dict[str, Any]) -> dict[str, str]:
     """
     titles: dict[str, set[str]] = defaultdict(set)
     literal: dict[str, set[str]] = defaultdict(set)
+    doi_aliases: dict[str, set[str]] = defaultdict(set)
     for uid, doc in documents.items():
         for observation in doc.get("observations", []):
             payload = observation.get("payload", {})
             kind = observation.get("item_type")
             if kind in {"paper", "hf_daily_paper"}:
-                key = paper_identity(str(payload.get("arxiv_id") or payload.get("url") or ""))
+                key = paper_identity(str(payload.get("arxiv_id") or payload.get("doi") or payload.get("url") or ""))
                 if key:
                     literal[uid].add(key)
+                    doi = paper_identity(str(payload.get("doi") or ""))
+                    if doi and key != doi:
+                        doi_aliases[doi].add(key)
                     title = normalized_title(str(payload.get("title") or ""))
                     if len(title) >= 20:
                         titles[title].add(key)
@@ -44,6 +51,11 @@ def primary_identities(documents: dict[str, Any]) -> dict[str, str]:
                 name = str(payload.get("full_name") or "").casefold()
                 if re.fullmatch(r"[\w.-]+/[\w.-]+", name):
                     literal[uid].add("repo:" + name)
+    def canonical(key: str) -> str:
+        alternatives = doi_aliases.get(key, set())
+        return next(iter(alternatives)) if len(alternatives) == 1 else key
+    literal = {uid: {canonical(key) for key in keys} for uid, keys in literal.items()}
+    titles = {title: {canonical(key) for key in keys} for title, keys in titles.items()}
     result = {uid: next(iter(keys)) for uid, keys in literal.items() if len(keys) == 1}
     for uid, doc in documents.items():
         if literal.get(uid):

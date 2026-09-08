@@ -7,6 +7,8 @@ from collections import Counter, defaultdict
 from typing import Any
 from urllib.parse import urlsplit
 
+from .evidence_identity import paper_identity
+
 INSTRUCTIONS = (
     "为每张卡片标注主要研究对象的规范短名称；同一对象复用完全相同的名称。"
     "有明确命名和版本的产品/模型/论文/项目，以该对象及版本为单位；同一模型版本的不同应用演示、"
@@ -75,6 +77,8 @@ def subject_assignments(value: Any, aliases: dict[str, str]) -> dict[str, str]:
             key = "unit:" + pid
         else:
             namespace, subject = key.split(":", 1)
+            if namespace == "paper" and (identity := paper_identity(subject)):
+                key = identity
             if namespace in {"company", "organization", "unknown", "unclear", "unit"}:
                 key = "unit:" + pid
             elif namespace in {"topic", "event", "question"}:
@@ -101,6 +105,9 @@ def subject_components(ids: list[str], votes: list[dict[str, str]],
                 identifier = re.sub(r"v\d+$", "", str(payload["arxiv_id"]).casefold())
                 canonical = "paper:" + identifier
                 primary_papers[pid].add(canonical)
+                doi = paper_identity(str(payload.get("doi") or ""))
+                if doi:
+                    paper_aliases[doi].add(canonical)
                 if payload.get("title"):
                     paper_aliases["paper:" + normalize_subject(str(payload["title"]))].add(canonical)
     counts: dict[str, Counter[str]] = {pid: Counter() for pid in ids}
@@ -109,7 +116,7 @@ def subject_components(ids: list[str], votes: list[dict[str, str]],
             if key.startswith("unit:"):
                 continue
             if key.startswith("paper:"):
-                identifiers = set(re.findall(r"\b\d{4}\.\d{4,5}(?:v\d+)?\b", key))
+                identifiers = set() if key.startswith("paper:doi:") else set(re.findall(r"\b\d{4}\.\d{4,5}(?:v\d+)?\b", key))
                 identifiers = {re.sub(r"v\d+$", "", identifier) for identifier in identifiers}
                 if len(identifiers) == 1:
                     key = "paper:" + next(iter(identifiers))

@@ -14,7 +14,7 @@ from .config import RuntimeConfig
 from .phase2_attention import codex_summary, file_sha256
 from .utils import atomic_write_json, atomic_write_jsonl, atomic_write_text
 
-VERSION = "bounded-catalog-v4"
+VERSION = "bounded-catalog-v5"
 BASE_WINDOW_CHARS = 200_000
 MAX_WINDOW_CHARS = 900_000
 COLUMNS = ["id", "title", "units", "kinds", "signals", "sources", "latest", "changes", "metrics", "original_evidence_hint", "previous_research"]
@@ -153,6 +153,11 @@ async def select_bounded(
         # strictly shrinks the catalog. Very large unsupported K fails explicitly.
         costs = [len(json.dumps(compact_row(row, "c00000"), ensure_ascii=False)) + 2 for row in remaining]
         budget = max(BASE_WINDOW_CHARS, sum(heapq.nlargest(min(limit + 1, len(costs)), costs)))
+        if runtime.codex.phase3_dynamic_tasks:
+            # K+1 is sufficient for termination, not useful reduction. Broad
+            # candidate pools otherwise repeatedly remove just a few cards.
+            desired = sum(heapq.nlargest(min(4 * limit, len(costs)), costs))
+            budget = max(budget, min(desired, MAX_WINDOW_CHARS - len(interests) - 4096))
         if budget + len(interests) + 4096 > MAX_WINDOW_CHARS:
             raise ValueError("requested research budget does not fit a bounded admission window")
         parts: list[list[dict[str, Any]]] = []

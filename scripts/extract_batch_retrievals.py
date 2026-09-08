@@ -31,10 +31,21 @@ def main():
         web_calls = {r["payload"]["call_id"] for r in records
                      if r["type"] == "response_item" and r["payload"].get("type") == "custom_tool_call"
                      and "tools.web__run(" in r["payload"].get("input", "")}
+        retrieval_commands = {}
+        for record in records:
+            row = record.get("payload", {})
+            if row.get("type") not in {"custom_tool_call", "function_call"}:
+                continue
+            command = str(row.get("input") or row.get("arguments") or "")
+            if ("http" in command and any(marker in command for marker in
+                ("curl ", "wget ", "httpx.", "requests.get", "urllib.request", "gh api", "git clone"))
+                and not any(name in command for name in ("main_report.md", "decision.md", "evidence.jsonl"))):
+                retrieval_commands[row["call_id"]] = command
         chunks = []
         for record in records:
             row = record.get("payload", {})
-            if row.get("type") != "custom_tool_call_output" or row.get("call_id") not in web_calls:
+            if (row.get("type") not in {"custom_tool_call_output", "function_call_output"}
+                or row.get("call_id") not in web_calls | retrieval_commands.keys()):
                 continue
             raw = row.get("output", [])
             texts = [raw] if isinstance(raw, str) else [part.get("text", "") for part in raw if isinstance(part, dict)]
@@ -45,9 +56,14 @@ def main():
                     decoded = None
                 if isinstance(decoded, str):
                     text = decoded
+                if row.get("call_id") in retrieval_commands:
+                    text = ("Captured external-retrieval command and stdout; verify origin and do not treat "
+                            "shell commentary or a successful clone as proof of file contents.\n"
+                            + retrieval_commands[row["call_id"]] + "\nOUTPUT:\n" + text)
                 chunks += [part for part in re.split(r"-{8,}\n", text) if "http" in part]
         provenance.append({"thread_id": tid, "session_file": str(paths[0]), "session_hash": file_sha256(paths[0]),
-                           "source_tool_call_count": len(web_calls)})
+                           "source_tool_call_count": len(web_calls),
+                           "external_retrieval_command_count": len(retrieval_commands)})
         for folder in sorted((batch / "packages").iterdir()):
             ledger = folder / "evidence.jsonl"
             if not ledger.exists():
@@ -59,7 +75,8 @@ def main():
                     for url in re.findall(r"https?://[^\s)\]>]+", text)}
             titles = []
             for source in (folder / "sources").glob("*.json"):
-                titles += [str(o.get("payload", {}).get("title", "")) for o in json.loads(source.read_text())["observations"]]
+                titles += [str(o.get("payload", {}).get("title") or o.get("payload", {}).get("full_name") or "")
+                           for o in json.loads(source.read_text())["observations"]]
             titles = [title.casefold() for title in titles if len(title) >= 24]
             selected = [text for text in chunks if any(url in text or ("doi.org/" in url and url.split("doi.org/")[1] in text) for url in urls)
                         or any(title in text.casefold() for title in titles)]

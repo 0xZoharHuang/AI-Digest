@@ -996,8 +996,11 @@ class V3Phases:
             "execution_jobs": len(packages) - len(batched) + len(admission.batches),
             "priority_packages": len(packages) - len(admission.exploration_object_ids),
             "tail_batches": len(admission.tail_batches), "execution_batches": len(admission.batches),
-            "tail_packages": len(batched), "priority_concurrency": self.runtime.codex.top_level_concurrency,
-            "separate_tail_pool": self.runtime.codex.phase3_tail_parallel_pool})
+            "tail_packages": len(admission.exploration_object_ids),
+            "priority_concurrency": self.runtime.codex.top_level_concurrency if admission.schema_version != 3 else 0,
+            "combined_concurrency": admission.concurrency if admission.schema_version == 3 else 0,
+            "execution_mode": "dynamic" if admission.schema_version == 3 else "legacy",
+            "separate_tail_pool": self.runtime.codex.phase3_tail_parallel_pool and admission.schema_version != 3})
         if admission.batches:
             entries = []
             for pid in admission.exploration_object_ids:
@@ -2336,7 +2339,7 @@ async def select_single_phase3_admission(
     input_hash = hashlib.sha256(
         (
             PHASE3_ADMISSION_PROMPT_VERSION
-            + ("\0bounded-catalog-v4" if label_contract else "")
+            + ("\0bounded-catalog-v5" if label_contract else "")
             + ("\0dynamic-pool" if runtime.codex.phase3_dynamic_tasks else "")
             + "\0"
             + runtime.codex.phase3_admission_model

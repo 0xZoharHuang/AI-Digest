@@ -65,8 +65,17 @@ async def resolve_documents(documents: dict[str, Any], work: Path,
         by_unit[uid] = urls
     all_urls = sorted({url for urls in by_unit.values() for url in urls})
     answers: dict[str, Any] = {}
+    previous = work / "receipt.json"
+    if previous.is_file() and not previous.is_symlink():
+        frozen = json.loads(previous.read_text()).get("results", {})
+        if set(frozen) == set(all_urls):
+            # Freeze even unresolved/deferred lookups within one run. Retrying a
+            # model must not silently change its identity evidence underneath it.
+            answers.update(frozen)
     pending = []
     for url in all_urls:
+        if url in answers:
+            continue
         path = work / (hashlib.sha256(url.encode()).hexdigest() + ".json")
         if path.is_file() and not path.is_symlink():
             record = json.loads(path.read_text())

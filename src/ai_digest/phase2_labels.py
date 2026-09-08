@@ -404,6 +404,7 @@ class SemanticPhase2:
         self.deferred_alias_name_count = 0
         self.deferred_primary_count = 0
         self.alias_registry_mode = "disabled"
+        self.unit_primary_keys: dict[str, str] = {}
 
     async def confirm_exclusions(
         self, work: Path, payloads: list[dict[str, Any]], results: list[BatchOutput]
@@ -563,14 +564,33 @@ class SemanticPhase2:
         if (root / "PHASE2_COMPLETE").exists():
             manifest = json.loads((root / "phase2_manifest.json").read_text())
             if (manifest.get("input_hash") != input_hash
-                or manifest.get("evidence_packets_version", 0) != (2 if self.runtime.codex.phase2_evidence_packets else 0)):
+                or manifest.get("evidence_packets_version", 0) != (2 if self.runtime.codex.phase2_evidence_packets else 0)
+                or (self.runtime.codex.phase2_evidence_packets and manifest.get("grouping_contract") != "evidence_questions_v3")):
                 raise ValueError("sealed Phase 2 input changed")
             return load_routing(root)
         work = root / CONTRACT
+        known_papers: list[Label] = []
+        known_groups: dict[str, Group] = {}
+        annotation_payloads = payloads
+        if self.runtime.codex.phase2_evidence_packets:
+            identities = primary_identities({row["unit_id"]: row for row in payloads})
+            annotation_payloads = []
+            for row in payloads:
+                observations = row["observations"]
+                key = identities.get(row["unit_id"], "")
+                if (key.startswith("paper:") and observations
+                    and all(o["item_type"] in {"paper", "hf_daily_paper"} for o in observations)
+                    and any(isinstance(o["payload"].get("title"), str) and o["payload"]["title"].strip()
+                            and isinstance(o["payload"].get("abstract"), str) and o["payload"]["abstract"].strip()
+                            for o in observations)):
+                    known_papers.append(Label(unit_id=row["unit_id"], signal="present", kind="paper", local_group_id=key))
+                    known_groups[key] = Group(group_id=key, title=original_title(row) or key)
+                else:
+                    annotation_payloads.append(row)
         batches: list[list[dict[str, Any]]] = []
         batch: list[dict[str, Any]] = []
         size = 0
-        for row in payloads:
+        for row in annotation_payloads:
             length = len(json.dumps(row, ensure_ascii=False).encode())
             if batch and (len(batch) >= 32 or size + length > 128 * 1024):
                 batches.append(batch)
@@ -625,6 +645,8 @@ class SemanticPhase2:
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
+        if known_papers:
+            results.append(BatchOutput(labels=known_papers, groups=list(known_groups.values())))
         exclusion_count = await self.confirm_exclusions(work, payloads, results)
         documents_by_id = {row["unit_id"]: row for row in payloads}
         labels: list[Label] = []
@@ -669,7 +691,7 @@ class SemanticPhase2:
         if self.runtime.codex.phase2_evidence_packets:
             from .evidence_packets import organize_packets
             packages, context = await organize_packets(work / "evidence-packets", packages,
-                merge_documents, self)
+                merge_documents, self, self.unit_primary_keys)
             atomic_write_json(root / "packet_context.json", context)
         root.mkdir(parents=True, exist_ok=True)
         atomic_write_jsonl(root / "units.jsonl", payloads)
@@ -694,7 +716,7 @@ class SemanticPhase2:
                 "contract": CONTRACT,
                 "evidence_packets_version": 2 if self.runtime.codex.phase2_evidence_packets else 0,
                 "prompt_version": PROMPT_VERSION,
-                "grouping_contract": "evidence_questions_v2" if self.runtime.codex.phase2_evidence_packets else
+                "grouping_contract": "evidence_questions_v3" if self.runtime.codex.phase2_evidence_packets else
                     "named_primary_subjects_v1" if self.runtime.codex.phase2_subject_keys else "primary_subject_identities_v2",
                 "subject_grounding_version": 1 if self.runtime.codex.phase2_subject_keys else 0,
                 "subject_alias_version": 1 if self.runtime.codex.phase2_subject_keys else 0,
@@ -742,6 +764,10 @@ class SemanticPhase2:
             nearest_groups, packages, documents, work / "index", self.package_batches
         )
         by_id = {p.package_id: p for p in packages}
+        canonical = primary_identities(documents) if self.runtime.codex.phase2_evidence_packets else {}
+        known = {p.package_id: canonical[p.unit_ids[0]] for p in packages
+                 if all(uid in canonical for uid in p.unit_ids)
+                 and len({canonical[uid] for uid in p.unit_ids}) == 1}
         blocks, self.deferred_merges = comparison_scopes(packages, documents, neighbours,
             max_groups=self.runtime.codex.phase2_comparison_max_groups)
         atomic_write_json(work / "comparison_plan.json", {
@@ -754,6 +780,14 @@ class SemanticPhase2:
 
         async def consolidate(block: list[str]) -> list[list[str]]:
             aliases = {f"r{i:04d}": pid for i, pid in enumerate(block)}
+            anchors = []
+            if self.runtime.codex.phase2_evidence_packets and self.runtime.codex.phase2_subject_keys:
+                named_votes.append({pid: known[pid] for pid in block if pid in known})
+                anchors = [{"identity_key": known[pid], "title": original_title(documents[by_id[pid].unit_ids[0]]) or by_id[pid].label_zh}
+                           for pid in block if pid in known]
+                aliases = {alias: pid for alias, pid in aliases.items() if pid not in known}
+                if not aliases:
+                    return []
             data = {
                 "groups": [
                     {
@@ -763,6 +797,8 @@ class SemanticPhase2:
                     for alias, pid in aliases.items()
                 ]
             }
+            if anchors:
+                data["known_identity_references"] = anchors
             schema = identity_schema(list(aliases))
             merge_prompt = (
                 "逐个判断这些原始信息卡片属于哪个具体对象/事件。为每个 group_id 输出同一对象组中编号最小的 group_id；"
@@ -836,6 +872,8 @@ class SemanticPhase2:
                 list(by_id), consolidated, exact_duplicate_groups(packages, documents),
                 {p.package_id for p in packages if not any(has_captured_anchor(documents[uid]) for uid in p.unit_ids)},
             )
+        self.unit_primary_keys = {uid: subject_keys[p.package_id] for p in packages
+                                  if p.package_id in subject_keys for uid in p.unit_ids}
         result = []
         support: Counter[str] = Counter()
         for scope in consolidated:
