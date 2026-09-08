@@ -93,12 +93,17 @@ def batch_instructions() -> str:
         "不得创建 subagents，不得调用其他模型或另开逐包 agent。")
     independent = independent.replace("你可以推翻标签、重新聚类并自主决定研究深度。",
         "你可以质疑标签并自主决定研究深度，但不得改变本批各原始包的成员。")
-    return ("# Long-tail independent research batch\n\n"
+    return ("# Independent research task\n\n"
         "你同时收到 batch_manifest.json 中的全部独立包，材料已在 packages/<package_id>/。"
         "一个 thread 完成本批所有包，不是逐包等待程序给任务。你自主安排读取、搜索、研究顺序和深度，"
         "但必须实际覆盖每包全部信息，不能因前几个研究深入而跳过尾部。"
         "不强求包之间存在联系，不合并包，不用一篇统一趋势报告替代独立结果。"
+        "这是独立问题集合，不代表全部是低优先级长尾。每包实际阅读后自行决定深度；"
+        "初始工作量估计不是研究上限。先识别各包的问题和证据缺口，再安排深入顺序，不能漏掉后半批。"
+        "历史研究只作上下文：先判断新证据改变了什么，避免重复铺陈背景；不因对象同名就认定没有增量。"
         "共享上下文在 shared/：先读 READER.md 与 RESEARCH_METHOD.md；global_catalog 和历史只按明确线索检索。"
+        "batch_manifest.json 的 reference_files 若存在，提供当天全部已采集材料的只读检索入口。"
+        "先查目录，再按明确的unit_id或关键词读取相关原文；不要全量重读，也不要把参考包算成自己已完成的包。"
         "共享读者文件中的一包一Lead表示研究独立性；批次执行方式以本合同为准。"
         "目录与临时标签只用于定位，不是事实证据；没有实际取得父帖或媒体内容，就不能补出具体人物、视频情节或上文。"
         "资料没随包提供不等于公开一手资料不存在；不能仅因标题没写AI或机器人就放弃使能技术线索。"
@@ -125,7 +130,8 @@ def prepare_batch(work: Path, packages: list[ResearchPackage], units: Any, catal
     for package in packages:
         folder = safe_child(work / "packages", package.package_id)
         materialize_research_workspace(folder, package, units, catalog, items, run_dir, runtime.runtime_root)
-        for name in ("READER.md", "RESEARCH_METHOD.md", "global_catalog.jsonl", "history_index.md", "bootstrap_index.jsonl"):
+        for name in ("READER.md", "RESEARCH_METHOD.md", "global_catalog.jsonl", "history_index.md", "bootstrap_index.jsonl",
+                     "history_packets.json", "packet_context.json"):
             source = folder / name
             if source.exists():
                 target = shared / name
@@ -134,8 +140,23 @@ def prepare_batch(work: Path, packages: list[ResearchPackage], units: Any, catal
                 if not target.exists():
                     shutil.copy2(source, target)
                 source.unlink()
+        source_history = folder / "history"
+        if source_history.is_dir():
+            target_history = shared / "history"
+            target_history.mkdir(exist_ok=True)
+            for source in source_history.glob("*.md"):
+                target = target_history / source.name
+                if target.exists() and file_sha256(target) != file_sha256(source):
+                    raise ValueError("historical evidence differs across packages")
+                if not target.exists():
+                    shutil.copy2(source, target)
+                source.unlink()
+            source_history.rmdir()
         atomic_write_text(folder / "AGENTS.md", "遵守 ../../AGENTS.md 的独立包研究合同；共享文件在 ../../shared/。禁止派发 subagents。\n")
     atomic_write_json(work / "batch_manifest.json", {"version": VERSION,
+        "reference_files": [os.path.relpath(run_dir / "02_routing" / name, work)
+                            for name in ("units.jsonl", "packages.json")
+                            if runtime.codex.phase3_dynamic_tasks and (run_dir / "02_routing" / name).is_file()],
         "packages": [{"package_id": p.package_id, "label": p.label_zh, "unit_ids": p.unit_ids,
                       "path": f"packages/{p.package_id}"} for p in packages]})
     atomic_write_text(work / "AGENTS.md", batch_instructions())
@@ -164,14 +185,19 @@ async def run_batch(work: Path, packages: list[ResearchPackage], units: Any, cat
     if (work / "INPUT_VIOLATION.json").exists():
         raise ValueError("batch input mutation requires inspection before resume")
     prepare_batch(work, packages, units, catalog, items, run_dir, runtime)
+    reference_files = [run_dir / "02_routing" / name for name in ("units.jsonl", "packages.json")
+                       if runtime.codex.phase3_dynamic_tasks and (run_dir / "02_routing" / name).is_file()]
+    if any(path.is_symlink() for path in reference_files):
+        raise ValueError("unsafe research reference file")
     if prompt_override is not None:
         atomic_write_text(work / "AGENTS.md", prompt_override)
     identity: dict[str, Any] = {"version": VERSION, "model": runtime.codex.research_model,
         "reasoning": runtime.codex.research_reasoning,
         "inputs": {str(path.relative_to(work)): file_sha256(path)
-                   for path in [work / "AGENTS.md", work / "batch_manifest.json", *sorted((work / "shared").glob("*")),
+                   for path in [work / "AGENTS.md", work / "batch_manifest.json", *sorted((work / "shared").rglob("*")),
                                 *sorted((work / "packages").glob("*/sources/*.json"))] if path.is_file()}}
     identity_path = work / "identity.json"
+    identity["inputs"].update({os.path.relpath(path, work): file_sha256(path) for path in reference_files})
     if identity_path.exists() and json.loads(identity_path.read_text()) != identity:
         raise ValueError("cannot resume a batch with changed inputs/model/instructions")
     atomic_write_json(identity_path, identity)
@@ -243,6 +269,7 @@ async def run_batch(work: Path, packages: list[ResearchPackage], units: Any, cat
         result = await runner.run(workspace=work, prompt=prompt,
             model=runtime.codex.research_model, reasoning=runtime.codex.research_reasoning,
             sandbox="workspace-write", web_search=True, agents=False,
+            reference_files=reference_files,
             resume_thread_id=thread_id, thread_checkpoint_path=checkpoint)
         if thread_id and result.thread_id and result.thread_id != thread_id:
             raise RuntimeError("batch changed its thread identity")

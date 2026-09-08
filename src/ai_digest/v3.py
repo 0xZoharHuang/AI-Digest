@@ -59,7 +59,7 @@ PHASE2_LEGACY_PROMPT_VERSIONS = (
 )
 PHASE2_PROMPT_VERSION = "2026-09-01.4"
 PHASE2_WORKING_MAP_MAX_BYTES = 64 * 1024
-PHASE3_ADMISSION_PROMPT_VERSION = "2026-09-06.2"
+PHASE3_ADMISSION_PROMPT_VERSION = "2026-09-08.1"
 
 
 def summary_schema(unit_ids: set[str]) -> dict[str, Any]:
@@ -866,6 +866,8 @@ class V3Phases:
         semaphore = __import__("asyncio").Semaphore(self.runtime.codex.top_level_concurrency)
         tail_semaphore = (__import__("asyncio").Semaphore(3)
                           if self.runtime.codex.phase3_tail_parallel_pool else semaphore)
+        if admission.schema_version == 3:
+            tail_semaphore = __import__("asyncio").Semaphore(admission.concurrency)
         failures: list[dict[str, Any]] = []
         quality: list[dict[str, Any]] = []
         successes: dict[str, str] = {}
@@ -977,9 +979,9 @@ class V3Phases:
                     "thread_id": last.get("thread_id"), "retryable": bool(last.get("error_class"))}
                     for pid, reason in result["errors"].items())
 
-        batched = {pid for batch in admission.tail_batches for pid in batch}
+        batched = {pid for batch in admission.batches for pid in batch}
         priority_tasks = [run_package(package) for package in packages if package.package_id not in batched]
-        tail_tasks = [run_tail(batch) for batch in admission.tail_batches]
+        tail_tasks = [run_tail(batch) for batch in admission.batches]
         # Interleave admission to the shared pool; the optional separate pool lets
         # all three tail agents overlap with the existing three priority workers.
         tasks = []
@@ -991,11 +993,12 @@ class V3Phases:
         await __import__("asyncio").gather(*tasks)
         atomic_write_json(root / "timing.json", {"phase3_seconds": time.monotonic() - phase3_started,
             "admission_seconds": admission_seconds,
-            "execution_jobs": len(packages) - len(batched) + len(admission.tail_batches),
-            "priority_packages": len(packages) - len(batched), "tail_batches": len(admission.tail_batches),
+            "execution_jobs": len(packages) - len(batched) + len(admission.batches),
+            "priority_packages": len(packages) - len(admission.exploration_object_ids),
+            "tail_batches": len(admission.tail_batches), "execution_batches": len(admission.batches),
             "tail_packages": len(batched), "priority_concurrency": self.runtime.codex.top_level_concurrency,
             "separate_tail_pool": self.runtime.codex.phase3_tail_parallel_pool})
-        if admission.tail_batches:
+        if admission.batches:
             entries = []
             for pid in admission.exploration_object_ids:
                 path = root / pid / "decision.md"
@@ -1957,6 +1960,18 @@ def materialize_research_workspace(
             }
         )
         shutil.copy2(supplied_history, workspace / "history_index.md")
+        history_dir = run_dir / "history"
+        if history_dir.is_dir() and not history_dir.is_symlink():
+            (workspace / "history").mkdir(exist_ok=True)
+            for report in history_dir.glob("*.md"):
+                if report.is_file() and not report.is_symlink():
+                    shutil.copy2(report, workspace / "history" / report.name)
+    for context_name, context_source in (
+        ("history_packets.json", run_dir / "history_packets.json"),
+        ("packet_context.json", run_dir / "02_routing/packet_context.json"),
+    ):
+        if context_source.is_file() and not context_source.is_symlink():
+            shutil.copy2(context_source, workspace / context_name)
     if not supplied_bootstrap.exists():
         atomic_write_jsonl(workspace / "bootstrap_index.jsonl", bootstrap_rows)
     atomic_write_text(
@@ -2157,6 +2172,9 @@ async def select_phase3_admission(
     runtime: RuntimeConfig,
     runner: CodexRunner,
 ) -> Phase3Admission:
+    if runtime.codex.phase3_dynamic_tasks:
+        from .dynamic_tasks import dynamic_admission
+        return await dynamic_admission(run_dir, packages, runtime, runner)
     if runtime.codex.phase3_tail_batch_size > 1:
         from .phase3_batches import batch_admission
         return await batch_admission(run_dir, packages, runtime, runner)
@@ -2233,6 +2251,8 @@ async def select_single_phase3_admission(
         from collections import Counter
 
         from .phase2_labels import Label, has_captured_anchor
+        packet_context = _read_json(routing_root / "packet_context.json", {})
+        prior_context = _read_json(run_dir / "history_packets.json", [])
         labels = {row.unit_id: row for row in (Label.model_validate(value)
             for value in load_jsonl(routing_root / "labels.jsonl"))}
         def native_hints(package: ResearchPackage) -> dict[str, Any]:
@@ -2262,8 +2282,17 @@ async def select_single_phase3_admission(
                                     name = f"{key}.{metric}"
                                     metrics[name] = max(metrics.get(name, 0), number)
             best = max(excerpts, key=lambda row: len(row[2]), default=("", "", ""))
+            context = packet_context.get(package.package_id, {})
+            previous = [row for row in prior_context if context.get("identity_key")
+                        and row.get("identity_key") == context["identity_key"]]
+            fingerprints = set(context.get("unit_fingerprints", {}).values())
+            prior_fingerprints = {value for row in previous for value in row.get("unit_fingerprints", {}).values()}
             return {"evidence_hint": {"titles": [title[:120] for title in titles[:2]],
                                       "source": best[0], "field": best[1], "excerpt": best[2][:240]},
+                    "previous_research": {"report_count": len(previous),
+                        "unchanged_evidence_count": len(fingerprints & prior_fingerprints),
+                        "changed_or_new_evidence_count": len(fingerprints - prior_fingerprints),
+                        "identity_confirmed": context.get("identity_confirmed", False)} if context else {},
                     "changes": sorted(changes), "latest_occurred_at": max(dates) if dates else None,
                     "native_metrics": metrics}
         candidate_rows = [{"object_id": package.package_id, "label_zh": package.label_zh,
@@ -2307,7 +2336,8 @@ async def select_single_phase3_admission(
     input_hash = hashlib.sha256(
         (
             PHASE3_ADMISSION_PROMPT_VERSION
-            + ("\0bounded-catalog-v2" if label_contract else "")
+            + ("\0bounded-catalog-v4" if label_contract else "")
+            + ("\0dynamic-pool" if runtime.codex.phase3_dynamic_tasks else "")
             + "\0"
             + runtime.codex.phase3_admission_model
             + "\0"
@@ -2607,8 +2637,10 @@ report://<package-id> 链接；如实呈现来源、研究失败，以及有多�
 不要生成任何全局采集、候选、调度、剩余、覆盖数量或统计开场段落；这些由程序统一插入。
 正文从“## 研究报告”开始，所有研究报告链接放在该标题之后，不写总起段落。
 未调度仅表示当前执行容量，不得写成 Watch、Archive、低质量或不值得研究。
-如果 admission 中存在 tail_batches，在该标题下用“重点研究”和“长尾发现”组织报告入口，
-每个入口以一两句表达新增信息和读后增量，不重复整篇摘要；不发布说明由程序加入，不要重复生成。
+如果 admission 中存在 tail_batches 或 execution_batches，在该标题下用“重点研究”和“长尾发现”组织报告入口，
+分类严格依据 exploration_object_ids：其中的包属于长尾发现，其余入选包属于重点研究；一个执行任务可以混合两种角色，不能按任务位置猜测。
+当报告较多时，最多为12个最有信息增量的问题写一两句阅读导引；其余报告在对应分区末尾用一行“具体标题＋链接”列出。
+所有成功报告仍须有入口，但不能把后台覆盖增加变成同等增长的摘要阅读负担。不发布说明由程序加入，不要重复生成。
 入口必须说具体问题、事实或机制及关键限制，避免“深入分析”“值得关注”等空泛介绍。
 不要把独立主题强行收敛成宏观主线。失败和运行统计由程序补充，不重复生成技术错误信息。
 

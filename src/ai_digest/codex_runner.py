@@ -65,11 +65,12 @@ class CodexRunner:
         thread_checkpoint_path: Path | None = None,
         prompt_stdin: bool = False,
         text_only: bool = False,
+        reference_files: list[Path] | None = None,
     ) -> CodexResult:
         workspace.mkdir(parents=True, exist_ok=True)
         isolated_tmp = workspace / ".tmp"
         isolated_tmp.mkdir(parents=True, exist_ok=True)
-        permission_name, permission_definition = _permission_profile(sandbox, workspace)
+        permission_name, permission_definition = _permission_profile(sandbox, workspace, reference_files)
         args = [
             self.binary,
             "exec",
@@ -252,7 +253,8 @@ def _safe_environment(isolated_tmp: Path | None = None) -> dict[str, str]:
     return environment
 
 
-def _permission_profile(sandbox: str, workspace: Path | None = None) -> tuple[str, str]:
+def _permission_profile(sandbox: str, workspace: Path | None = None,
+                        reference_files: list[Path] | None = None) -> tuple[str, str]:
     parents = {"read-only": ":read-only", "workspace-write": ":workspace"}
     if sandbox not in parents:
         raise ValueError(f"unsupported protected Codex sandbox: {sandbox}")
@@ -267,6 +269,12 @@ def _permission_profile(sandbox: str, workspace: Path | None = None) -> tuple[st
     if workspace is not None:
         access = "read" if sandbox == "read-only" else "write"
         workspace_rule = f',{json.dumps(str(workspace.resolve()))}="{access}"'
+    for file in reference_files or []:
+        resolved = file.resolve()
+        if (file.is_symlink() or not file.is_file()
+            or any(resolved == path or resolved.is_relative_to(path) for path in explicit_denies)):
+            raise ValueError("unsafe research reference file")
+        workspace_rule += f',{json.dumps(str(resolved))}="read"'
     filesystem = (
         '":root"="deny",":minimal"="read",":slash_tmp"="deny",'
         + denied

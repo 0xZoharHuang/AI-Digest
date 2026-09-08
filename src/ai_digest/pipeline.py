@@ -960,6 +960,8 @@ def _import_routing(job: Path, run: Path) -> None:
             contents = {name: _safe_read(source, Path(name), 50_000_000) for name in (
                 "units.jsonl", "labels.jsonl", "packages.json", "catalog.jsonl"
             )}
+            if manifest_value.get("evidence_packets_version") in {1, 2}:
+                contents["packet_context.json"] = _safe_read(source, Path("packet_context.json"), 50_000_000)
             _safe_read(source, Path("PHASE2_COMPLETE"), 100)
             validate_artifacts(source)
             expected = set(json.loads((run / "01_phase1" / "index.json").read_text())["item_ids"])
@@ -1533,7 +1535,11 @@ def _copy_referenced_blobs(runtime: RuntimeConfig, staging: Path) -> None:
 def _copy_recent_history(runtime: RuntimeConfig, staging: Path, current_run: Path) -> None:
     history_root = staging / "history"
     history_root.mkdir(parents=True, exist_ok=True)
-    cutoff = datetime.now(UTC).timestamp() - 30 * 24 * 3600
+    # Replay uses the run's date, not wall time or mutable file mtimes.
+    current_date = datetime.fromisoformat(current_run.parent.name).date()
+    cutoff_date = current_date - timedelta(days=30)
+    packet_history = []
+    packet_context_cache = {}
     lines = ["# Prior 30-day research reports", ""]
     reports = [
         *runtime.runtime_root.glob("runs/*/attempt-*/03_research/*/report.md"),
@@ -1541,7 +1547,8 @@ def _copy_recent_history(runtime: RuntimeConfig, staging: Path, current_run: Pat
         *runtime.runtime_root.glob("runs/*/attempt-*/03_research/*/main_report.md"),
     ]
     for report in sorted(reports):
-        if current_run in report.parents or report.stat().st_mtime < cutoff:
+        report_date = datetime.fromisoformat(report.parents[3].name).date()
+        if current_run in report.parents or not cutoff_date <= report_date < current_date:
             continue
         target = history_root / (
             f"{report.parents[3].name}-{report.parents[2].name}-{report.parent.name}.md"
@@ -1556,7 +1563,17 @@ def _copy_recent_history(runtime: RuntimeConfig, staging: Path, current_run: Pat
             report.parent.name,
         )
         lines.append(f"- [{title}](history/{target.name})")
+        context_root = report.parents[1].parent / "02_routing"
+        if runtime.codex.phase2_evidence_packets or runtime.codex.phase3_dynamic_tasks:
+            from .evidence_identity import derive_packet_context
+            if context_root not in packet_context_cache:
+                packet_context_cache[context_root] = derive_packet_context(context_root)
+            context = packet_context_cache[context_root].get(report.parent.name)
+            if context:
+                packet_history.append({**context, "date": str(report_date),
+                    "report_path": f"history/{target.name}", "title": title})
     atomic_write_text(staging / "history_index.md", "\n".join(lines) + "\n")
+    atomic_write_json(staging / "history_packets.json", packet_history)
 
 
 def _copy_bootstrap_index(runtime: RuntimeConfig, staging: Path) -> None:

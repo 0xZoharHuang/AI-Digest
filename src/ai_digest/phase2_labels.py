@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .codex_runner import CodexRunner, RetryableCodexError
 from .config import RuntimeConfig
+from .evidence_identity import primary_identities
 from .models import Assignment, Bundle, ObservationUnit, ResearchPackage, RoutingOutput, SourceItem
 from .phase2_attention import build_phase2_unit_documents, codex_summary, file_sha256
 from .store import parse_jsonl_text
@@ -297,6 +298,8 @@ def validate_artifacts(root: Path) -> tuple[list[Label], list[ResearchPackage]]:
     if manifest.get("contract") != CONTRACT:
         raise ValueError("wrong label contract")
     required = {"units.jsonl", "labels.jsonl", "packages.json", "catalog.jsonl"}
+    if manifest.get("evidence_packets_version") in {1, 2}:
+        required.add("packet_context.json")
     if set(manifest["hashes"]) != required:
         raise ValueError("incomplete artifact manifest")
     for name, expected_hash in manifest["hashes"].items():
@@ -325,6 +328,19 @@ def validate_artifacts(root: Path) -> tuple[list[Label], list[ResearchPackage]]:
         raise ValueError("final package coverage mismatch")
     if len({p.package_id for p in packages}) != len(packages):
         raise ValueError("duplicate package ID")
+    if manifest.get("evidence_packets_version") in {1, 2}:
+        from .evidence_identity import content_fingerprint
+        context = json.loads((root / "packet_context.json").read_text())
+        if not isinstance(context, dict) or set(context) != {p.package_id for p in packages}:
+            raise ValueError("packet context coverage mismatch")
+        originals = {row["unit_id"]: row for row in units}
+        for package in packages:
+            row = context[package.package_id]
+            if (not isinstance(row, dict) or not isinstance(row.get("identity_key"), str)
+                or not row["identity_key"].strip() or not isinstance(row.get("identity_confirmed"), bool)
+                or not row.get("question_anchor") or row.get("unit_fingerprints") != {
+                    uid: content_fingerprint(originals[uid]) for uid in package.unit_ids}):
+                raise ValueError("packet context does not match original evidence")
     catalog = rows(root / "catalog.jsonl")
     membership = {uid: p.package_id for p in packages for uid in p.unit_ids}
     if (
@@ -546,7 +562,8 @@ class SemanticPhase2:
         input_hash = digest(payloads)
         if (root / "PHASE2_COMPLETE").exists():
             manifest = json.loads((root / "phase2_manifest.json").read_text())
-            if manifest.get("input_hash") != input_hash:
+            if (manifest.get("input_hash") != input_hash
+                or manifest.get("evidence_packets_version", 0) != (2 if self.runtime.codex.phase2_evidence_packets else 0)):
                 raise ValueError("sealed Phase 2 input changed")
             return load_routing(root)
         work = root / CONTRACT
@@ -643,8 +660,17 @@ class SemanticPhase2:
             label.unit_id: i for i, result in enumerate(results) for label in result.labels
         }
         self.package_batches = {p.package_id: unit_batches[p.unit_ids[0]] for p in packages}
+        merge_documents = {r["unit_id"]: r for r in payloads}
+        if self.runtime.codex.phase2_evidence_packets:
+            from .link_identity import resolve_documents
+            merge_documents = await resolve_documents(merge_documents, work / "link-identity")
         if len(packages) > 1:
-            packages = await self.merge(work, packages, {r["unit_id"]: r for r in payloads})
+            packages = await self.merge(work, packages, merge_documents)
+        if self.runtime.codex.phase2_evidence_packets:
+            from .evidence_packets import organize_packets
+            packages, context = await organize_packets(work / "evidence-packets", packages,
+                merge_documents, self)
+            atomic_write_json(root / "packet_context.json", context)
         root.mkdir(parents=True, exist_ok=True)
         atomic_write_jsonl(root / "units.jsonl", payloads)
         atomic_write_jsonl(root / "labels.jsonl", (x.model_dump() for x in labels))
@@ -666,8 +692,10 @@ class SemanticPhase2:
             root / "phase2_manifest.json",
             {
                 "contract": CONTRACT,
+                "evidence_packets_version": 2 if self.runtime.codex.phase2_evidence_packets else 0,
                 "prompt_version": PROMPT_VERSION,
-                "grouping_contract": "named_primary_subjects_v1" if self.runtime.codex.phase2_subject_keys else "primary_subject_identities_v2",
+                "grouping_contract": "evidence_questions_v2" if self.runtime.codex.phase2_evidence_packets else
+                    "named_primary_subjects_v1" if self.runtime.codex.phase2_subject_keys else "primary_subject_identities_v2",
                 "subject_grounding_version": 1 if self.runtime.codex.phase2_subject_keys else 0,
                 "subject_alias_version": 1 if self.runtime.codex.phase2_subject_keys else 0,
                 "subject_alias_model": self.runtime.codex.phase2_alias_model,
@@ -692,7 +720,8 @@ class SemanticPhase2:
                 "deferred_merge_package_ids": self.deferred_merges,
                 "hashes": {
                     name: file_sha256(root / name)
-                    for name in ("units.jsonl", "labels.jsonl", "packages.json", "catalog.jsonl")
+                    for name in ("units.jsonl", "labels.jsonl", "packages.json", "catalog.jsonl",
+                                 *(("packet_context.json",) if self.runtime.codex.phase2_evidence_packets else ()))
                 },
             },
         )
@@ -798,7 +827,8 @@ class SemanticPhase2:
                 {p.package_id: p.unit_ids[0] for p in packages}, self.call, self.runtime.codex.router_reader_concurrency)
             self.deferred_primary_count = len(json.loads((work / "primary-review" / "plan.json").read_text())["deferred_package_ids"])
             components, subject_keys = subject_components(list(by_id), named_votes, documents,
-                {p.package_id: p.unit_ids[0] for p in packages}, exact_duplicate_groups(packages, documents), overrides)
+                {p.package_id: p.unit_ids[0] for p in packages}, exact_duplicate_groups(packages, documents), overrides,
+                primary_identities(documents) if self.runtime.codex.phase2_evidence_packets else None)
             atomic_write_json(work / "subject_votes.json", {"raw_votes": original_votes, "votes": named_votes,
                 "primary_overrides": overrides, "selected_keys": subject_keys})
         else:

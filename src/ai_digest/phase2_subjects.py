@@ -90,7 +90,8 @@ def subject_assignments(value: Any, aliases: dict[str, str]) -> dict[str, str]:
 def subject_components(ids: list[str], votes: list[dict[str, str]],
                        documents: dict[str, Any], units: dict[str, str],
                        exact: list[list[str]] | None = None,
-                       overrides: dict[str, str] | None = None) -> tuple[list[list[str]], dict[str, str]]:
+                       overrides: dict[str, str] | None = None,
+                       identities: dict[str, str] | None = None) -> tuple[list[list[str]], dict[str, str]]:
     paper_aliases: dict[str, set[str]] = defaultdict(set)
     primary_papers: dict[str, set[str]] = defaultdict(set)
     for pid in ids:
@@ -133,6 +134,8 @@ def subject_components(ids: list[str], votes: list[dict[str, str]],
         if len(primary_papers[pid]) == 1:
             key = next(iter(primary_papers[pid]))
         keys[pid] = key
+        if identities and units[pid] in identities:
+            keys[pid] = identities[units[pid]]
     # Named-object attribution must have some original support. A direct reply
     # to a captured, explicitly named parent may inherit its object, but chains
     # of ungrounded replies cannot propagate or join identities.

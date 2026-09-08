@@ -26,6 +26,7 @@ def run_counts(run_dir: Path) -> dict[str, int]:
     candidate_units = {uid for p in packages for uid in p.get("unit_ids", [])}
     scheduled_units = {uid for p in packages if p.get("package_id") in selected for uid in p.get("unit_ids", [])}
     reviewed: set[str] = set()
+    batches = admission.get("execution_batches", []) if admission.get("schema_version") == 3 else admission.get("tail_batches", [])
     for manifest in (run_dir / "03_research").glob("*/research_manifest.json"):
         value = read(manifest, {})
         reviewed.update(value.get("reviewed_unit_ids", []))
@@ -37,7 +38,8 @@ def run_counts(run_dir: Path) -> dict[str, int]:
             "scheduled_information": len(scheduled_units),
             "reviewed_information": len(reviewed & scheduled_units),
             "unscheduled_packages": len(packages) - len(selected),
-            "research_jobs": len(selected) - sum(map(len, admission.get("tail_batches", []))) + len(admission.get("tail_batches", [])),
+            "research_jobs": len(selected) - sum(map(len, batches)) + len(batches),
+            "dynamic_tasks": int(admission.get("schema_version") == 3),
             "tail_batches": len(admission.get("tail_batches", [])),
             "exploration_packages": len(admission.get("exploration_object_ids", []))}
 
@@ -46,6 +48,8 @@ def count_sentence(run_dir: Path) -> str:
     c = run_counts(run_dir)
     tail = (f"其中 {c['exploration_packages']} 包安排为 {c['tail_batches']} 批长尾研究"
             if c["tail_batches"] else f"含 {c['exploration_packages']} 个长尾探索包")
+    if c["dynamic_tasks"]:
+        tail = f"安排为 {c['research_jobs']} 个独立研究任务，含 {c['exploration_packages']} 个探索包"
     return (f"原始观察 {c['observations']:,} 条，标准化信息 {c['information']:,} 条；"
             f"其中 {c['candidate_information']:,} 条归入 {c['packages']:,} 个候选信息包。"
             f"本日调度 {c['scheduled_packages']} 个包（{tail}），"

@@ -319,7 +319,7 @@ class ResearchPackage(BaseModel):
 class Phase3Admission(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[1, 2] = 1
+    schema_version: Literal[1, 2, 3] = 1
     daily_agent_limit: int = Field(ge=0)
     concurrency: int = Field(ge=1)
     selection_mode: Literal["all", "codex_priority", "disabled", "batch_sampling"]
@@ -335,6 +335,12 @@ class Phase3Admission(BaseModel):
     exploration_strata: dict[str, int] = Field(default_factory=dict)
     tail_batches: list[list[str]] = Field(default_factory=list)
     tail_batch_size: int = Field(default=1, ge=1, le=40)
+    execution_batches: list[list[str]] = Field(default_factory=list)
+    task_max_packages: int = Field(default=10, ge=1, le=40)
+
+    @property
+    def batches(self) -> list[list[str]]:
+        return self.execution_batches if self.schema_version == 3 else self.tail_batches
 
     def model_post_init(self, __context: Any) -> None:
         available = self.available_object_ids
@@ -350,6 +356,13 @@ class Phase3Admission(BaseModel):
         ):
             raise ValueError("Phase 3 admission contains duplicate object ids")
         tail = [pid for batch in self.tail_batches for pid in batch]
+        if self.schema_version != 3 and self.execution_batches:
+            raise ValueError("legacy admission cannot contain execution batches")
+        if self.schema_version == 3:
+            flat = [pid for batch in self.execution_batches for pid in batch]
+            if (self.tail_batches or len(flat) != len(set(flat)) or set(flat) != set(selected)
+                or any(not batch or len(batch) > self.task_max_packages for batch in self.execution_batches)):
+                raise ValueError("invalid dynamic task membership")
         if self.schema_version == 1 and self.tail_batches:
             raise ValueError("legacy admission cannot contain batches")
         if self.schema_version == 2 and (
@@ -357,7 +370,7 @@ class Phase3Admission(BaseModel):
             or any(not batch or len(batch) > self.tail_batch_size for batch in self.tail_batches)
         ):
             raise ValueError("invalid tail batch membership")
-        jobs = len(selected) - len(tail) + len(self.tail_batches)
+        jobs = len(self.execution_batches) if self.schema_version == 3 else len(selected) - len(tail) + len(self.tail_batches)
         if jobs > min(self.daily_agent_limit, len(available)) or not set(selected) <= set(
             available
         ):

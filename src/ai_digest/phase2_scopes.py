@@ -73,6 +73,7 @@ def identifiers(document: dict[str, Any]) -> set[str]:
 
     for observation in document.get("observations", []):
         walk(observation["payload"])
+    walk(document.get("resolved_links", []), ".resolved_links")
     return found
 
 

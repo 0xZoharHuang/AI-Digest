@@ -31,6 +31,7 @@ class CodexConfig(BaseModel):
     phase2_text_only: bool = True
     phase2_comparison_max_groups: int = Field(default=256, ge=16, le=256)
     phase2_subject_keys: bool = False
+    phase2_evidence_packets: bool = False
     phase2_alias_model: str = "gpt-5.6-luna"
     phase2_alias_reasoning: str = "medium"
     binary: str = "./node_modules/.bin/codex"
@@ -53,6 +54,8 @@ class CodexConfig(BaseModel):
     phase3_tail_batch_size: int = Field(default=1, ge=1, le=40)
     phase3_tail_batch_max_bytes: int = Field(default=256_000, ge=1)
     phase3_tail_parallel_pool: bool = False
+    phase3_dynamic_tasks: bool = False
+    phase3_task_max_packages: int = Field(default=10, ge=1, le=40)
     top_level_concurrency: int = 3
     subagent_threads: int = 4
     idle_timeout_seconds: int = 900
