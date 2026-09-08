@@ -102,3 +102,24 @@ Preserve original evidence, independent package outcomes and the private Wiki/ow
   `evidence-packets-20260907-context-guard`, and `evidence-packets-20260908-context-guard`.
   Invocation receipts include the actual imported policy-file hashes before/after execution.
   Require unchanged implementation hashes before treating a run as final-version evidence.
+
+### Capacity decision and manual checks
+
+Size 20 reverse order also completed 40/40 and its source-grounded draft review reported
+40 supported decisions, 40 recognized signals, no cross-package claims, and mean
+grounding/gain/readability 3.4/3.225/3.775. Prefer a dynamic capacity ceiling of 20 for this
+release; workload weights usually produce smaller real tasks and may dedicate complex cases.
+Size 40 is rejected for this rollout because its reverse-order run missed visible quoted
+context and introduced an unsupported capability description. Original failed outputs remain.
+
+Manual comparison of JEPA, Dr Claw and Allura Memory reports found the 20-package outputs
+largely preserved mechanisms and limitations while being shorter, but also caught a metric
+precision defect the aggregate judge did not flag: Spearman rank correlation was called linear
+correlation. General research-method instructions now require exact statistical terminology,
+representative benchmark magnitudes alongside headline gains, and executable evidence before
+claiming a system enforces a constraint. A separate 20-package precision regression places
+known cases at beginning/middle/end positions; do not count this as a controlled batch-size trial.
+
+The active final checks are Phase 2 context-guard runs for September 6–8, their semantic
+review and retention audit, the precision regression, and the final mixed pipeline smoke.
+Production is still `6beac11858bf`; no feature flags have been enabled in its configuration.
