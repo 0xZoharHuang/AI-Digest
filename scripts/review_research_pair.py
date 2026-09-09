@@ -26,6 +26,7 @@ async def main():
     p.add_argument("--candidate", type=Path, required=True)
     p.add_argument("--sample", type=Path, required=True)
     p.add_argument("--target", type=Path, required=True)
+    p.add_argument("--batch-size", type=int, default=5)
     args = p.parse_args()
     evidence = json.loads((args.sample / "sample_evidence.json").read_text())
     ids = json.loads((args.sample / "sample.json").read_text())["package_ids"]
@@ -34,9 +35,15 @@ async def main():
     runtime.codex.phase2_label_model = runtime.codex.phase3_admission_model
     runtime.codex.phase2_label_reasoning = "medium"
     reviewer = SemanticPhase2(runtime, CodexRunner(runtime.codex.binary))
-    results = []
-    for start in range(0, len(ids), 5):
-        aliases = {f"c{i:03d}": pid for i, pid in enumerate(ids[start:start + 5])}
+    if not 1 <= args.batch_size <= 5:
+        raise ValueError("review batch size must be 1..5")
+    results = json.loads((args.target / "review.json").read_text()) if (args.target / "review.json").exists() else []
+    completed = {r["package_id"] for r in results}
+    if len(completed) != len(results) or not completed.issubset(ids):
+        raise ValueError("existing review does not match sample")
+    remaining = [pid for pid in ids if pid not in completed]
+    for start in range(0, len(remaining), args.batch_size):
+        aliases = {f"c{i:03d}": pid for i, pid in enumerate(remaining[start:start + args.batch_size])}
         data, order = {}, {}
         for a, pid in aliases.items():
             reverse = int(digest(["blind-pair-v1", pid])[:8], 16) % 2
