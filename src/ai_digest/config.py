@@ -32,6 +32,8 @@ class CodexConfig(BaseModel):
     phase2_comparison_max_groups: int = Field(default=256, ge=16, le=256)
     phase2_subject_keys: bool = False
     phase2_evidence_packets: bool = False
+    phase2_reading_view: bool = False
+    phase3_lean_instructions: bool = False
     phase2_alias_model: str = "gpt-5.6-luna"
     phase2_alias_reasoning: str = "medium"
     binary: str = "./node_modules/.bin/codex"

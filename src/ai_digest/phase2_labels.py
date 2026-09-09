@@ -409,6 +409,8 @@ class SemanticPhase2:
         self.deferred_primary_count = 0
         self.alias_registry_mode = "disabled"
         self.unit_primary_keys: dict[str, str] = {}
+        self.reading_view = False
+        self.reading_profile = "legacy"
 
     async def confirm_exclusions(
         self, work: Path, payloads: list[dict[str, Any]], results: list[BatchOutput]
@@ -443,13 +445,20 @@ class SemanticPhase2:
                 for attempt in range(2):
                     try:
                         raw = await self.call(work / "discard-checks", data, batch_schema(set(aliases)),
-                            LABEL_INSTRUCTIONS + "\n逐条独立检查具体信息是否存在。完整论文摘要、方法介绍、产品能力、人员变动或可辨认的事实主张不是纯寒暄。不要把未细读的尾部记录默认标为 chatter。")
+                            LABEL_INSTRUCTIONS + (self.reading_instructions if self.reading_view else "")
+                            + "\n逐条独立检查具体信息是否存在。完整论文摘要、方法介绍、产品能力、人员变动或可辨认的事实主张不是纯寒暄。不要把未细读的尾部记录默认标为 chatter。")
                         break
                     except (ValueError, FileNotFoundError):
                         if attempt:
                             raise
             checked = validate_batch(raw, set(aliases))
             for label in checked.labels:
+                if self.reading_view and label.signal == "chatter":
+                    from .reading_view import unresolved_external_context
+                    original_doc = next(row for row in part if row["unit_id"] == aliases[label.unit_id])
+                    if unresolved_external_context(original_doc):
+                        label.signal = "unclear"
+                        label.local_group_id = "待补全上下文"
                 if label.signal == "chatter":
                     continue
                 uid = aliases[label.unit_id]
@@ -574,6 +583,22 @@ class SemanticPhase2:
                 raise ValueError("sealed Phase 2 input changed")
             return load_routing(root)
         work = root / CONTRACT
+        from .reading_view import INSTRUCTIONS as READING_INSTRUCTIONS
+        from .reading_view import VERSION as READING_VERSION
+        from .reading_view import view
+        profile_path = work / "input_profile.json"
+        if profile_path.exists():
+            profile = json.loads(profile_path.read_text())
+            if profile.get("version") not in {"legacy", "quoted-context-v1", READING_VERSION}:
+                raise ValueError("unknown frozen reading profile")
+            self.reading_profile = profile["version"]
+            self.reading_view = self.reading_profile != "legacy"
+        else:
+            legacy_work = work.exists() and any(work.iterdir())
+            self.reading_view = self.runtime.codex.phase2_reading_view and not legacy_work
+            self.reading_profile = READING_VERSION if self.reading_view else "legacy"
+            atomic_write_json(profile_path, {"version": self.reading_profile})
+        self.reading_instructions = READING_INSTRUCTIONS
         known_papers: list[Label] = []
         known_groups: dict[str, Group] = {}
         annotation_payloads = payloads
@@ -596,7 +621,7 @@ class SemanticPhase2:
         batch: list[dict[str, Any]] = []
         size = 0
         for row in annotation_payloads:
-            length = len(json.dumps(row, ensure_ascii=False).encode())
+            length = len(json.dumps(view(row, self.reading_profile) if self.reading_view else row, ensure_ascii=False).encode())
             if batch and (len(batch) >= 32 or size + length > 128 * 1024):
                 batches.append(batch)
                 batch, size = [], 0
@@ -609,7 +634,7 @@ class SemanticPhase2:
         async def annotate(part: list[dict[str, Any]]) -> BatchOutput:
             aliases = {f"r{index:04d}": row["unit_id"] for index, row in enumerate(part)}
             alias_input = [
-                {**row, "unit_id": alias} for alias, row in zip(aliases, part, strict=True)
+                {**(view(row, self.reading_profile) if self.reading_view else row), "unit_id": alias} for alias, row in zip(aliases, part, strict=True)
             ]
             async with semaphore:
                 for attempt in range(2):
@@ -618,14 +643,14 @@ class SemanticPhase2:
                             work / "labels",
                             alias_input,
                             batch_schema(set(aliases)),
-                            LABEL_INSTRUCTIONS,
+                            LABEL_INSTRUCTIONS + (READING_INSTRUCTIONS if self.reading_view else ""),
                         )
                         break
                     except (ValueError, FileNotFoundError):
                         if attempt:
                             raise
                 result = validate_batch(value, set(aliases))
-                by_alias = {row["unit_id"]: row for row in alias_input}
+                by_alias = {alias: row for alias, row in zip(aliases, part, strict=True)}
                 for label in result.labels:
                     document = by_alias[label.unit_id]
                     types = {o["item_type"] for o in document["observations"]}
@@ -720,6 +745,7 @@ class SemanticPhase2:
             root / "phase2_manifest.json",
             {
                 "contract": CONTRACT,
+                "reading_profile": self.reading_profile,
                 "evidence_packets_version": 2 if self.runtime.codex.phase2_evidence_packets else 0,
                 "prompt_version": PROMPT_VERSION,
                 "grouping_contract": "grounded_objects_v3" if self.runtime.codex.phase2_evidence_packets else

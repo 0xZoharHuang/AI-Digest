@@ -23,6 +23,8 @@ def main():
             continue
         tid = json.loads(checkpoint.read_text())["thread_id"]
         paths = list(args.sessions.glob(f"*{tid}.jsonl"))
+        if not paths:
+            paths = list(args.sessions.glob(f"*/*/*/*{tid}.jsonl"))
         if len(paths) != 1:
             raise ValueError(f"missing or ambiguous exact thread receipt: {tid}")
         records = [json.loads(line) for line in paths[0].read_text().split("\n") if line]
@@ -37,8 +39,8 @@ def main():
             if row.get("type") not in {"custom_tool_call", "function_call"}:
                 continue
             command = str(row.get("input") or row.get("arguments") or "")
-            if ("http" in command and any(marker in command for marker in
-                ("curl ", "wget ", "httpx.", "requests.get", "urllib.request", "gh api", "git clone"))
+            if (any(marker in command for marker in
+                ("curl ", "wget ", "httpx.", "requests.get", "urllib.request", "gh api", "git clone", "pdftotext"))
                 and not any(name in command for name in ("main_report.md", "decision.md", "evidence.jsonl"))):
                 retrieval_commands[row["call_id"]] = command
         chunks = []
@@ -60,7 +62,7 @@ def main():
                     text = ("Captured external-retrieval command and stdout; verify origin and do not treat "
                             "shell commentary or a successful clone as proof of file contents.\n"
                             + retrieval_commands[row["call_id"]] + "\nOUTPUT:\n" + text)
-                chunks += [part for part in re.split(r"-{8,}\n", text) if "http" in part]
+                chunks += re.split(r"-{8,}\n", text)
         provenance.append({"thread_id": tid, "session_file": str(paths[0]), "session_hash": file_sha256(paths[0]),
                            "source_tool_call_count": len(web_calls),
                            "external_retrieval_command_count": len(retrieval_commands)})

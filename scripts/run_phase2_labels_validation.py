@@ -39,6 +39,7 @@ async def main() -> None:
     parser.add_argument("--comparison-max-groups", type=int, default=256)
     parser.add_argument("--subject-keys", action="store_true")
     parser.add_argument("--evidence-packets", action="store_true")
+    parser.add_argument("--reading-view", action="store_true")
     parser.add_argument("--phase3-limit", type=int, choices=range(0, 1001), default=15,
                         help="Verify Phase 2 is independent of downstream task limits")
     parser.add_argument("--alias-model", default="gpt-5.6-luna")
@@ -46,6 +47,7 @@ async def main() -> None:
     args = parser.parse_args()
     source = args.source.resolve()
     target = args.target.resolve()
+    fresh_target = not target.exists()
     if target == source or target in source.parents or source in target.parents:
         raise ValueError("validation target must be separate from source")
     if not (source / "01_phase1" / "PHASE1_COMPLETE").exists():
@@ -81,8 +83,12 @@ async def main() -> None:
         router_reader_concurrency=args.concurrency,
         phase2_comparison_max_groups=args.comparison_max_groups, phase2_subject_keys=args.subject_keys,
         phase2_evidence_packets=args.evidence_packets,
+        phase2_reading_view=args.reading_view,
         phase3_daily_agent_limit=args.phase3_limit,
         phase2_alias_model=args.alias_model, phase2_alias_reasoning=args.alias_reasoning)
+    if fresh_target and args.reading_view:
+        from ai_digest.reading_view import VERSION
+        atomic_write_json(target / "02_routing/semantic_labels_v1/input_profile.json", {"version": VERSION})
     if args.reuse_work:
         previous = args.reuse_work.resolve() / "02_routing" / "semantic_labels_v1"
         for stage in ("labels", "index", "discard-checks", "merge-blocks", "subject-aliases", "primary-review",
@@ -98,7 +104,7 @@ async def main() -> None:
     policy_root = Path(ai_digest.__file__).parent
     policy_files = [policy_root / name for name in (
         "phase2_labels.py", "phase2_subjects.py", "phase2_aliases.py", "phase2_primary_review.py",
-        "phase2_scopes.py", "semantic_index.py", "evidence_identity.py", "evidence_packets.py", "link_identity.py")]
+        "phase2_scopes.py", "semantic_index.py", "evidence_identity.py", "evidence_packets.py", "link_identity.py", "reading_view.py")]
     policy_before = {p.name: file_sha256(p) for p in policy_files}
     invocation = target / "validation_invocations" / f"{time.time_ns()}.json"
     atomic_write_json(invocation, {"status": "started", "source": str(source),

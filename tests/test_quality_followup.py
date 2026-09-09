@@ -222,7 +222,8 @@ async def test_real_admission_integration_replays_and_preserves_phase2(tmp_path,
     runtime.codex.phase3_daily_agent_limit = 0
     assert (await select_phase3_admission(tmp_path, packages, runtime, None)).selection_mode == "disabled"
     runtime.codex.phase3_daily_agent_limit = 20
-    assert (await select_phase3_admission(tmp_path, packages, runtime, None)).selection_mode == "all"
+    # The production entrypoint now enforces the approved 15-thread ceiling.
+    assert await select_phase3_admission(tmp_path, packages, runtime, None) == first
 
 
 @pytest.mark.asyncio

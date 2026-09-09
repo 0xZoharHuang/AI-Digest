@@ -17,6 +17,7 @@ from ai_digest.phase2_labels import has_captured_anchor
 from ai_digest.phase3_admission import explore
 from ai_digest.phase3_batches import run_batch
 from ai_digest.store import load_jsonl
+from ai_digest.thread_metrics import aggregate_usage
 from ai_digest.utils import atomic_write_json
 from ai_digest.v3 import load_phase1_items, load_phase3_inputs
 
@@ -35,6 +36,8 @@ async def main():
     parser.add_argument("--prompt-file", type=Path, help="reuse a frozen research prompt for controlled comparisons")
     parser.add_argument("--exclude-sample", type=Path, help="exclude a prior frozen sample for a disjoint holdout")
     parser.add_argument("--reverse", action="store_true")
+    parser.add_argument("--lean-instructions", action="store_true")
+    parser.add_argument("--task-map", type=Path, help="frozen production-weighted task mapping")
     parser.add_argument("--package-ids", type=Path, help="explicit bounded regression cases")
     args = parser.parse_args()
     target = args.target.resolve()
@@ -42,6 +45,7 @@ async def main():
         if target == source or source in target.parents or target in source.parents:
             raise ValueError("experiment must be isolated from source")
     runtime = load_runtime_config()
+    runtime.codex.phase3_lean_instructions = args.lean_instructions
     if runtime.runtime_root.resolve() == target or runtime.shared_runtime_root.resolve() == target:
         raise ValueError("experiment cannot use production root")
     packages, units, catalog = load_phase3_inputs(args.routing / "02_routing")
@@ -93,12 +97,28 @@ async def main():
         size += costs[pid]
     if batch:
         batches.append(batch)
+    if args.task_map:
+        batches = json.loads(args.task_map.read_text())
+        flat = [pid for b in batches for pid in b]
+        if len(batches) > 15 or set(flat) != set(ids) or len(flat) != len(ids) or any(
+            not b or len(b) > 20 or (len(b) > 1 and sum(costs[pid] for pid in b) > 256_000) for b in batches):
+            raise ValueError("invalid frozen research mapping")
+        if args.reverse:
+            batches = [list(reversed(b)) for b in reversed(batches)]
     variant = target / (f"size-{args.batch_size}" + ("-reversed" if args.reverse else ""))
     prompt_override = args.prompt_file.read_text() if args.prompt_file else None
-    atomic_write_json(variant / "plan.json", {"batch_sizes": list(map(len, batches)), "batches": batches,
+    plan = {"batch_sizes": list(map(len, batches)), "batches": batches,
         "model": runtime.codex.research_model, "reasoning": runtime.codex.research_reasoning,
         "prompt_file_hash": file_sha256(args.prompt_file) if args.prompt_file else None,
-        "concurrency": args.concurrency, "original_bytes": [sum(costs[pid] for pid in b) for b in batches]})
+        "concurrency": args.concurrency, "lean_instructions": args.lean_instructions,
+        "original_bytes": [sum(costs[pid] for pid in b) for b in batches]}
+    plan_path = variant / "plan.json"
+    if plan_path.exists():
+        saved_plan = json.loads(plan_path.read_text())
+        if any(saved_plan.get(k, False if k == "lean_instructions" else None) != plan[k]
+               for k in ("batches", "model", "reasoning", "prompt_file_hash", "lean_instructions")):
+            raise ValueError("frozen task mapping or research contract changed")
+    atomic_write_json(plan_path, plan)
     print(json.dumps({"sample": len(ids), "batch_sizes": list(map(len, batches)), "strata": strata}), flush=True)
     if args.prepare_only:
         return
@@ -124,7 +144,8 @@ async def main():
         await asyncio.gather(*tasks, return_exceptions=True)
         raise
     calls = [c for result in results for c in result["calls"]]
-    usage = sum((Counter(c.get("usage") or {}) for c in calls), Counter())
+    measured_usage, usage_complete = aggregate_usage(calls)
+    usage = Counter(measured_usage)
     durations = [sum(c.get("elapsed_seconds", 0) for c in result["calls"]) for result in results]
     workers = [0.0] * args.concurrency
     for duration in durations:
@@ -132,13 +153,14 @@ async def main():
     receipt = {"completed": sum(len(r["completed"]) for r in results),
         "expected_in_this_invocation": sum(map(len, included)), "full_sample_size": len(ids),
         "errors": {pid: error for result in results for pid, error in result["errors"].items()},
-        "elapsed_seconds": time.monotonic() - started, "usage": dict(usage),
+        "elapsed_seconds": time.monotonic() - started, "usage": dict(usage), "usage_complete": usage_complete,
         "batch_recorded_model_seconds": durations,
         "simulated_model_makespan_seconds": max(workers),
         "timing_note": "Invocation wall time can include reused batches; model-time scheduling is an estimate, not cold end-to-end latency.",
         "noncached_input_tokens": usage["input_tokens"] - usage["cached_input_tokens"],
         "thread_ids": sorted({c["thread_id"] for c in calls if c.get("thread_id")}),
-        "web_search_events": sum(c.get("web_search_events", 0) for c in calls),
+        "web_search_events": (sum(c["web_search_events"] for c in calls)
+                              if all("web_search_events" in c for c in calls) else None),
         "live_publish_calls": 0}
     atomic_write_json(variant / "experiment_receipt.json", receipt)
     print(json.dumps(receipt, indent=2))

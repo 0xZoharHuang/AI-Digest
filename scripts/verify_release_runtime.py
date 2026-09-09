@@ -57,6 +57,8 @@ async def main():
     atomic_write_json(journal / "background_probe_receipt.json", {
         "status": "success", "snapshot": str(snapshot), "uid": os.getuid(),
         "codex_thread_id": result.thread_id, "phase2_evidence_packets": runtime.codex.phase2_evidence_packets,
+        "phase2_reading_view": runtime.codex.phase2_reading_view,
+        "phase3_lean_instructions": runtime.codex.phase3_lean_instructions,
         "dynamic_tasks": True, "capacity": 20, "daily_tasks": 15, "daily_hour": 7,
         "lark_verified": True, "receiver_matches_verified_owner": True, "live_messages_sent": 0})
 

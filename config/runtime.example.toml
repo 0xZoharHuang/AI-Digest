@@ -7,6 +7,8 @@ article_preview_chars = 4000
 x_text_retention_days = 30
 
 [codex]
+phase2_reading_view = false
+phase3_lean_instructions = false
 phase2_engine = "semantic_labels_v1"
 phase2_label_model = "gpt-5.6-luna"
 phase2_label_reasoning = "medium"

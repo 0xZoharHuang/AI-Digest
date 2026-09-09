@@ -88,9 +88,7 @@ async def batch_admission(run_dir: Path, packages: list[ResearchPackage], runtim
 def batch_instructions() -> str:
     from .v3 import phase3_agents_md
 
-    independent = phase3_agents_md().replace(
-        "最多派发四个一级 subagents，仅用于彼此独立的调查问题。subagent 返回事实、原始证据、冲突和\n未知；你负责核查、综合和最终中文表达。",
-        "不得创建 subagents，不得调用其他模型或另开逐包 agent。")
+    independent = phase3_agents_md()
     independent = independent.replace("你可以推翻标签、重新聚类并自主决定研究深度。",
         "你可以质疑标签并自主决定研究深度，但不得改变本批各原始包的成员。")
     return ("# Independent research task\n\n"
@@ -127,6 +125,14 @@ def prepare_batch(work: Path, packages: list[ResearchPackage], units: Any, catal
                   items: Any, run_dir: Path, runtime: RuntimeConfig) -> None:
     from .v3 import materialize_research_workspace, safe_child
 
+    profile_path = work / "authoring_profile.json"
+    if profile_path.exists():
+        profile = json.loads(profile_path.read_text())
+    else:
+        profile = {"version": "lean-v2" if runtime.codex.phase3_lean_instructions and not (work / "identity.json").exists() else "legacy"}
+        atomic_write_json(profile_path, profile)
+    if profile["version"] not in {"legacy", "lean-v1", "lean-v2"}:
+        raise ValueError("unknown frozen research authoring profile")
     shared = work / "shared"
     shared.mkdir(parents=True, exist_ok=True)
     for package in packages:
@@ -161,7 +167,8 @@ def prepare_batch(work: Path, packages: list[ResearchPackage], units: Any, catal
                             if runtime.codex.phase3_dynamic_tasks and (run_dir / "02_routing" / name).is_file()],
         "packages": [{"package_id": p.package_id, "label": p.label_zh, "unit_ids": p.unit_ids,
                       "path": f"packages/{p.package_id}"} for p in packages]})
-    atomic_write_text(work / "AGENTS.md", batch_instructions())
+    from .research_contract import instructions
+    atomic_write_text(work / "AGENTS.md", instructions(profile["version"]) if profile["version"].startswith("lean-") else batch_instructions())
 
 
 def validate_batch_package(folder: Path, package: ResearchPackage) -> ResearchArtifactManifest:
@@ -193,11 +200,22 @@ async def run_batch(work: Path, packages: list[ResearchPackage], units: Any, cat
         raise ValueError("unsafe research reference file")
     if prompt_override is not None:
         atomic_write_text(work / "AGENTS.md", prompt_override)
+    source_files = [p for folder in (work / "packages").glob("*/sources") for p in folder.rglob("*") if p.is_file()]
+    protected_sources = {str(p.relative_to(work)): file_sha256(p) for p in source_files}
+    prior_identity = work / "identity.json"
+    prior_inputs = json.loads(prior_identity.read_text()).get("inputs", {}) if prior_identity.exists() else None
+    source_files = [p for p in source_files if prior_inputs is None or str(p.relative_to(work)) in prior_inputs]
     identity: dict[str, Any] = {"version": VERSION, "model": runtime.codex.research_model,
         "reasoning": runtime.codex.research_reasoning,
         "inputs": {str(path.relative_to(work)): file_sha256(path)
                    for path in [work / "AGENTS.md", work / "batch_manifest.json", *sorted((work / "shared").rglob("*")),
-                                *sorted((work / "packages").glob("*/sources/*.json"))] if path.is_file()}}
+                                *sorted(source_files)] if path.is_file()}}
+    profile = work / "authoring_profile.json"
+    existing_identity = work / "identity.json"
+    include_profile = (not existing_identity.exists()
+        or profile.name in json.loads(existing_identity.read_text()).get("inputs", {}))
+    if profile.exists() and json.loads(profile.read_text())["version"].startswith("lean-") and include_profile:
+        identity["inputs"][profile.name] = file_sha256(profile)
     identity_path = work / "identity.json"
     identity["inputs"].update({os.path.relpath(path, work): file_sha256(path) for path in reference_files})
     if identity_path.exists() and json.loads(identity_path.read_text()) != identity:
@@ -222,6 +240,10 @@ async def run_batch(work: Path, packages: list[ResearchPackage], units: Any, cat
                     else:
                         completed[package.package_id] = manifest.model_dump(mode="json")
                         continue
+                profile = work / "authoring_profile.json"
+                if profile.exists() and json.loads(profile.read_text())["version"].startswith("lean-"):
+                    from .research_contract import compile_manifest
+                    compile_manifest(source, package)
                 manifest = validate_batch_package(source, package)
                 if not (work / "session.json").exists():
                     raise ValueError("batch output has no thread checkpoint")
@@ -251,11 +273,29 @@ async def run_batch(work: Path, packages: list[ResearchPackage], units: Any, cat
             "pending": [p.package_id for p in packages if p.package_id not in completed], "errors": errors})
 
     collect()
+    accepted_files: dict[str, str] = {}
+    for pid in completed:
+        for folder in (work / "packages" / pid, safe_child(run_dir / "03_research", pid)):
+            for path in folder.rglob("*"):
+                if path.is_file() and not path.is_symlink():
+                    accepted_files[os.path.relpath(path, work)] = file_sha256(path)
     calls = []
     receipt = work / "receipt.json"
     if receipt.exists():
         calls = json.loads(receipt.read_text()).get("calls", [])
     previous_call_count = len(calls)
+    known_threads = {c["thread_id"] for c in calls if c.get("thread_id")}
+    checkpoint = work / "session.json"
+    if checkpoint.exists():
+        tid = json.loads(checkpoint.read_text()).get("thread_id")
+        if tid:
+            known_threads.add(tid)
+    if len(known_threads) > 1:
+        raise RuntimeError("research task has conflicting thread identities")
+    if calls and not known_threads:
+        raise RuntimeError("previous startup has no recoverable thread; refusing replacement thread")
+    if known_threads and not checkpoint.exists():
+        atomic_write_json(checkpoint, {"thread_id": next(iter(known_threads))})
     started = time.monotonic()
     for attempt in range(2):
         if len(completed) == len(packages):
@@ -268,11 +308,23 @@ async def run_batch(work: Path, packages: list[ResearchPackage], units: Any, cat
             prompt += " 修复 progress.json 记录的遗漏或产物错误，不降低研究质量，不重做已完成包。"
         call_started = time.monotonic()
         call_started_at = datetime.now(UTC).isoformat()
-        result = await runner.run(workspace=work, prompt=prompt,
-            model=runtime.codex.research_model, reasoning=runtime.codex.research_reasoning,
-            sandbox="workspace-write", web_search=True, agents=False,
-            reference_files=reference_files,
-            resume_thread_id=thread_id, thread_checkpoint_path=checkpoint)
+        from .thread_metrics import thread_metrics
+        try:
+            result = await runner.run(workspace=work, prompt=prompt,
+                model=runtime.codex.research_model, reasoning=runtime.codex.research_reasoning,
+                sandbox="workspace-write", web_search=True, agents=False,
+                reference_files=reference_files,
+                resume_thread_id=thread_id, thread_checkpoint_path=checkpoint)
+        except BaseException:
+            interrupted_id = json.loads(checkpoint.read_text()).get("thread_id") if checkpoint.exists() else thread_id
+            calls.append({"thread_id": interrupted_id, "interrupted": True,
+                "thread_metrics": thread_metrics(interrupted_id, work), "elapsed_seconds": time.monotonic() - call_started})
+            atomic_write_json(receipt, {"calls": calls, "completed": list(completed)})
+            changed = [name for name, expected in {**identity["inputs"], **protected_sources, **accepted_files}.items()
+                       if (work / name).is_symlink() or not (work / name).is_file() or file_sha256(work / name) != expected]
+            if changed:
+                atomic_write_json(work / "INPUT_VIOLATION.json", {"changed_files": changed})
+            raise
         if thread_id and result.thread_id and result.thread_id != thread_id:
             raise RuntimeError("batch changed its thread identity")
         if not result.thread_id and not thread_id:
@@ -284,18 +336,33 @@ async def run_batch(work: Path, packages: list[ResearchPackage], units: Any, cat
         if result.thread_id and not checkpoint.exists():
             atomic_write_json(checkpoint, {"thread_id": result.thread_id})
         calls.append({**codex_summary(result), "elapsed_seconds": time.monotonic() - call_started,
+            "thread_metrics": thread_metrics(result.thread_id or thread_id, work),
             "started_at": call_started_at, "completed_at": datetime.now(UTC).isoformat(),
             "web_search_events": sum(event.get("item", {}).get("type") == "web_search"
                                      and event.get("type") == "item.completed" for event in result.events)})
         atomic_write_json(receipt, {"calls": calls, "completed": list(completed)})
-        changed = [name for name, digest in identity["inputs"].items()
+        changed = [name for name, digest in {**identity["inputs"], **protected_sources, **accepted_files}.items()
                    if (work / name).is_symlink() or not (work / name).is_file() or file_sha256(work / name) != digest]
         if changed:
             atomic_write_json(work / "INPUT_VIOLATION.json", {"changed_files": changed})
             raise ValueError("batch altered original inputs or shared instructions")
         collect()
+        for pid in completed:
+            for folder in (work / "packages" / pid, safe_child(run_dir / "03_research", pid)):
+                for path in folder.rglob("*"):
+                    if path.is_file() and not path.is_symlink():
+                        accepted_files[os.path.relpath(path, work)] = file_sha256(path)
         if not result.success:
             break
+    from .thread_metrics import thread_metrics
+    refreshed = set()
+    for call in reversed(calls):
+        tid = call.get("thread_id")
+        if tid and tid not in refreshed:
+            observed = thread_metrics(tid, work)
+            if observed.get("status") == "observed":
+                call["thread_metrics"] = observed
+            refreshed.add(tid)
     output = {"completed": completed, "errors": {pid: reason for pid, reason in errors.items() if pid not in completed},
               "calls": calls, "executed_calls_this_invocation": len(calls) - previous_call_count,
               "elapsed_seconds": time.monotonic() - started}

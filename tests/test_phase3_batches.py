@@ -87,6 +87,31 @@ async def test_one_thread_recovers_only_pending_packages(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_completed_package_mutation_blocks_resume(monkeypatch, tmp_path):
+    monkeypatch.setattr("ai_digest.phase3_batches.prepare_batch", prepare)
+    packages = [ResearchPackage(package_id=pid, label_zh=pid, scope_note_zh="独立", unit_ids=["u" + pid]) for pid in "ab"]
+    class Runner:
+        calls = 0
+        async def run(self, **kwargs):
+            self.calls += 1
+            work = kwargs["workspace"]
+            if self.calls == 1:
+                complete(work, packages[0])
+                return CodexResult(exit_code=1, thread_id="same-thread", error_class="network")
+            atomic_write_text(work / "packages/a/decision.md", "覆盖已经完成的结果")
+            complete(work, packages[1])
+            return CodexResult(exit_code=0, thread_id="same-thread")
+    args = (tmp_path / "work", packages, {}, {}, {}, tmp_path / "run", RuntimeConfig(), Runner())
+    await run_batch(*args)
+    canonical = (tmp_path / "run/03_research/a/decision.md").read_bytes()
+    with pytest.raises(ValueError, match="altered"):
+        await run_batch(*args)
+    assert (tmp_path / "run/03_research/a/decision.md").read_bytes() == canonical
+    with pytest.raises(ValueError, match="mutation"):
+        await run_batch(*args)
+
+
+@pytest.mark.asyncio
 async def test_batch_admission_is_path_independent_and_preserves_phase2(monkeypatch, tmp_path):
     packages = [ResearchPackage(package_id=f"p{i}", label_zh="独立项目", scope_note_zh="独立", unit_ids=[f"u{i}"]) for i in range(100)]
     docs = [{"unit_id": f"u{i}", "sources": [str(i % 3)], "observations": [{"payload": {"title": f"Project {i}"}}]} for i in range(100)]
