@@ -40,10 +40,19 @@ def nearest_groups(
     documents: dict[str, Any],
     cache: Path,
     batches: dict[str, int] | None = None,
+    *,
+    max_neighbours: int = 8,
+    evidence_only: bool = False,
+    encode_batch_size: int = 32,
 ) -> dict[str, list[str]]:
     import hnswlib
     import numpy as np
     from sentence_transformers import SentenceTransformer
+
+    if not 1 <= max_neighbours <= 32:
+        raise ValueError("invalid candidate neighbourhood size")
+    if not 1 <= encode_batch_size <= 32:
+        raise ValueError("invalid embedding batch size")
 
     cache.mkdir(parents=True, exist_ok=True)
     model = None
@@ -68,9 +77,10 @@ def nearest_groups(
             start = len(sentences)
             sentences.extend([title, *(chunks or [title])])
             spans.append((number, path, start, len(sentences)))
-        embeddings = model.encode(sentences, batch_size=32, normalize_embeddings=True)
+        embeddings = model.encode(sentences, batch_size=encode_batch_size, normalize_embeddings=True)
         for number, path, start, end in spans:
-            vector = np.asarray((embeddings[start] + embeddings[start + 1:end].mean(axis=0)) / 2, dtype=np.float32)
+            evidence = embeddings[start + 1:end].mean(axis=0)
+            vector = np.asarray(evidence if evidence_only else (embeddings[start] + evidence) / 2, dtype=np.float32)
             vector /= max(float(np.linalg.norm(vector)), 1e-12)
             if vector.shape != (1024,) or not np.isfinite(vector).all():
                 raise ValueError("invalid embedding vector")
@@ -91,7 +101,8 @@ def nearest_groups(
             )
             for uid in package.unit_ids
         ]
-        key = digest([MODEL, REVISION, "subject-and-evidence-v2", package.label_zh, texts])
+        key = digest([MODEL, REVISION, "raw-evidence-only-v1" if evidence_only else "subject-and-evidence-v2",
+                      "" if evidence_only else package.label_zh, texts])
         path = cache / f"{key}.json"
         if path.exists():
             try:
@@ -101,7 +112,7 @@ def nearest_groups(
                     continue
             except (OSError, ValueError, TypeError):
                 pass
-        pending_groups.append((number, path, package.label_zh, texts))
+        pending_groups.append((number, path, "" if evidence_only else package.label_zh, texts))
         if len(pending_groups) >= 64:
             flush()
     flush()
@@ -116,9 +127,9 @@ def nearest_groups(
     index.add_items(matrix, list(range(len(packages))))
     del batches
     for number, package in enumerate(packages):
-        ids, distances = index.knn_query(matrix[number : number + 1], k=min(9, len(packages)))
+        ids, distances = index.knn_query(matrix[number : number + 1], k=min(max_neighbours + 1, len(packages)))
         candidates = [(int(i), float(distance)) for i, distance in zip(ids[0], distances[0], strict=True)
-                      if int(i) != number and float(distance) <= 0.40][:8]
+                      if int(i) != number and float(distance) <= 0.40][:max_neighbours]
         result[package.package_id] = [packages[i].package_id for i, _ in candidates]
         for i, distance in candidates:
             result.scores[(package.package_id, packages[i].package_id)] = 1.0 - distance
