@@ -113,7 +113,10 @@ class ReadingPacker:
                 requests.append(result["_cache"]["id"])
                 scores.append(result["answers"]["supported"]["probability"])
             confirmations[centre] = scores
-            if all(score is not None and score > .5 for score in scores):
+            # A pack is a reading contract, not a transitive similarity component.
+            # Every supplied representative must pass the conservative confirmation;
+            # one peripheral link cannot pull an unrelated record into the pack.
+            if all(score is not None and score > .65 for score in scores):
                 chosen = centre
                 break
         return {"unit_id": prepared["unit_id"], "assigned_centre": chosen, "request_ids": requests,
