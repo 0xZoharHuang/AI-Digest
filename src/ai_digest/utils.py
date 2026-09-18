@@ -72,7 +72,11 @@ def atomic_write_json(path: Path, value: Any) -> None:
 
 
 def atomic_write_jsonl(path: Path, rows: Iterable[Any]) -> None:
-    content = "".join(json_dumps(row) + "\n" for row in rows)
+    # JSON Lines consumers commonly use splitlines(); U+2028/U+2029 are valid JSON
+    # characters but Unicode line separators to Python/string tooling. Escape non-ASCII
+    # code points at the file boundary so one original record is always one physical line.
+    content = "".join(json.dumps(row, ensure_ascii=True, separators=(",", ":"),
+                                 default=str, sort_keys=True) + "\n" for row in rows)
     atomic_write_text(path, content)
 
 
