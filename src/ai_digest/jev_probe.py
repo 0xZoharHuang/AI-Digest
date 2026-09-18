@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import time
 from decimal import Decimal
 from pathlib import Path
@@ -18,6 +19,18 @@ from .utils import atomic_write_json
 MODEL = "typesafe-ai/jev"
 RESERVATION = Decimal("0.005")
 LIMIT = Decimal("10")
+_worker_transport: Any = None
+_transport_lock = threading.Lock()
+
+
+def request_fits(request: dict[str, Any], *, persistent: bool = False) -> bool:
+    def size(value: Any) -> int:
+        return len(json.dumps(value, ensure_ascii=False, sort_keys=True).encode())
+    if not persistent:
+        return size(request) <= 24000
+    # Byte ceilings conservatively bound tokenizer input; leave protocol overhead margin.
+    return size(request) <= 60000 and size(request.get("state")) + max(
+        (size(q) for q in request.get("questions", {}).values()), default=0) <= 28000
 
 
 class JevCallError(RuntimeError):
@@ -131,7 +144,7 @@ def validate_answers(request: dict[str, Any], result: dict[str, Any]) -> None:
 def evaluate(root: Path, request: dict[str, Any], bridge: Path, *, retry_rate_limit: bool = False,
              retry_transient: bool = False) -> dict[str, Any]:
     payload = json.dumps(request, ensure_ascii=False, sort_keys=True)
-    if len(payload.encode()) > 24000:
+    if not request_fits(request, persistent=bridge.name == "jev_gateway_worker.mjs"):
         raise ValueError("request too large; split original content, never truncate")
     identity = hashlib.sha256((MODEL + bridge.read_text() + payload).encode()).hexdigest()
     locks = root / "request-locks"
@@ -145,7 +158,7 @@ def evaluate(root: Path, request: dict[str, Any], bridge: Path, *, retry_rate_li
 def _evaluate_reserved(root: Path, request: dict[str, Any], bridge: Path, *, retry_rate_limit: bool = False,
                        retry_transient: bool = False) -> dict[str, Any]:
     payload = json.dumps(request, ensure_ascii=False, sort_keys=True)
-    if len(payload.encode()) > 24000:
+    if not request_fits(request, persistent=bridge.name == "jev_gateway_worker.mjs"):
         raise ValueError("request too large; split original content, never truncate")
     identity = hashlib.sha256((MODEL + bridge.read_text() + payload).encode()).hexdigest()
     root.mkdir(parents=True, exist_ok=True)
@@ -161,7 +174,11 @@ def _evaluate_reserved(root: Path, request: dict[str, Any], bridge: Path, *, ret
                 return {**cast(dict[str, Any], receipt["result"]), "_cache": {"hit": True, "id": identity}}
             status = receipt.get("result", {}).get("error", {}).get("status")
             invalid_answer = receipt.get("result", {}).get("error", {}).get("name") == "AI_InvalidResponseDataError"
-            allowed = (retry_rate_limit and status == 429) or (retry_transient and (status in {408, 429, 500, 502, 503, 504} or invalid_answer))
+            # A process killed after reservation can leave a receipt without a provider
+            # status. Only the explicit resume_failed path may retry that uncertain call;
+            # the receipt is archived before the new reservation is made.
+            allowed = (retry_rate_limit and status == 429) or (retry_transient and
+                (status is None or status in {408, 429, 500, 502, 503, 504} or invalid_answer))
             if not allowed:
                 raise RuntimeError("previous ambiguous/failed call retained; explicit review required")
             atomic_write_json(root / "attempts" / f"{identity}-{time.time_ns()}.json", receipt)
@@ -191,7 +208,16 @@ def _evaluate_reserved(root: Path, request: dict[str, Any], bridge: Path, *, ret
         fcntl.flock(lock, fcntl.LOCK_UN)
         started = time.monotonic()
         launcher = "await import(process.argv[1]); await new Promise(r => process.stdout.write('', r)); process.exit(process.exitCode ?? 0);"
-        process = subprocess.run(["node", "--use-env-proxy", "--input-type=module", "-e", launcher, bridge.as_uri()], input=payload,
+        run = subprocess.run
+        if bridge.name == "jev_gateway_worker.mjs":
+            from .jev_transport import GatewayWorkers
+            global _worker_transport
+            with _transport_lock:
+                if _worker_transport is None:
+                    _worker_transport = GatewayWorkers()
+            run = _worker_transport.run
+        process = run(["node", "--use-env-proxy", "--input-type=module", "-e", launcher,
+                       str(bridge) if bridge.name == "jev_gateway_worker.mjs" else bridge.as_uri()], input=payload,
                                  capture_output=True, text=True, env=env, timeout=60)
         elapsed = time.monotonic() - started
         fcntl.flock(lock, fcntl.LOCK_EX)
