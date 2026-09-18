@@ -40,6 +40,7 @@ from .phase2_attention import (
 from .phase2_bounded import BoundedAttentionPhase2
 from .phase2_labels import CONTRACT as LABELS_CONTRACT
 from .phase2_labels import SemanticPhase2
+from .phase2_labels import load_routing as load_label_routing
 from .phase2_labels import validate_artifacts as validate_label_artifacts
 from .store import load_jsonl
 from .utils import atomic_write_json, atomic_write_jsonl, atomic_write_text
@@ -157,6 +158,15 @@ class V3Phases:
             raise RuntimeError("Phase 1 is not sealed")
         root = run_dir / "02_routing"
         root.mkdir(parents=True, exist_ok=True)
+        if self.runtime.codex.phase2_engine == "jev_reading_v2":
+            from .jev_engine import run as run_jev_phase2
+            items = load_phase1_items(phase1)
+            if (root / "PHASE2_COMPLETE").exists():
+                manifest = _read_json(root / "phase2_manifest.json", {})
+                if manifest.get("contract") != "jev_reading_v2":
+                    raise RuntimeError("completed Phase 2 uses a different contract; preserve and migrate explicitly")
+                return load_label_routing(root)
+            return await run_jev_phase2(self.runtime, run_dir, items)
         manifest = _read_json(root / "phase2_manifest.json", {})
         if manifest.get("contract") == LABELS_CONTRACT and (root / "PHASE2_COMPLETE").exists():
             items = load_phase1_items(phase1)

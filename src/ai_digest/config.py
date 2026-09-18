@@ -25,7 +25,7 @@ REPO_ROOT = _repo_root()
 
 
 class CodexConfig(BaseModel):
-    phase2_engine: Literal["semantic_labels_v1", "attention_editor_v3"] = "semantic_labels_v1"
+    phase2_engine: Literal["semantic_labels_v1", "attention_editor_v3", "jev_reading_v2"] = "jev_reading_v2"
     phase2_label_model: str = "gpt-5.6-luna"
     phase2_label_reasoning: str = "medium"
     phase2_text_only: bool = True
