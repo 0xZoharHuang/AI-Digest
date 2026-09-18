@@ -16,11 +16,38 @@ from typing import Any
 from .models import Assignment, Bundle, ResearchPackage, RoutingOutput, SourceItem
 from .phase2_attention import build_phase2_unit_documents, file_sha256
 from .phase2_labels import digest
-from .phase2_labels import validate_artifacts as validate_label_artifacts
 from .utils import atomic_write_json, atomic_write_jsonl, atomic_write_text
 from .v3 import build_observation_units
 
 CONTRACT = "jev_reading_v2"
+
+
+def validate_jev_artifacts(root: Path) -> None:
+    manifest = json.loads((root / "phase2_manifest.json").read_text())
+    if manifest.get("contract") != CONTRACT:
+        raise ValueError("wrong Jev Phase 2 contract")
+    required = {"units.jsonl", "labels.jsonl", "packages.json", "catalog.jsonl"}
+    if set(manifest.get("hashes", {})) != required:
+        raise ValueError("incomplete Jev Phase 2 hashes")
+    for name, expected in manifest["hashes"].items():
+        if file_sha256(root / name) != expected:
+            raise ValueError(f"Jev artifact hash mismatch: {name}")
+    units = [json.loads(line) for line in (root / "units.jsonl").read_text().splitlines() if line]
+    labels = [json.loads(line) for line in (root / "labels.jsonl").read_text().splitlines() if line]
+    packages = [ResearchPackage.model_validate(row) for row in json.loads((root / "packages.json").read_text())]
+    ids = {row["unit_id"] for row in units}
+    members = [uid for package in packages for uid in package.unit_ids]
+    eligible = {row["unit_id"] for row in labels if row["research_eligibility"] == "eligible"}
+    if len(ids) != len(units) or len(labels) != len(units) or set(row["unit_id"] for row in labels) != ids:
+        raise ValueError("Jev label coverage mismatch")
+    if len(members) != len(set(members)) or set(members) != eligible:
+        raise ValueError("Jev package coverage mismatch")
+    catalog = [json.loads(line) for line in (root / "catalog.jsonl").read_text().splitlines() if line]
+    membership = {uid: package.package_id for package in packages for uid in package.unit_ids}
+    if len(catalog) != len(eligible) or {row["unit_id"] for row in catalog} != eligible:
+        raise ValueError("Jev catalog coverage mismatch")
+    if any(row.get("package_id") != membership.get(row.get("unit_id")) for row in catalog):
+        raise ValueError("Jev catalog membership mismatch")
 
 
 def _run_candidate(run_dir: Path, sample: Path, output: Path, budget_root: Path) -> None:
@@ -89,7 +116,7 @@ async def run(runtime: Any, run_dir: Path, items: dict[str, SourceItem]) -> Rout
     for name in manifest["hashes"]:
         manifest["hashes"][name] = file_sha256(root / name)
     atomic_write_json(root / "phase2_manifest.json", manifest)
-    validate_label_artifacts(root)
+    validate_jev_artifacts(root)
     atomic_write_text(root / "PHASE2_COMPLETE", CONTRACT + "\n")
     return RoutingOutput(
         bundles=[Bundle(bundle_id=p.package_id, label=p.label_zh,
