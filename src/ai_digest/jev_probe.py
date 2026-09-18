@@ -143,7 +143,7 @@ def validate_answers(request: dict[str, Any], result: dict[str, Any]) -> None:
 
 def evaluate(root: Path, request: dict[str, Any], bridge: Path, *, retry_rate_limit: bool = False,
              retry_transient: bool = False) -> dict[str, Any]:
-    payload = json.dumps(request, ensure_ascii=False, sort_keys=True)
+    payload = json.dumps(request, ensure_ascii=bridge.name == "jev_gateway_worker.mjs", sort_keys=True)
     if not request_fits(request, persistent=bridge.name == "jev_gateway_worker.mjs"):
         raise ValueError("request too large; split original content, never truncate")
     identity = hashlib.sha256((MODEL + bridge.read_text() + payload).encode()).hexdigest()
@@ -157,7 +157,7 @@ def evaluate(root: Path, request: dict[str, Any], bridge: Path, *, retry_rate_li
 
 def _evaluate_reserved(root: Path, request: dict[str, Any], bridge: Path, *, retry_rate_limit: bool = False,
                        retry_transient: bool = False) -> dict[str, Any]:
-    payload = json.dumps(request, ensure_ascii=False, sort_keys=True)
+    payload = json.dumps(request, ensure_ascii=bridge.name == "jev_gateway_worker.mjs", sort_keys=True)
     if not request_fits(request, persistent=bridge.name == "jev_gateway_worker.mjs"):
         raise ValueError("request too large; split original content, never truncate")
     identity = hashlib.sha256((MODEL + bridge.read_text() + payload).encode()).hexdigest()
