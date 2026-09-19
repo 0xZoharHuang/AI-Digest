@@ -211,3 +211,29 @@ def test_fixed_queue_import_validates_all_artifacts_and_exclusions(tmp_path):
     (job / "02_routing/reading_coverage.json").write_text("{}")
     with pytest.raises(ValueError, match="hash mismatch"):
         _import_routing(job, owner)
+
+
+def test_production_phase2_is_identical_under_different_research_budgets(tmp_path, monkeypatch):
+    from ai_digest.phase2_jev import execute
+
+    class Client(FakeJev):
+        def __init__(self, *args, **kwargs):
+            super().__init__()
+
+        def usage(self):
+            return {}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("ai_digest.phase2_jev.JevClient", Client)
+    monkeypatch.setattr("ai_digest.phase2_jev.build_draft", lambda views, cache: draft(views))
+    source = items()
+    results = []
+    for budget in (0, 1, 15, 100):
+        run = tmp_path / str(budget)
+        prepare_reading_handoff(run / "01_phase1", source)
+        runtime = RuntimeConfig(runtime_root=tmp_path / "runtime")
+        runtime.codex.phase3_daily_agent_limit = budget
+        results.append(execute(runtime, run, source))
+    assert all(result == results[0] for result in results)
