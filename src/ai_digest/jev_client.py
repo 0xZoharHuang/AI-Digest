@@ -4,6 +4,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import random
 import selectors
 import subprocess
 import threading
@@ -24,8 +25,9 @@ def fits(request: dict[str, Any]) -> bool:
 
 
 class JevUnavailable(RuntimeError):
-    def __init__(self, message: str, *, status: int | None = None):
+    def __init__(self, message: str, *, status: int | None = None, retry_after_seconds: float = 0):
         self.error_class = "authentication" if status in {401, 403} else "quota" if status == 402 else "capacity" if status == 429 else "network"
+        self.retry_after_seconds = retry_after_seconds
         super().__init__(message)
 
 
@@ -33,7 +35,7 @@ class JevClient:
     def __init__(self, root: Path, *, key_service: str = "ai-digest-jev-production", node: str = "node"):
         self.root, self.key_service, self.node = root, key_service, node
         self.worker = Path(__file__).with_name("jev_worker.mjs")
-        self.identity = digest([MODEL, self.worker.read_text()])
+        self.identity = digest([MODEL, self.worker.read_text(), "canonical-json-v1"])
         self.local = threading.local()
         self.lock = threading.Lock()
         self.processes: list[subprocess.Popen[bytes]] = []
@@ -81,7 +83,7 @@ class JevClient:
                 self.processes.append(worker)
         assert worker.stdin and worker.stdout
         try:
-            worker.stdin.write(json.dumps(request, ensure_ascii=True).encode() + b"\n")
+            worker.stdin.write(json.dumps(request, ensure_ascii=True, sort_keys=True).encode() + b"\n")
             worker.stdin.flush()
             with selectors.DefaultSelector() as selector:
                 selector.register(worker.stdout, selectors.EVENT_READ)
@@ -117,7 +119,7 @@ class JevClient:
                     self.receipts[identity] = prior
                 return {**prior["result"], "_cache": {"id": identity, "hit": True}}
             history = list(prior.get("attempts", [])) if prior else []
-            for retry in range(3):
+            for retry in range(5):
                 history.append({"status": "started", "time": time.time(), "billing_unknown": True})
                 saved = {"request": request, "status": "pending", "attempts": history}
                 atomic_write_json(path, saved)
@@ -130,10 +132,12 @@ class JevClient:
                     if "error" in result:
                         atomic_write_json(path, saved)
                         code = result["error"].get("status")
-                        if code in {408, 429, 500, 502, 503, 504} and retry < 2:
-                            time.sleep(2 ** retry)
+                        retry_after = float(result["error"].get("retryAfterSeconds") or 0)
+                        transient = code in {408, 429, 500, 502, 503, 504} or result["error"].get("name") == "AI_InvalidResponseDataError"
+                        if transient and retry < 4 and retry_after <= 30:
+                            time.sleep(max(2 ** (retry + 1), retry_after) + random.uniform(0, 0.25))
                             continue
-                        raise JevUnavailable(f"Gateway failed (status={code}, type={result['error'].get('name')}); no fallback", status=code)
+                        raise JevUnavailable(f"Gateway failed (status={code}, type={result['error'].get('name')}); no fallback", status=code, retry_after_seconds=retry_after)
                     validate_answers(request, result)
                     gateway = result.get("providerMetadata", {}).get("gateway", {})
                     for key in ("cost", "marketCost"):

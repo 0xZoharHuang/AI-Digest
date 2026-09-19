@@ -13,8 +13,9 @@ from .jev_client import JevClient, JevUnavailable
 from .models import Assignment, Bundle, ResearchPackage, RoutingOutput, SourceItem
 from .phase1_handoff import item_hash, load_reading_handoff
 from .phase2_attention import file_sha256
-from .phase2_frozen import MODE, VERSION, FrozenPhase2, build_draft
+from .phase2_inputs import build_index
 from .phase2_labels import Label, digest
+from .phase2_stateful import VERSION, StatefulPhase2
 from .store import load_jsonl
 from .utils import atomic_write_json, atomic_write_jsonl, atomic_write_text
 
@@ -126,22 +127,25 @@ def execute(runtime: RuntimeConfig, run_dir: Path, items: dict[str, SourceItem])
                 raise ValueError("failure publication/legacy completion is not fixed Phase 2 success")
             return load_routing(root, items)
         views = load_reading_handoff(run_dir / "01_phase1", items)
-        work = root / CONTRACT
-        draft_path = work / "draft.json"
+        legacy = root / CONTRACT
+        if (legacy / "contract.json").exists() or (legacy / "draft.json").exists():
+            raise ValueError("unfinished frozen-draft task requires its original snapshot; no silent stateful migration")
+        work = legacy / "stateful"
+        draft_path = work / "index.json"
         if draft_path.exists():
             saved = json.loads(draft_path.read_text())
             if saved.get("views_hash") != digest(views) or saved.get("draft_hash") != digest(saved["draft"]):
                 raise ValueError("frozen draft changed")
             draft = saved["draft"]
         else:
-            draft = build_draft(views, runtime.runtime_root / "jev" / "index")
+            draft = build_index(views, runtime.runtime_root / "jev" / "index")
             atomic_write_json(draft_path, {"views_hash": digest(views), "draft_hash": digest(draft), "draft": draft})
         client = JevClient(runtime.runtime_root / "jev" / "calls", key_service=runtime.jev.key_service)
         try:
-            outcome = FrozenPhase2(client, work, workers=runtime.jev.workers).run(views, draft, mode=MODE)
+            outcome = StatefulPhase2(client, work, workers=runtime.jev.workers).run(views, draft)
             return seal(root, items, outcome, client.usage())
         finally:
-            atomic_write_json(work / "usage.json", client.usage())
+            atomic_write_json(legacy / "usage.json", client.usage())
             client.close()
 
 
@@ -150,4 +154,4 @@ async def run(runtime: RuntimeConfig, run_dir: Path, items: dict[str, SourceItem
         return await asyncio.to_thread(execute, runtime, run_dir, items)
     except JevUnavailable as error:
         # Reuse existing queue/notification machinery, not a second recovery system.
-        raise RetryableCodexError("Phase 2 Jev", CodexResult(exit_code=1, error_class=error.error_class, error=str(error))) from error
+        raise RetryableCodexError("Phase 2 Jev", CodexResult(exit_code=1, error_class=error.error_class, error=str(error)), retry_after_seconds=error.retry_after_seconds) from error

@@ -25,12 +25,8 @@ def codex_profiles(runtime: RuntimeConfig) -> set[tuple[str, str]]:
         profiles.update({(config.router_model, config.router_reasoning),
             (config.router_reader_model, config.router_reader_reasoning),
             (config.router_decider_model, config.router_decider_reasoning)})
-    if config.phase2_subject_keys:
+    if config.phase2_subject_keys and config.phase2_engine in {"semantic_labels_v1", "attention_editor_v3"}:
         profiles.add((config.phase2_alias_model, config.phase2_alias_reasoning))
-    if config.phase2_engine == "jev_reading_v2":
-        # Jev is not a Codex profile, but retain the configured Phase 2 profile in
-        # the doctor output for backward-compatible auth/config diagnostics.
-        profiles.add((config.phase2_label_model, config.phase2_label_reasoning))
     return profiles
 
 

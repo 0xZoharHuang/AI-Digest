@@ -20,7 +20,7 @@ async def test_single_topic_proposal_still_needs_original_grounding(tmp_path):
 def test_doctor_checks_alias_profile_only_when_enabled():
     from ai_digest.config import CodexConfig, RuntimeConfig
     from ai_digest.doctor import codex_profiles
-    runtime = RuntimeConfig(codex=CodexConfig(phase2_subject_keys=True,
+    runtime = RuntimeConfig(codex=CodexConfig(phase2_engine="semantic_labels_v1", phase2_subject_keys=True,
         phase2_alias_model="gpt-5.6-sol", phase2_alias_reasoning="low"))
     assert ("gpt-5.6-sol", "low") in codex_profiles(runtime)
     runtime.codex.phase2_subject_keys = False

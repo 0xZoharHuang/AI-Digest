@@ -15,11 +15,7 @@ def material(text, *, missing=False, quote=None):
     return {"observations": [{"payload": payload}], "uncaptured_context_exists": missing}
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--mode", choices=["fused", "split"], required=True)
-    args = parser.parse_args()
+def fixtures():
     views = {
         "vla-tool": material("Loop-Engineering-for-VLA: toolkit for collecting and auditing LeRobot VLA datasets."),
         "vla-policy": material("MAE-Self-Evaluating-VLA: a new vision-language-action robot policy repository."),
@@ -40,9 +36,23 @@ def main():
               "astra": ["astra-a", "astra-b"], "libx": ["version-a", "version-b", "contrary", "wrong-place", "unicode"]}
     neighbours = {uid: {other: 1 / (61 + i) for i, other in enumerate(views) if other != uid} for uid in views}
     draft = {"groups": groups, "neighbours": neighbours}
+    return views, draft
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--mode", choices=["fused", "split"], default="fused")
+    parser.add_argument("--engine", choices=["frozen", "stateful"], default="frozen")
+    args = parser.parse_args()
+    views, draft = fixtures()
     client = JevClient(args.output / "calls", key_service="ai-digest-jev-eval-20260918")
     try:
-        result = FrozenPhase2(client, args.output / args.mode).run(views, draft, mode=args.mode)
+        if args.engine == "stateful":
+            from ai_digest.phase2_stateful import StatefulPhase2
+            result = StatefulPhase2(client, args.output / args.mode).run(views, draft)
+        else:
+            result = FrozenPhase2(client, args.output / args.mode).run(views, draft, mode=args.mode)
         owners = {uid: i for i, group in enumerate(result["groups"]) for uid in group}
         retained = set(owners)
         checks = {"all_targets_accounted": retained | set(result["excluded"]) == set(views),

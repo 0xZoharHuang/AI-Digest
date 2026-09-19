@@ -9,9 +9,10 @@ import subprocess
 from pathlib import Path
 
 import ai_digest
-from ai_digest.config import load_runtime_config
+from ai_digest.config import REPO_ROOT, load_runtime_config
 from ai_digest.phase2_attention import file_sha256
 from ai_digest.phase2_jev import load_routing
+from ai_digest.phase2_stateful import VERSION
 from ai_digest.pipeline import recover_and_publish, run_agent_worker
 from ai_digest.smoke import (
     SMOKE_RECEIPT,
@@ -32,6 +33,8 @@ async def main():
     snapshot, root = args.snapshot.resolve(), args.smoke_root.resolve()
     if not Path(ai_digest.__file__).resolve().is_relative_to(snapshot / ".venv"):
         raise RuntimeError("acceptance requires the non-editable installed package")
+    if snapshot != REPO_ROOT:
+        raise RuntimeError("launch acceptance with WorkingDirectory set to its snapshot; refusing a mixed configuration root")
     os.chdir(snapshot)
     production = load_runtime_config(snapshot / "config/runtime.toml")
     if production.codex.phase2_engine != "jev_reading_v3":
@@ -60,6 +63,8 @@ async def main():
     run_dir = Path(verified["run_dir"])
     items = load_phase1_items(run_dir / "01_phase1")
     routing = load_routing(run_dir / "02_routing", items)
+    if json.loads((run_dir / "02_routing/phase2_manifest.json").read_text())["version"] != VERSION:
+        raise RuntimeError("installed acceptance did not exercise the selected Phase 2 implementation")
     assert load_routing(run_dir / "02_routing", items) == routing
     # Internal execution checkpoints remain in the archived queue, not the
     # deliberately minimal publication import.
@@ -89,7 +94,7 @@ async def main():
               "installed_module": ai_digest.__file__, "uid": os.getuid(), "parent_pid": os.getppid(),
               "node_version": subprocess.check_output(["node", "--version"], text=True).strip(),
               "research_threads": sorted(threads), "completed_replay_unchanged": True,
-              "phase2_completed_reload": True, "live_lark_writes": False}
+              "phase2_completed_reload": True, "phase2_version": VERSION, "live_lark_writes": False}
     atomic_write_json(snapshot / "release_acceptance.json", result)
     print(json.dumps(result), flush=True)
 

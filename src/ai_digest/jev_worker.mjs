@@ -21,7 +21,12 @@ for await (const line of createInterface({ input: process.stdin, crlfDelay: Infi
       .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029') + '\n');
   } catch (error) {
     // Error messages can contain source bodies, credentials or headers: return codes only.
-    process.stdout.write(JSON.stringify({ error: { name: error?.name ?? 'Error', status: error?.statusCode ?? null } }) + '\n');
+    const headers = error?.responseHeaders ?? error?.cause?.responseHeaders ?? {};
+    const retry = headers['retry-after'];
+    const seconds = retry === undefined ? 0 : /^\d+(\.\d+)?$/.test(String(retry))
+      ? Number(retry) : (Date.parse(String(retry)) - Date.now()) / 1000;
+    process.stdout.write(JSON.stringify({ error: { name: error?.name ?? 'Error', status: error?.statusCode ?? null,
+      retryAfterSeconds: Number.isFinite(seconds) && seconds > 0 ? seconds : 0 } }) + '\n');
   }
 }
 process.exit(0);

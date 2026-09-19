@@ -227,7 +227,7 @@ def test_production_phase2_is_identical_under_different_research_budgets(tmp_pat
             pass
 
     monkeypatch.setattr("ai_digest.phase2_jev.JevClient", Client)
-    monkeypatch.setattr("ai_digest.phase2_jev.build_draft", lambda views, cache: draft(views))
+    monkeypatch.setattr("ai_digest.phase2_jev.build_index", lambda views, cache: draft(views))
     source = items()
     results = []
     for budget in (0, 1, 15, 100):
@@ -237,3 +237,33 @@ def test_production_phase2_is_identical_under_different_research_budgets(tmp_pat
         runtime.codex.phase3_daily_agent_limit = budget
         results.append(execute(runtime, run, source))
     assert all(result == results[0] for result in results)
+
+
+@pytest.mark.asyncio
+async def test_actual_phase2_dispatch_never_invokes_codex(tmp_path, monkeypatch):
+    from ai_digest.agent_phases import AgentPhases
+    from ai_digest.utils import atomic_write_jsonl
+
+    class Client(FakeJev):
+        def __init__(self, *args, **kwargs):
+            super().__init__()
+
+        def usage(self):
+            return {"model": "typesafe-ai/jev"}
+
+        def close(self):
+            pass
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("Phase 2 must never call Codex, including fallback")
+
+    monkeypatch.setattr("ai_digest.codex_runner.CodexRunner.run", forbidden)
+    monkeypatch.setattr("ai_digest.phase2_jev.JevClient", Client)
+    monkeypatch.setattr("ai_digest.phase2_jev.build_index", lambda views, cache: draft(views))
+    source = items()
+    p1 = tmp_path / "01_phase1"
+    prepare_reading_handoff(p1, source)
+    atomic_write_jsonl(p1 / "hackernews.jsonl", [s.model_dump(mode="json") for s in source.values()])
+    (p1 / "PHASE1_COMPLETE").write_text("sealed")
+    result = await AgentPhases(RuntimeConfig(runtime_root=tmp_path / "runtime")).route(tmp_path)
+    assert {r.id: r.d for r in result.assignments} == {"a": "r", "b": "n"}

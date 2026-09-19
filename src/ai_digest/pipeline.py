@@ -50,6 +50,12 @@ AGENT_RETRY_DELAYS = (
     timedelta(hours=6),
     timedelta(hours=24),
 )
+JEV_RETRY_DELAYS = (
+    timedelta(minutes=1),
+    timedelta(minutes=5),
+    timedelta(minutes=15),
+    timedelta(minutes=30),
+)
 PUBLISH_RETRY_DELAYS = (
     timedelta(minutes=5),
     timedelta(minutes=30),
@@ -372,12 +378,28 @@ def _defer_agent_job(
                 metadata = value
         except Exception:
             return False
-    attempt = _next_retry_attempt(metadata)
-    if attempt > len(AGENT_RETRY_DELAYS):
-        return False
     now = datetime.now(UTC)
     history_value = metadata.get("history")
     history = list(history_value) if isinstance(history_value, list) else []
+    previous_phase = str(metadata.get("phase") or (history[-1].get("phase") if history and isinstance(history[-1], dict) else phase))
+    attempt = _next_retry_attempt(metadata) if previous_phase == phase else 1
+    delays = AGENT_RETRY_DELAYS
+    progress = 0
+    usage_path = job_dir / "02_routing/jev_reading_v3/usage.json"
+    if phase == "phase2" and error.error_class in {"network", "capacity"} and usage_path.is_file():
+        try:
+            usage = json.loads(_safe_read(job_dir, Path("02_routing/jev_reading_v3/usage.json"), 100_000))
+            if usage.get("model") == "typesafe-ai/jev":
+                delays = JEV_RETRY_DELAYS
+                progress = int(usage.get("successful_logical_requests") or 0)
+                if progress < 0:
+                    return False
+                if progress > int(str(metadata.get("phase2_completed_requests") or 0)):
+                    attempt = 1  # Bounded stalled retries, not a penalty for durable forward progress.
+        except (OSError, ValueError, TypeError, AttributeError):
+            return False
+    if attempt > len(delays):
+        return False
     history.append(
         {
             "attempt": attempt,
@@ -391,7 +413,9 @@ def _defer_agent_job(
         metadata_path,
         {
             "attempt": attempt,
-            "next_retry_at": (now + AGENT_RETRY_DELAYS[attempt - 1]).isoformat(),
+            "phase": phase,
+            "phase2_completed_requests": progress,
+            "next_retry_at": (now + max(delays[attempt - 1], timedelta(seconds=error.retry_after_seconds))).isoformat(),
             "history": history[-20:],
         },
     )

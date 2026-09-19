@@ -22,8 +22,9 @@ RETRYABLE_CODEX_ERROR_CLASSES = {
 
 
 class RetryableCodexError(RuntimeError):
-    def __init__(self, phase: str, result: CodexResult):
+    def __init__(self, phase: str, result: CodexResult, *, retry_after_seconds: float = 0):
         self.error_class = result.error_class or "process_error"
+        self.retry_after_seconds = retry_after_seconds
         detail = result.error or f"Codex exited with {result.exit_code}"
         super().__init__(f"{phase}: {self.error_class}: {detail}")
 

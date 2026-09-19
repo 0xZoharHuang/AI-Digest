@@ -1,5 +1,9 @@
 # Phase 2 fixed-input release — 2026-09-20
 
+Historical candidate, **not promoted**. The frozen-draft grouping design was
+superseded after semantic review; see [the stateful release record](phase2-stateful-release.md).
+The adapter, original-evidence and queue-import fixes below remain applicable.
+
 ## Selected design
 
 Phase 1 freezes the original-preserving reading handoff, including available local

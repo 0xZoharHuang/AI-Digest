@@ -66,7 +66,7 @@ def test_ambiguous_failure_kept_and_only_explicit_resume_retries(tmp_path, monke
     client.close()
 
 
-@pytest.mark.parametrize("status,kind,attempts", [(401, "authentication", 1), (403, "authentication", 1), (402, "quota", 1), (503, "network", 3)])
+@pytest.mark.parametrize("status,kind,attempts", [(401, "authentication", 1), (403, "authentication", 1), (402, "quota", 1), (503, "network", 5)])
 def test_provider_failures_are_durable_and_never_semantic(tmp_path, monkeypatch, status, kind, attempts):
     client = JevClient(tmp_path)
     monkeypatch.setattr(client, "invoke", lambda _: {"error": {"status": status, "name": "ProviderError"}})
@@ -77,3 +77,42 @@ def test_provider_failures_are_durable_and_never_semantic(tmp_path, monkeypatch,
     assert client.usage()["attempts_this_run"] == attempts
     assert client.usage()["successful_logical_requests"] == 0
     assert client.usage()["attempts_with_unknown_billing"] == attempts
+
+
+def test_wire_is_canonical_json_and_unicode_stays_one_line(tmp_path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    worker = SimpleNamespace(stdin=io.BytesIO(), stdout=io.BytesIO(b'{"answers":{}}\n'), poll=lambda: 0)
+    class Ready:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def register(self, *_args):
+            pass
+
+        def select(self, *_args):
+            return [True]
+
+    client = JevClient(tmp_path)
+    monkeypatch.setattr(client, "credentials", lambda: "test-only-not-a-real-key")
+    monkeypatch.setattr("ai_digest.jev_client.subprocess.Popen", lambda *a, **kw: worker)
+    monkeypatch.setattr("ai_digest.jev_client.selectors.DefaultSelector", Ready)
+    value = request()
+    client.invoke(value)
+    wire = worker.stdin.getvalue()
+    assert wire == json.dumps(value, ensure_ascii=True, sort_keys=True).encode() + b"\n"
+    assert wire.count(b"\n") == 1 and b"\\u2028" in wire and b"\\u2029" in wire
+    client.close()
+
+
+def test_long_provider_retry_after_is_preserved_for_queue(tmp_path, monkeypatch):
+    client = JevClient(tmp_path)
+    monkeypatch.setattr(client, "invoke", lambda _: {"error": {"name": "RateLimit", "status": 429, "retryAfterSeconds": 120}})
+    with pytest.raises(JevUnavailable) as error:
+        client(request())
+    assert error.value.retry_after_seconds == 120
+    assert client.usage()["attempts_this_run"] == 1
