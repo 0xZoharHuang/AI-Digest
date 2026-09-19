@@ -164,8 +164,23 @@ class V3Phases:
             if (root / "PHASE2_COMPLETE").exists():
                 manifest = _read_json(root / "phase2_manifest.json", {})
                 if manifest.get("contract") != "jev_reading_v2":
-                    raise RuntimeError("completed Phase 2 uses a different contract; preserve and migrate explicitly")
-                return load_label_routing(root)
+                    run_manifest = _read_json(run_dir / "00_run_manifest.json", {})
+                    if run_manifest.get("phases", {}).get("phase2") != "failed":
+                        raise RuntimeError("completed Phase 2 uses a different contract; preserve and migrate explicitly")
+                    # A failed run may contain a stale/partial legacy contract written
+                    # before the worker error. Preserve it atomically, then replay the
+                    # sealed Phase 1 originals under the current Jev contract. A healthy
+                    # completed run never enters this branch.
+                    for number in range(1, 1000):
+                        archived = run_dir.parent / f"{run_dir.name}.02_routing.legacy-{number:03d}"
+                        if not archived.exists():
+                            root.rename(archived)
+                            root.mkdir(parents=True, exist_ok=True)
+                            break
+                    else:
+                        raise RuntimeError("too many preserved Phase 2 legacy workspaces")
+                else:
+                    return load_label_routing(root)
             return await run_jev_phase2(self.runtime, run_dir, items)
         manifest = _read_json(root / "phase2_manifest.json", {})
         if manifest.get("contract") == LABELS_CONTRACT and (root / "PHASE2_COMPLETE").exists():
