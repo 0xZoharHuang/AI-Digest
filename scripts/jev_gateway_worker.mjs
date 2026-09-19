@@ -1,4 +1,5 @@
 // One long-lived SDK client; one input JSON line produces exactly one output JSON line.
+// HTTPS_PROXY is supplied by the caller; this works on the production Node 22 runtime.
 // stdout is protocol-only. No model fallback, hidden retries or content transformations.
 import { createInterface } from 'node:readline';
 import { experimental_evaluate as evaluate } from 'ai';

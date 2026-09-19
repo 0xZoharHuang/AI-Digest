@@ -216,7 +216,7 @@ def _evaluate_reserved(root: Path, request: dict[str, Any], bridge: Path, *, ret
                 if _worker_transport is None:
                     _worker_transport = GatewayWorkers()
             run = _worker_transport.run
-        process = run(["node", "--use-env-proxy", "--input-type=module", "-e", launcher,
+        process = run(["node", "--input-type=module", "-e", launcher,
                        str(bridge) if bridge.name == "jev_gateway_worker.mjs" else bridge.as_uri()], input=payload,
                                  capture_output=True, text=True, env=env, timeout=60)
         elapsed = time.monotonic() - started

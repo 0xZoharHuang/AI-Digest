@@ -24,7 +24,7 @@ class GatewayWorkers:
                 if worker is not None and worker.poll() is None:
                     worker.terminate()
                     worker.wait(timeout=5)
-                worker = subprocess.Popen(["node", "--use-env-proxy", args[-1]], stdin=subprocess.PIPE,
+                worker = subprocess.Popen(["node", args[-1]], stdin=subprocess.PIPE,
                                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=env, bufsize=1)
                 self.local.worker, self.local.identity = worker, identity
                 with self.lock:
