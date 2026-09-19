@@ -51,8 +51,13 @@ def validate_jev_artifacts(root: Path) -> None:
 
 
 def _run_candidate(run_dir: Path, sample: Path, output: Path, budget_root: Path) -> None:
-    project = Path(__file__).resolve().parents[2]
+    # In an immutable install this module lives under .venv/site-packages, while the
+    # candidate script is shipped at the app root. Never infer the app root from the
+    # site-packages depth; LaunchAgents set cwd to the snapshot and env may override it.
+    project = Path(os.environ.get("AI_DIGEST_PROJECT_ROOT", str(Path.cwd()))).resolve()
     script = project / "scripts" / "validate_jev_v2.py"
+    if not script.is_file():
+        raise RuntimeError(f"Jev Phase 2 candidate script missing from installed snapshot: {script}")
     env = dict(os.environ)
     result = subprocess.run([sys.executable, str(script), "--sample", str(sample),
                              "--source", str(run_dir), "--output", str(output),
