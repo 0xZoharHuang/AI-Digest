@@ -842,6 +842,14 @@ def validate_publish_inputs(run_dir: Path, status: str) -> dict[str, Any]:
             from .phase2_labels import validate_artifacts
             validate_artifacts(run_dir / "02_routing")
             admission_required = True
+        elif isinstance(phase2_manifest, dict) and phase2_manifest.get("contract") == "jev_reading_v3":
+            from .phase2_jev import validate as validate_fixed
+            validate_fixed(run_dir / "02_routing")
+            admission_required = True
+        elif isinstance(phase2_manifest, dict) and phase2_manifest.get("contract") == "jev_reading_v2":
+            from .jev_engine import validate_jev_artifacts
+            validate_jev_artifacts(run_dir / "02_routing")
+            admission_required = True
         packages = [
             ResearchPackage.model_validate(row)
             for row in json.loads(_read_regular_text(packages_path))

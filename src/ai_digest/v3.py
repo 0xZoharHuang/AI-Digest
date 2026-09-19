@@ -158,6 +158,23 @@ class V3Phases:
             raise RuntimeError("Phase 1 is not sealed")
         root = run_dir / "02_routing"
         root.mkdir(parents=True, exist_ok=True)
+        manifest = _read_json(root / "phase2_manifest.json", {})
+        marker = root / "PHASE2_COMPLETE"
+        if marker.exists() and marker.read_text().strip() == "fallback":
+            raise RuntimeError("failure publication placeholder is not a successful Phase 2 checkpoint")
+        if manifest.get("contract") == "jev_reading_v3" and marker.exists():
+            from .phase2_jev import load_routing as load_fixed_routing
+            return load_fixed_routing(root, load_phase1_items(phase1))
+        if marker.exists() and manifest.get("contract") == "jev_reading_v2":
+            from .jev_engine import load_routing as load_jev_legacy
+            return load_jev_legacy(root)
+        if marker.exists() and manifest.get("contract") == LABELS_CONTRACT:
+            return load_label_routing(root)
+        if self.runtime.codex.phase2_engine == "jev_reading_v3":
+            from .phase2_jev import run as run_fixed_phase2
+            if marker.exists() or any((root / name).exists() for name in ("jev_reading_v2", LABELS_CONTRACT, "attention-editor-v3", "unit-packages-v1")):
+                raise RuntimeError("unfinished historical Phase 2 must resume with its frozen release; refusing mixed contracts")
+            return await run_fixed_phase2(self.runtime, run_dir, load_phase1_items(phase1))
         if self.runtime.codex.phase2_engine == "jev_reading_v2":
             from .jev_engine import run as run_jev_phase2
             items = load_phase1_items(phase1)
@@ -1884,6 +1901,11 @@ def materialize_research_workspace(
     source_root = workspace / "sources"
     source_root.mkdir(parents=True, exist_ok=True)
     selected = package.unit_ids
+    reading_context = {}
+    if (run_dir / "01_phase1" / "reading_input.json").is_file():
+        from .phase1_handoff import load_reading_handoff
+
+        reading_context = load_reading_handoff(run_dir / "01_phase1", items)
     for unit_id in selected:
         unit = units[unit_id]
         observation_rows = []
@@ -1925,6 +1947,10 @@ def materialize_research_workspace(
             "classification": catalog[unit_id].model_dump(mode="json"),
             "observations": observation_rows,
         }
+        if reading_context:
+            payload["phase1_reading_context"] = {
+                item_id: reading_context[item_id] for item_id in unit.item_ids
+            }
         atomic_write_json(source_root / f"{unit_id}.json", payload)
     catalog_rows = [
         {
@@ -2129,6 +2155,12 @@ def load_phase3_inputs(
     if not uses_formal_phase3_contract(path):
         return [], {}, {}
     manifest = _read_json(path / "phase2_manifest.json", {})
+    if manifest.get("contract") == "jev_reading_v3":
+        from .phase2_jev import validate as validate_fixed
+        validate_fixed(path)
+    elif manifest.get("contract") == "jev_reading_v2":
+        from .jev_engine import validate_jev_artifacts
+        validate_jev_artifacts(path)
     if manifest.get("contract") == LABELS_CONTRACT:
         validate_label_artifacts(path)
     if manifest.get("contract") not in {
@@ -2267,7 +2299,7 @@ async def select_single_phase3_admission(
     root = run_dir / "03_research" / "admission-selector"
     root.mkdir(parents=True, exist_ok=True)
     routing_root = run_dir / "02_routing"
-    label_contract = _read_json(routing_root / "phase2_manifest.json", {}).get("contract") == LABELS_CONTRACT
+    label_contract = _read_json(routing_root / "phase2_manifest.json", {}).get("contract") in {LABELS_CONTRACT, "jev_reading_v2", "jev_reading_v3"}
     documents = {
         value.unit_id: value
         for value in (
@@ -2281,8 +2313,7 @@ async def select_single_phase3_admission(
             Phase2RoutingDecision.model_validate(row)
             for row in (
                 load_jsonl(routing_root / "decisions.jsonl")
-                if _read_json(routing_root / "phase2_manifest.json", {}).get("contract")
-                != LABELS_CONTRACT
+                if not label_contract
                 else []
             )
         )

@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import errno
 import fcntl
+import hashlib
+import json
 import os
 import re
 import shutil
@@ -12,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,6 +30,30 @@ ACTIVE_QUEUES = ("staging", "jobs", "retry_wait", "completed", "publish_pending"
 
 class ControlError(RuntimeError):
     pass
+
+
+def require_fixed_acceptance(target: Path) -> None:
+    config = target / "config/runtime.toml"
+    if not config.is_file() or tomllib.loads(config.read_text()).get("codex", {}).get("phase2_engine") != "jev_reading_v3":
+        return  # Historical snapshots retain their original installation contract.
+    path = target / "release_acceptance.json"
+    try:
+        value = json.loads(path.read_text())
+        smoke = Path(value["smoke_root"]) / "automation_smoke_receipt.json"
+        receipt = json.loads(smoke.read_text())
+        valid = (not path.is_symlink() and value["status"] == "passed"
+                 and value["snapshot"] == str(target)
+                 and value["config_hash"] == hashlib.sha256(config.read_bytes()).hexdigest()
+                 and value["smoke_receipt_hash"] == hashlib.sha256(smoke.read_bytes()).hexdigest()
+                 and value["completed_replay_unchanged"] is True
+                 and value["phase2_completed_reload"] is True
+                 and len(value["research_threads"]) == 1
+                 and value["live_lark_writes"] is False
+                 and receipt["stage"] == "passed" and receipt["live_lark_writes"] is False)
+    except (OSError, ValueError, KeyError, TypeError):
+        valid = False
+    if not valid:
+        raise ControlError("fixed Phase 2 snapshot lacks matching installed end-to-end acceptance; refusing cutover")
 
 
 def locked_run(runtime: Path, script: Path, mode: str) -> int:
@@ -589,6 +616,7 @@ class Controller:
     def cutover(self) -> None:
         self.queues_are_empty()
         target, pending = self._pending_snapshot()
+        require_fixed_acceptance(target)
         before = self.read_previous() if self.previous.exists() else None
         current = self.loaded_tick_snapshot(absent_ok=True)
         self.reject_legacy_schedule()

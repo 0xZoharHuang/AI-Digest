@@ -214,6 +214,8 @@ class Phase1Runner:
             "item_ids": [item.item_id for item in pending],
         }
         atomic_write_json(phase_dir / "index.json", index)
+        from .phase1_handoff import prepare_reading_handoff
+        prepare_reading_handoff(phase_dir, {item.item_id: item for item in pending}, blob_root=self.runtime.runtime_root / "store" / "blobs")
 
         phase_status = self._phase_status(results, pending)
         manifest.phases["phase1"] = phase_status

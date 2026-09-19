@@ -307,16 +307,22 @@ def verify_automation_smoke(source_runtime: RuntimeConfig, smoke_root: Path) -> 
                 (routing_root / "packages.json").read_text(encoding="utf-8")
             )
         ]
+        expected_catalog_ids = set(unit_ids)
+        phase2_manifest = _json_object(routing_root / "phase2_manifest.json")
+        if phase2_manifest.get("contract") == "jev_reading_v3":
+            from .phase2_jev import validate as validate_fixed
+            validate_fixed(routing_root)
+            expected_catalog_ids = {str(row["unit_id"]) for row in load_jsonl(routing_root / "labels.jsonl") if row["signal"] != "chatter"}
         if len(unit_ids) != len(set(unit_ids)) or {
             row.unit_id for row in catalog
-        } != set(unit_ids):
+        } != expected_catalog_ids:
             raise RuntimeError("Phase 2 unit/catalog coverage is not exact")
         packaged = [unit_id for package in packages for unit_id in package.unit_ids]
         if not packages or not unit_ids:
             raise RuntimeError(
                 "smoke produced no research package; Phase 3 was not exercised"
             )
-        if len(packaged) != len(set(packaged)) or set(packaged) != set(unit_ids):
+        if len(packaged) != len(set(packaged)) or set(packaged) != expected_catalog_ids:
             raise RuntimeError("Phase 2 packages do not exactly cover units")
         expected_research_units = {
             package.package_id: set(package.unit_ids) for package in packages
@@ -495,6 +501,10 @@ phase2_alias_reasoning = {q(runtime.codex.phase2_alias_reasoning)}
 top_level_concurrency = {runtime.codex.top_level_concurrency}
 subagent_threads = {runtime.codex.subagent_threads}
 idle_timeout_seconds = {runtime.codex.idle_timeout_seconds}
+
+[jev]
+key_service = {q(runtime.jev.key_service)}
+workers = {runtime.jev.workers}
 
 [lark]
 binary = {q(runtime.lark.binary)}

@@ -62,6 +62,8 @@ def retrieval_document(view: dict[str, Any]) -> dict[str, Any]:
     for context in view.get("local_reference_context", []):
         observations.extend(copy.deepcopy(context["original"]["observations"]))
     result = retrieval_view({"observations": observations})
+    if view.get("captured_full_text"):
+        result["captured_full_text"] = copy.deepcopy(view["captured_full_text"])
     for observation in result["observations"]:
         payload = observation["payload"]
         for key in ("author_display", "links", "clean_text_hash", "source_id", "source_role"):

@@ -428,6 +428,10 @@ def import_agent_job(runtime: RuntimeConfig, job_dir: Path) -> Path:
 
 
 def _ensure_failure_publish_inputs(job_dir: Path, failed_phase: str, detail: str) -> None:
+    atomic_write_json(job_dir / "failure_publication.json", {
+        "kind": "failure_notice_only", "failed_phase": failed_phase,
+        "not_a_success_checkpoint": True,
+    })
     routing = job_dir / "02_routing"
     routing.mkdir(parents=True, exist_ok=True)
     if failed_phase == "phase2" or not (routing / "PHASE2_COMPLETE").exists():
@@ -953,6 +957,37 @@ def _import_routing(job: Path, run: Path) -> None:
         )
         manifest_value = json.loads(manifest_content)
         contract = str(manifest_value.get("contract") or "")
+        if contract in {"jev_reading_v2", "jev_reading_v3"}:
+            from .jev_engine import validate_jev_artifacts
+            from .phase2_jev import FILES
+            from .phase2_jev import validate as validate_fixed
+            from .v3 import load_phase1_items
+
+            originals = load_phase1_items(run / "01_phase1")
+            names = FILES if contract == "jev_reading_v3" else {
+                "units.jsonl", "labels.jsonl", "packages.json", "catalog.jsonl"
+            }
+            contents = {name: _safe_read(source, Path(name), 50_000_000) for name in names}
+            if _safe_read(source, Path("PHASE2_COMPLETE"), 100).strip() != contract:
+                raise ValueError("Jev completion marker differs from its artifact contract")
+            if contract == "jev_reading_v3":
+                validate_fixed(source, originals)
+            else:
+                validate_jev_artifacts(source)
+                original_ids = [item for row in parse_jsonl_text(contents["units.jsonl"]) for item in ObservationUnit.model_validate(row).item_ids]
+                if len(original_ids) != len(set(original_ids)) or set(original_ids) != set(originals):
+                    raise ValueError("legacy Jev originals do not match owner handoff")
+            target = run / "02_routing"
+            target.mkdir(parents=True, exist_ok=True)
+            for name, content in contents.items():
+                atomic_write_text(target / name, content)
+            atomic_write_text(target / "phase2_manifest.json", manifest_content)
+            if contract == "jev_reading_v3":
+                validate_fixed(target, originals)
+            else:
+                validate_jev_artifacts(target)
+            atomic_write_text(target / "PHASE2_COMPLETE", contract + "\n")
+            return
         if contract == "semantic_labels_v1":
             from .phase2_labels import validate_artifacts
             from .v3 import validate_unit_item_ids
@@ -1169,7 +1204,7 @@ def _import_research(job: Path, run: Path) -> None:
         expected_units = {value.object_id: set(value.unit_ids) for value in objects}
     elif packages_path.exists() and (run / "02_routing" / "phase2_manifest.json").exists():
         formal_research = True
-        admission_required = json.loads((run / "02_routing" / "phase2_manifest.json").read_text()).get("contract") == "semantic_labels_v1"
+        admission_required = json.loads((run / "02_routing" / "phase2_manifest.json").read_text()).get("contract") in {"semantic_labels_v1", "jev_reading_v2", "jev_reading_v3"}
         packages = [
             ResearchPackage.model_validate(row)
             for row in json.loads(packages_path.read_text(encoding="utf-8"))

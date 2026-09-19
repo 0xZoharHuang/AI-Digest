@@ -25,7 +25,7 @@ REPO_ROOT = _repo_root()
 
 
 class CodexConfig(BaseModel):
-    phase2_engine: Literal["semantic_labels_v1", "attention_editor_v3", "jev_reading_v2"] = "jev_reading_v2"
+    phase2_engine: Literal["semantic_labels_v1", "attention_editor_v3", "jev_reading_v2", "jev_reading_v3"] = "jev_reading_v3"
     phase2_label_model: str = "gpt-5.6-luna"
     phase2_label_reasoning: str = "medium"
     phase2_text_only: bool = True
@@ -75,6 +75,11 @@ class LarkConfig(BaseModel):
     dm_identity: str = "bot"
 
 
+class JevConfig(BaseModel):
+    key_service: str = "ai-digest-jev-production"
+    workers: int = Field(default=4, ge=1, le=6)
+
+
 class RuntimeConfig(BaseModel):
     timezone: str = "Asia/Shanghai"
     runtime_root: Path = Path("~/Library/Application Support/ai-digest")
@@ -85,6 +90,7 @@ class RuntimeConfig(BaseModel):
     x_text_retention_days: int = 30
     codex: CodexConfig = Field(default_factory=CodexConfig)
     lark: LarkConfig = Field(default_factory=LarkConfig)
+    jev: JevConfig = Field(default_factory=JevConfig)
 
     def model_post_init(self, __context: Any) -> None:
         self.runtime_root = self.runtime_root.expanduser()

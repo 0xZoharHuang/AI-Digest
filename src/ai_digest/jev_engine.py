@@ -16,6 +16,7 @@ from typing import Any
 from .models import Assignment, Bundle, ResearchPackage, RoutingOutput, SourceItem
 from .phase2_attention import build_phase2_unit_documents, file_sha256
 from .phase2_labels import digest
+from .store import load_jsonl
 from .utils import atomic_write_json, atomic_write_jsonl, atomic_write_text
 from .v3 import build_observation_units
 
@@ -32,22 +33,36 @@ def validate_jev_artifacts(root: Path) -> None:
     for name, expected in manifest["hashes"].items():
         if file_sha256(root / name) != expected:
             raise ValueError(f"Jev artifact hash mismatch: {name}")
-    units = [json.loads(line) for line in (root / "units.jsonl").read_text().splitlines() if line]
-    labels = [json.loads(line) for line in (root / "labels.jsonl").read_text().splitlines() if line]
+    units = load_jsonl(root / "units.jsonl")
+    labels = load_jsonl(root / "labels.jsonl")
     packages = [ResearchPackage.model_validate(row) for row in json.loads((root / "packages.json").read_text())]
     ids = {row["unit_id"] for row in units}
     members = [uid for package in packages for uid in package.unit_ids]
-    eligible = {row["unit_id"] for row in labels if row["research_eligibility"] == "eligible"}
+    eligible = {row["unit_id"] for row in labels if row["research_eligibility"] == "eligible" and row["signal"] != "chatter"}
     if len(ids) != len(units) or len(labels) != len(units) or set(row["unit_id"] for row in labels) != ids:
         raise ValueError("Jev label coverage mismatch")
     if len(members) != len(set(members)) or set(members) != eligible:
         raise ValueError("Jev package coverage mismatch")
-    catalog = [json.loads(line) for line in (root / "catalog.jsonl").read_text().splitlines() if line]
+    catalog = load_jsonl(root / "catalog.jsonl")
     membership = {uid: package.package_id for package in packages for uid in package.unit_ids}
     if len(catalog) != len(eligible) or {row["unit_id"] for row in catalog} != eligible:
         raise ValueError("Jev catalog coverage mismatch")
-    if any(row.get("package_id") != membership.get(row.get("unit_id")) for row in catalog):
+    if any(row.get("package_id") != membership.get(str(row.get("unit_id"))) for row in catalog):
         raise ValueError("Jev catalog membership mismatch")
+
+
+def load_routing(root: Path) -> RoutingOutput:
+    """Read historical Jev output without invoking the semantic-labels validator."""
+    from .store import load_jsonl
+    validate_jev_artifacts(root)
+    units = load_jsonl(root / "units.jsonl")
+    packages = [ResearchPackage.model_validate(row) for row in json.loads((root / "packages.json").read_text())]
+    by_id = {str(row["unit_id"]): list(row["item_ids"]) for row in units}  # type: ignore[call-overload]
+    membership = {uid: p.package_id for p in packages for uid in p.unit_ids}
+    return RoutingOutput(bundles=[Bundle(bundle_id=p.package_id, label=p.label_zh,
+        item_ids=[item for uid in p.unit_ids for item in by_id[uid]]) for p in packages],
+        assignments=[Assignment(id=item, d="r" if uid in membership else "n", t=[membership[uid]] if uid in membership else [])
+                     for uid, items in by_id.items() for item in items], quiet_reason=None if packages else "No retained information.")
 
 
 def _run_candidate(run_dir: Path, sample: Path, output: Path, budget_root: Path) -> None:
@@ -86,7 +101,6 @@ async def run(runtime: Any, run_dir: Path, items: dict[str, SourceItem]) -> Rout
     await asyncio.to_thread(_run_candidate, run_dir, sample, work, budget_root)
     labels_raw = json.loads((work / "labels.json").read_text())
     groups = json.loads((work / "groups.json").read_text())
-    by_unit = {d["unit_id"]: d for d in docs}
     eligible = {row["unit_id"] for row in labels_raw if row["signal"] != "no_readable_content"}
     labels = []
     packages = []
@@ -123,9 +137,4 @@ async def run(runtime: Any, run_dir: Path, items: dict[str, SourceItem]) -> Rout
     atomic_write_json(root / "phase2_manifest.json", manifest)
     validate_jev_artifacts(root)
     atomic_write_text(root / "PHASE2_COMPLETE", CONTRACT + "\n")
-    return RoutingOutput(
-        bundles=[Bundle(bundle_id=p.package_id, label=p.label_zh,
-                        item_ids=[item for uid in p.unit_ids for item in by_unit[uid]["item_ids"]]) for p in packages],
-        assignments=[Assignment(id=item.item_id, d="r", t=[membership[uid]])
-                     for uid, package_id in membership.items() for item in items.values() if item.item_id in by_unit[uid]["item_ids"]],
-        quiet_reason=None if packages else "No retained Jev reading material.")
+    return load_routing(root)
