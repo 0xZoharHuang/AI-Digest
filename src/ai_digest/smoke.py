@@ -401,8 +401,7 @@ def verify_automation_smoke(source_runtime: RuntimeConfig, smoke_root: Path) -> 
         raise RuntimeError(f"Phase 5 preflight receipt is invalid: {phase5_receipt}")
     x_list_text = (run_dir / "01_phase1" / "x_list.jsonl").read_text(encoding="utf-8")
     units_text = (run_dir / "02_routing" / "units.jsonl").read_text(encoding="utf-8")
-    if not all(character in x_list_text and character in units_text for character in ("\u2028", "\u2029")):
-        raise RuntimeError("Unicode separator regression fixture did not cross the queue boundary")
+    _verify_unicode_separators(x_list_text, units_text)
     parse_jsonl_text(units_text)
     if not any((archived / "blobs").glob("*")):
         raise RuntimeError("referenced Phase 1 blob was not copied into the agent job")
@@ -436,6 +435,15 @@ def verify_automation_smoke(source_runtime: RuntimeConfig, smoke_root: Path) -> 
     )
     atomic_write_json(receipt_path, receipt)
     return receipt
+
+
+def _verify_unicode_separators(source_jsonl: str, units_jsonl: str) -> None:
+    # JSONL may safely escape separators. Verify decoded data, not its byte-level
+    # spelling; otherwise the transport fix itself is reported as evidence loss.
+    source = json.dumps(parse_jsonl_text(source_jsonl), ensure_ascii=False)
+    units = json.dumps(parse_jsonl_text(units_jsonl), ensure_ascii=False)
+    if not all(character in source and character in units for character in ("\u2028", "\u2029")):
+        raise RuntimeError("Unicode separator regression fixture did not cross the queue boundary")
 
 
 def isolated_runtime(

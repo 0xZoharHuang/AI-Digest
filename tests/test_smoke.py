@@ -1,3 +1,4 @@
+import json
 import tomllib
 
 import pytest
@@ -5,6 +6,7 @@ import pytest
 from ai_digest.config import RuntimeConfig
 from ai_digest.smoke import (
     _assert_isolated_root,
+    _verify_unicode_separators,
     isolated_runtime,
     promote_smoke_agent_retries,
     runtime_toml,
@@ -65,3 +67,17 @@ def test_smoke_retry_promotion_preserves_metadata_and_makes_job_runnable(tmp_pat
     assert promote_smoke_agent_retries(runtime) == [destination]
     assert destination.is_dir()
     assert '"attempt": 1' in (destination / "worker_retry.json").read_text()
+
+
+@pytest.mark.parametrize("escaped", [True, False])
+def test_smoke_unicode_accepts_both_valid_json_spellings(escaped):
+    source = json.dumps({"text": "A\u2028B\u2029C"}, ensure_ascii=escaped) + "\n"
+    unit = json.dumps({"observations": [{"text": "A\u2028B\u2029C"}]}, ensure_ascii=True) + "\n"
+    _verify_unicode_separators(source, unit)
+
+
+def test_smoke_unicode_rejects_loss_and_literal_escape_text():
+    source = json.dumps({"text": "A\u2028B\u2029C"}) + "\n"
+    for bad in ["ABC", r"A\u2028B\u2029C"]:
+        with pytest.raises(RuntimeError, match="Unicode separator"):
+            _verify_unicode_separators(source, json.dumps({"text": bad}) + "\n")
