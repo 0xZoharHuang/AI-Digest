@@ -67,6 +67,13 @@ def test_all_local_partitions_available_and_batches_disjoint():
     assert all(2 <= len(block) <= 4 for block in blocks)
 
 
+def test_candidate_edges_are_bounded_per_original():
+    rows = views(50)
+    groups = {group_id([uid]): {"members": [uid], "anchors": [uid]} for uid in rows}
+    edges = candidate_pairs(groups, index(rows)["neighbours"], set(), max_neighbours_per_original=2)
+    assert len(edges) <= len(rows) * 2
+
+
 def test_mixed_neighbourhoods_partition_then_state_updates_and_resume(tmp_path):
     rows = views()
     model = Fake()

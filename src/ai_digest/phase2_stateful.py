@@ -59,13 +59,14 @@ def partition_request(block: list[str], groups: dict[str, Any], views: dict[str,
             "questions": {"partition": {"type": "choice", "instructions": PARTITION_INSTRUCTIONS, "criteria": criteria}}}, aliases
 
 
-def candidate_pairs(groups: dict[str, Any], neighbours: dict[str, dict[str, float]], checked: set[str]) -> list[tuple[float, str, str]]:
+def candidate_pairs(groups: dict[str, Any], neighbours: dict[str, dict[str, float]], checked: set[str], *, max_neighbours_per_original: int = 2) -> list[tuple[float, str, str]]:
     owner = {uid: gid for gid, group in groups.items() for uid in group["members"]}
     edges: dict[tuple[str, str], float] = {}
     for uid, adjacent in neighbours.items():
         if uid not in owner:
             continue
-        for other, score in adjacent.items():
+        ranked = sorted(adjacent.items(), key=lambda pair: (-pair[1], pair[0]))[:max_neighbours_per_original]
+        for other, score in ranked:
             if other not in owner or owner[uid] == owner[other]:
                 continue
             a, b = sorted([owner[uid], owner[other]])
