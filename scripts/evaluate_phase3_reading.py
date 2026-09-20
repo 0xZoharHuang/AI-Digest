@@ -11,6 +11,7 @@ from ai_digest.codex_runner import CodexRunner
 from ai_digest.config import load_runtime_config, resolve_binary
 from ai_digest.models import Phase3Admission, ResearchPackage
 from ai_digest.phase2_labels import digest
+from ai_digest.phase3_reading import admission as production_admission
 from ai_digest.phase3_reading import balanced_batches, reading_views, research
 from ai_digest.reading_release import implementation_hash
 from ai_digest.reading_task import VERSION, sha
@@ -42,9 +43,11 @@ async def main():
     ids = ordered[:args.count]
     if len(ids) != args.count:
         raise ValueError("not enough real packages")
+    frozen = root / "pilot_input.json"
+    if args.count >= 1000 and frozen.exists():
+        ids = json.loads(frozen.read_text())["selected"]
     fingerprint = {"source": str(source), "phase2_hash": sha(source / "02_routing/phase2_manifest.json"),
                    "count": args.count, "threads": args.threads, "selected": ids}
-    frozen = root / "pilot_input.json"
     # Old exploratory pilots remain resumable, but can never pass the new scale gate.
     if not frozen.exists() or "implementation_hash" in json.loads(frozen.read_text()):
         fingerprint["implementation_hash"] = implementation_hash()
@@ -65,8 +68,19 @@ async def main():
         concurrency=min(6, args.threads), selection_mode="batch_sampling", available_object_ids=list(by_id),
         selected_object_ids=ids, not_scheduled_object_ids=[pid for pid in by_id if pid not in ids],
         execution_batches=batches, task_max_packages=134)
-    atomic_write_json(run / "03_research/phase3_admission.json", selected.model_dump(mode="json"))
     runner = CodexRunner(resolve_binary(runtime.codex.binary), runtime.codex.idle_timeout_seconds)
+    if args.count >= 1000:
+        # Scale acceptance exercises actual priority/exploration admission, not
+        # a mostly-noise random sample that would understate research workload.
+        saved = run / "03_research/phase3_admission.json"
+        selected = (Phase3Admission.model_validate_json(saved.read_text()) if saved.exists()
+                    else await production_admission(run, population, runtime, runner))
+        ids = selected.selected_object_ids
+        if len(ids) != args.count:
+            raise ValueError("production scale selection underfilled")
+        fingerprint["selected"] = ids
+        atomic_write_json(frozen, fingerprint)
+    atomic_write_json(run / "03_research/phase3_admission.json", selected.model_dump(mode="json"))
     successes = await research(run, population, selected, runtime, runner)
     value = json.loads((run / "03_research/reading_results.json").read_text())
     counts = {}
