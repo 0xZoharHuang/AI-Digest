@@ -33,6 +33,12 @@ def daily_notification(run_dir: Path, date: str, status: str, day_url: str, home
              "", f"本次安排 {counts['scheduled_packages']} 个信息包，涉及 {counts['scheduled_information']:,} 条输入信息；"
              f"其余 {counts['unscheduled_packages']:,} 个候选包已保存。",
              "", f"[阅读今日简报]({day_url})"]
+    if counts["reading_mode"]:
+        lines[2] = (f"{label}｜{reports} 份独立研究报告 · {counts['brief_packages']} 条简讯 · "
+                    f"{counts['insufficient_packages']} 包资料不足 · {failures} 个执行失败")
+        lines[4] = (f"分配 {counts['scheduled_packages']} 包，已有 {counts['read_packages']} 包完成原文阅读与处理，"
+                    f"覆盖 {counts['reviewed_information']:,} 条输入；其中 {counts['skipped_packages']} 包未发现实质增量。"
+                    f"其余 {counts['unscheduled_packages']:,} 个候选包已保存、未调度。")
     if home_url:
         lines[-1] += f" · [Wiki 固定入口与历史报告]({home_url})"
     if source_issues:
@@ -603,7 +609,7 @@ class LarkPublisher:
 
             updates = run_dir / "03_research/short_updates.md"
             updates_url = None
-            if updates.is_file():
+            if updates.is_file() and run_counts(run_dir)["brief_packages"]:
                 node = self._ensure_cached_node("其他发现", day_node.node_token, manifest.nodes.get("updates"))
                 content = _read_regular_text(updates)
                 content_hash = hashlib.sha256(content.encode()).hexdigest()

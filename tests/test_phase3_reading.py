@@ -204,6 +204,9 @@ async def test_research_projection_import_and_publish(tmp_path, capsys):
     publisher.publish(owner, "success")
     assert len(publisher.cli.writes) == written
     assert len(publisher.cli.messages) == 1
+    message = publisher.cli.messages[0][0]
+    assert "1 条简讯" in message and "3 包完成原文阅读" in message
+    assert "未成稿结论" not in message
 
 
 @pytest.mark.asyncio
