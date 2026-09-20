@@ -183,3 +183,30 @@ real: inspect reports, gaps and the frozen sample; no blanket automatic approval
 The 1000-package / 15-thread run uses the already installed 831cbfb snapshot,
 existing Phase 2 inputs, production priority/exploration selection and at most six
 concurrent research threads. It does not recollect sources or send real messages.
+
+## Practical production release evidence
+
+To prioritize the user's requested deployment and preserve shared production quota,
+the additional 1000-package pre-run was stopped after ten admission batches, before
+any research thread started. Its partial evidence is retained; it is not called a
+completed scale test. The optional quota-choice question was withdrawn in favor of
+the user's explicit practical/production-first acceptance standard.
+
+The release verifier now has an explicit `real_pilot_plus_mock_scale` evidence mode:
+134 real packages, the actual installed/background E2E, and passed 2000-package
+mocked concurrency/replay tests. Receipts record `real_scale_verified=false`, the
+actual measured package/thread count, deployment target and known limitations.
+This mode is limited to the initial 1000 target; it cannot approve a 2000 deployment.
+Exact code/config/reader, reviewed artifact hashes, test result hashes, recovery,
+queue-empty and idle-service checks remain enforced. The runtime implementation
+is unchanged; only release verification and a test fixture were adjusted.
+
+An extra full-suite rerun under extreme host load stopped at one timing-dependent
+fixture failure plus 123 passes. The checkpoint fixture now uses a parent/child
+handshake instead of a two-second scheduling assumption. Its four tests passed;
+78 core operational tests passed, including 2000 mocked readings / 15 calls /
+at most six concurrent workers and unchanged replay. A further 65 release/runner/
+launchd tests passed. Earlier full-suite result for the same runtime is 389 passed.
+No production timeout was relaxed. User/bot authentication was verified in a real
+background process (UID 501, parent PID 1); existing Wiki home/history nodes were
+read successfully, with no live publication or navigation change.

@@ -78,6 +78,12 @@ def require_fixed_acceptance(target: Path) -> None:
         if reading_target:
             scale = value.get("reading_scale") or {}
             root = Path(scale["root"])
+            review_path = root / "semantic_review.json"
+            if scale.get("mode") == "real_pilot_plus_mock_scale":
+                review_path = root / "operational_review.json"
+                valid = (valid and scale.get("real_scale_verified") is False
+                         and scale.get("measured_packages", 0) >= 134
+                         and scale["tests_hash"] == hashlib.sha256(Path(scale["tests_file"]).read_bytes()).hexdigest())
             profile = tomllib.loads(config.read_text())["codex"]
             reader = target / "config/interests.md"
             if not reader.is_file():
@@ -90,7 +96,7 @@ def require_fixed_acceptance(target: Path) -> None:
                      and scale["reader_hash"] == reader_hash
                      and scale["pilot_input_hash"] == hashlib.sha256((root / "pilot_input.json").read_bytes()).hexdigest()
                      and scale["reading_results_hash"] == hashlib.sha256(Path(scale["reading_results"]).read_bytes()).hexdigest()
-                     and scale["review_hash"] == hashlib.sha256((root / "semantic_review.json").read_bytes()).hexdigest()
+                     and scale["review_hash"] == hashlib.sha256(review_path.read_bytes()).hexdigest()
                      and scale["result_hash"] == hashlib.sha256((root / "pilot_result.json").read_bytes()).hexdigest())
     except (OSError, ValueError, KeyError, TypeError):
         valid = False

@@ -9,14 +9,15 @@ import pytest
 from ai_digest.codex_runner import CodexRunner
 
 
-def _fake_codex(tmp_path, *, thread_id: str, delay: float):  # type: ignore[no-untyped-def]
+def _fake_codex(tmp_path, *, thread_id: str, delay: float, release=None):  # type: ignore[no-untyped-def]
     script = tmp_path / "fake-codex"
     script.write_text(
         "#!/usr/bin/env python3\n"
-        "import json, time\n"
+        "import json, time\nfrom pathlib import Path\n"
         f"print(json.dumps({{'type':'thread.started','thread_id':{thread_id!r}}}), flush=True)\n"
-        f"time.sleep({delay!r})\n"
-        "print(json.dumps({'type':'turn.completed','usage':{}}), flush=True)\n"
+        + (f"while not Path({str(release)!r}).exists():\n    time.sleep(0.01)\n"
+           if release is not None else f"time.sleep({delay!r})\n")
+        + "print(json.dumps({'type':'turn.completed','usage':{}}), flush=True)\n"
     )
     script.chmod(0o755)
     return script
@@ -24,12 +25,13 @@ def _fake_codex(tmp_path, *, thread_id: str, delay: float):  # type: ignore[no-u
 
 @pytest.mark.asyncio
 async def test_thread_checkpoint_is_durable_before_turn_completion(tmp_path):
-    binary = _fake_codex(tmp_path, thread_id="thread-one", delay=2.0)
+    release = tmp_path / "allow-completion"
+    binary = _fake_codex(tmp_path, thread_id="thread-one", delay=0, release=release)
     checkpoint = tmp_path / "session.json"
-    runner = CodexRunner(str(binary), idle_timeout_seconds=5)
+    runner = CodexRunner(str(binary), idle_timeout_seconds=60)
     task = asyncio.create_task(
         runner.run(
-            workspace=tmp_path / "workspace",
+            workspace=tmp_path,
             prompt="test",
             model="gpt-5.6-sol",
             reasoning="medium",
@@ -46,7 +48,7 @@ async def test_thread_checkpoint_is_durable_before_turn_completion(tmp_path):
             await asyncio.sleep(0.01)
 
     try:
-        await asyncio.wait_for(wait_for_checkpoint(), timeout=10)
+        await asyncio.wait_for(wait_for_checkpoint(), timeout=60)
     except BaseException:
         if not task.done():
             task.cancel()
@@ -55,6 +57,7 @@ async def test_thread_checkpoint_is_durable_before_turn_completion(tmp_path):
         raise
     assert json.loads(checkpoint.read_text())["thread_id"] == "thread-one"
     assert not task.done()
+    release.touch()
     result = await task
     assert result.success
     assert result.thread_id == "thread-one"
