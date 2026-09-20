@@ -28,7 +28,7 @@ from .utils import atomic_write_json, atomic_write_jsonl, atomic_write_text
 
 class ReadingDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    status: Literal["skip", "brief", "insufficient", "report"]
+    status: Literal["pending", "skip", "brief", "insufficient", "report"]
     note: str = Field(min_length=1)
     sources: list[str] = Field(default_factory=list)
     report_id: str | None = None
@@ -138,6 +138,14 @@ def prepare(work: Path, packages: list[ResearchPackage], views: dict[str, Any], 
         (work / name).mkdir(exist_ok=True)
     pages: dict[str, Any] = {}
     ownership: dict[str, Any] = {p.package_id: {"unit_ids": p.unit_ids, "pages": []} for p in packages}
+    for p in packages:
+        ownership[p.package_id]["source_anchors"] = [
+            {"unit_id": uid, "title": observation.get("payload", {}).get("title") or observation.get("payload", {}).get("full_name"),
+             "description": observation.get("payload", {}).get("description"),
+             "url": observation.get("payload", {}).get("url") or observation.get("payload", {}).get("hn_url"),
+             "text_excerpt": str(observation.get("payload", {}).get("text") or "")[:280],
+             "excerpt_only": True}
+            for uid in p.unit_ids for observation in views[uid].get("observations", [])]
     buffer = ""
     members: set[str] = set()
 
@@ -200,6 +208,8 @@ def package_decision(work: Path, pid: str, manifest: dict[str, Any]) -> ReadingD
         if receipt != {"page": page, "sha256": manifest["pages"][page]["sha256"]}:
             raise ValueError(f"unread or changed page: {page}")
     decision = ReadingDecision.model_validate(read_json(work / "results" / f"{pid}.json"))
+    if decision.status == "pending":
+        raise ValueError("reading note remains pending; not a completed disposition")
     if not decision.note.strip() or (decision.status == "report") != bool(decision.report_id):
         raise ValueError("invalid reading decision/report linkage")
     if decision.report_id:
@@ -462,6 +472,8 @@ def publication_population(root: Path, expected: dict[str, set[str]], selected: 
         if set(row["unit_ids"]) != expected[pid] or len(row["unit_ids"]) != len(expected[pid]) or not row["pages"]:
             raise ValueError("reading unit coverage mismatch")
         ReadingDecision.model_validate({k: row[k] for k in ("status", "note", "sources", "report_id")})
+        if row["status"] == "pending":
+            raise ValueError("pending reading must not be counted as complete")
         if row["status"] == "report":
             report_members.setdefault(row["report_id"], []).append(pid)
         else:

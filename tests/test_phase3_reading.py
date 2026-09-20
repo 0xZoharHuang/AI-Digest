@@ -62,6 +62,23 @@ def test_views_preserve_semantic_metadata():
     assert "content_hash" not in view["observations"][0]
 
 
+def test_draft_note_not_completion_and_identity_anchor_is_original(tmp_path, capsys):
+    work = tmp_path / "tasks/task"
+    docs = documents(1)
+    docs[0]["observations"][0]["payload"].update(full_name="nekooy/PiKit", description="Pi and Termux in an Android APK")
+    prepare(work, packages(1), reading_views(docs), RuntimeConfig())
+    manifest = json.loads((work / "reading_manifest.json").read_text())
+    assert manifest["packages"]["p0"]["source_anchors"][0]["description"] == "Pi and Termux in an Android APK"
+    atomic_write_json(work / "session.json", {"thread_id": "original"})
+    read_all(work)
+    decide(work, "p0", "pending")
+    assert collect(work)["pending"] == ["p0"]
+    assert collect(work)["completed"] == {}
+    decide(work, "p0", "brief")
+    assert list(collect(work)["completed"]) == ["p0"]
+    capsys.readouterr()
+
+
 def test_pagination_requires_every_part_and_protects_accepted(tmp_path, capsys):
     work = tmp_path / "tasks/task1"
     views = {"u0": {"text": "x" * 60_000}, "u1": {"text": "later"}}
