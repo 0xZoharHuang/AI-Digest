@@ -105,3 +105,22 @@ The next correction makes raw/versioned retrieval explicit for mutable API and
 safety guarantees, source IDs literal manifest references, and experiments separately
 attributed. This changes instructions and invalidates prior release evidence for
 the new candidate. Production still uses the old verified snapshot.
+
+R8 100-package run completed in 1587.76 seconds, one medium thread, one compaction,
+no artifact-repair invocation: 35 skip, 31 insufficient, 24 brief and 10 report-linked
+packages forming two reports. It still failed semantic review on StreamLib's current
+delivery profiles and writable MCP surface. Do not expand to 134/1000 yet.
+
+Snapshot app-b77a16fb7fd6-20260920T161431Z passed its own installed/background
+engineering exercise in 960.66 seconds. All 388 automated tests passed. Its
+engineering receipt is not release approval. Semantic approval now binds actual
+report/short-update/evidence bytes, with a deployment-time recheck.
+
+The research terminal's network is disabled, independently reproduced with a
+matching sandbox probe. The user approved Phase 3-only proxy-mediated public
+reading with local/private access still forbidden. However, the Mac resolves
+public research domains to 198.18.* synthetic addresses; Codex's private-network
+guard rejects them even with the upstream proxy. Do not disable that guard or TLS
+verification. Narrow DNS-rule adjustment approval is pending. No production or
+running-task permission change has been applied. This capability gap is observed;
+it has not been proven to be the sole cause of semantic errors.
