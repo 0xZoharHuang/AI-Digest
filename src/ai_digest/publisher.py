@@ -181,23 +181,29 @@ class LarkCLI:
         result = data.get("result", "success")
         if result != "success" or data.get("warnings"):
             raise LarkError(f"document update was not complete: {data}")
-        fetched = self.call(
-            [
-                "docs",
-                "+fetch",
-                "--doc",
-                node.obj_token,
-                "--doc-format",
-                "markdown",
-                "--detail",
-                "simple",
-                "--as",
-                self.config.identity,
-            ]
-        )
-        readback = str((fetched.get("document") or fetched).get("content", ""))
         required = [fingerprint, *(required_substrings or [])]
-        missing = [value for value in required if value not in readback]
+        missing = required
+        for _attempt, delay in enumerate((0.0, 1.0, 3.0), start=1):
+            if delay:
+                time.sleep(delay)
+            fetched = self.call(
+                [
+                    "docs",
+                    "+fetch",
+                    "--doc",
+                    node.obj_token,
+                    "--doc-format",
+                    "markdown",
+                    "--detail",
+                    "simple",
+                    "--as",
+                    self.config.identity,
+                ]
+            )
+            readback = str((fetched.get("document") or fetched).get("content", ""))
+            missing = [value for value in required if value not in readback]
+            if not missing:
+                break
         if missing:
             raise LarkError(f"document readback verification failed; missing {missing}")
         return str(document.get("revision_id", ""))
