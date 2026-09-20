@@ -5,6 +5,7 @@ import argparse
 import asyncio
 import json
 import shutil
+import time
 from pathlib import Path
 
 from ai_digest.codex_runner import CodexRunner
@@ -26,6 +27,7 @@ async def main():
     parser.add_argument("--count", type=int, choices=[67, 100, 134, 1000, 1500, 2000], required=True)
     parser.add_argument("--threads", type=int, choices=range(1, 16), default=1)
     args = parser.parse_args()
+    started = time.monotonic()
     source, root = args.source.resolve(), args.root.resolve()
     if root == source or root.is_relative_to(source) or source.is_relative_to(root):
         raise ValueError("pilot must use a separate evidence directory")
@@ -87,6 +89,7 @@ async def main():
     for row in value["packages"].values():
         counts[row["status"]] = counts.get(row["status"], 0) + 1
     result = {"status": "executed_not_semantically_accepted", "run": str(run),
+              "invocation_wall_seconds": time.monotonic() - started,
               "selected": len(ids), "outcomes": counts, "independent_reports": len(successes),
               "failures": json.loads((run / "03_research/failures.json").read_text()), "live_publish": False}
     atomic_write_json(root / "pilot_result.json", result)

@@ -145,7 +145,7 @@ async def test_rank_underfill_does_not_drop_long_packages(monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_research_projection_import_and_publish(tmp_path, capsys):
+async def test_research_projection_import_and_publish(monkeypatch, tmp_path, capsys):
     from ai_digest.pipeline import _import_research
     from ai_digest.publisher import validate_publish_inputs
     from ai_digest.run_counts import run_counts
@@ -173,7 +173,10 @@ async def test_research_projection_import_and_publish(tmp_path, capsys):
             atomic_write_jsonl(folder / "evidence.jsonl", [{"claim": "机制", "status": "source_claim",
                 "evidence": ["https://example.com/source"], "related_unit_ids": ["u0", "u1"]}])
             return CodexResult(exit_code=0, thread_id="same")
-    successes = await research(run, packages(3), selected, runtime, Runner())
+    from ai_digest.v3 import V3Phases
+    monkeypatch.setattr("ai_digest.v3.load_phase3_inputs", lambda _: (packages(3), {}, {}))
+    successes = await V3Phases(runtime, Runner()).research(run)
+    assert json.loads((run / "03_research/timing.json").read_text())["execution_jobs"] == 1
     capsys.readouterr()
     assert len(successes) == 1
     assert run_counts(run)["reviewed_information"] == 3

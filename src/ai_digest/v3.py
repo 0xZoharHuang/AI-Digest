@@ -891,7 +891,14 @@ class V3Phases:
         from .reading_task import VERSION as READING_VERSION
         if admission.selection_contract == READING_VERSION:
             from .phase3_reading import research as research_reading
-            return await research_reading(run_dir, available_packages, admission, self.runtime, self.runner)
+            try:
+                return await research_reading(run_dir, available_packages, admission, self.runtime, self.runner)
+            finally:
+                atomic_write_json(root / "timing.json", {
+                    "phase3_seconds": time.monotonic() - phase3_started,
+                    "admission_seconds": admission_seconds, "execution_jobs": len(admission.batches),
+                    "combined_concurrency": admission.concurrency, "execution_mode": READING_VERSION,
+                    "note": "Wall time for this invocation, including admission; resumed task usage is in per-thread receipts."})
         package_by_id = {value.package_id: value for value in available_packages}
         packages = [package_by_id[pid] for pid in admission.selected_object_ids]
         if not packages:
