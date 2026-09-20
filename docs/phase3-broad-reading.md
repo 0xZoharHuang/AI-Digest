@@ -142,3 +142,18 @@ version grounding in long research, not loss of Codex's hosted web capability.
 Instructions now explicitly route critical GitHub claims through native raw-file
 reads and papers through native HTML/PDF reads. This probe is capability evidence,
 not broad semantic acceptance; realistic regression/scale gates still apply.
+
+R9 tested the unchanged 100-package regression set plus 34 deterministic new
+packages in one 134-package task. It finished in 1269.16 seconds with 48 skip,
+44 insufficient, 30 brief and 12 report-linked packages forming two reports;
+no execution failures or repair invocation. Native tagged/raw reads were observed.
+Semantic acceptance is still withheld: RoboCurve's 19/20 bowl result lost its
+subtask scope and contrasting 2/20 puzzle outcome, and an unread Claude mod was
+asserted to be non-default despite the official built-in/default-fallback behavior.
+Do not relabel these as networking failures or deploy on coverage alone.
+
+The exact app-831cbfb6dd2b-20260920T164438Z installed/background engineering
+exercise passed in 716.83 seconds, without real Lark writes and with immutable
+completed replay. All 389 automated tests and type checking passed. Production
+has not switched. A single same-model high-reasoning comparison is awaiting
+explicit approval; no change to medium production reasoning has been made.
