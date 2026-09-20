@@ -108,6 +108,22 @@ cd "$app_staging"
 uv sync --no-editable --extra semantic
 "$app_staging/.venv/bin/python" -m playwright install chromium
 npm ci --ignore-scripts
+# npm intentionally skips lifecycle hooks; never leave the publisher to download
+# its native executable on the first production write. Reuse a locally working
+# binary only when the pinned package version matches; otherwise install upstream.
+lark_native="node_modules/@larksuite/cli/bin/lark-cli"
+lark_source="$project_dir/$lark_native"
+if [[ -x "$lark_source" ]] && node -e '
+const fs=require("fs");
+process.exit(JSON.parse(fs.readFileSync(process.argv[1])).version ===
+ JSON.parse(fs.readFileSync(process.argv[2])).version ? 0 : 1)
+' "$project_dir/node_modules/@larksuite/cli/package.json" node_modules/@larksuite/cli/package.json; then
+  mkdir -p node_modules/@larksuite/cli/bin
+  install -m 755 "$lark_source" "$lark_native"
+else
+  node node_modules/@larksuite/cli/scripts/install.js
+fi
+"$app_staging/.venv/bin/python" -c 'import subprocess; subprocess.run(["node_modules/@larksuite/cli/bin/lark-cli", "--version"], check=True, timeout=15)'
 cd "$project_dir"
 chmod -R u=rwX,go= "$app_staging"
 mv "$app_staging" "$shared_app"

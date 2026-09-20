@@ -41,10 +41,13 @@ def require_fixed_acceptance(target: Path) -> None:
         value = json.loads(path.read_text())
         smoke = Path(value["smoke_root"]) / "automation_smoke_receipt.json"
         receipt = json.loads(smoke.read_text())
+        native = target / "node_modules/@larksuite/cli/bin/lark-cli"
         installed = {str(p.relative_to(target)): hashlib.sha256(p.read_bytes()).hexdigest()
                      for p in target.glob(".venv/lib/python*/site-packages/ai_digest/**/*")
                      if p.is_file() and not p.is_symlink() and p.suffix in {".py", ".mjs"}}
         valid = (not path.is_symlink() and value["status"] == "passed"
+                 and native.is_file() and os.access(native, os.X_OK)
+                 and value.get("lark_native_hash") == hashlib.sha256(native.read_bytes()).hexdigest()
                  and bool(installed) and value.get("execution_files") == installed
                  and receipt.get("execution_files") == installed
                  and value["snapshot"] == str(target)

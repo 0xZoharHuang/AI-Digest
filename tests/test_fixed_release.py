@@ -20,15 +20,28 @@ def test_cutover_requires_matching_installed_acceptance(tmp_path):
     installed = tmp_path / ".venv/lib/python3.13/site-packages/ai_digest/__init__.py"
     installed.parent.mkdir(parents=True)
     installed.write_text("# installed code\n")
+    native = tmp_path / "node_modules/@larksuite/cli/bin/lark-cli"
+    native.parent.mkdir(parents=True)
+    native.write_text("native fixture")
+    native.chmod(0o755)
     execution_files = {str(installed.relative_to(tmp_path)): hashlib.sha256(installed.read_bytes()).hexdigest()}
     receipt.write_text(json.dumps({"stage": "passed", "live_lark_writes": False, "execution_files": execution_files}))
     acceptance = {"status": "passed", "snapshot": str(tmp_path), "smoke_root": str(receipt.parent),
+                  "lark_native_hash": hashlib.sha256(native.read_bytes()).hexdigest(),
                   "config_hash": hashlib.sha256(config.read_bytes()).hexdigest(),
                   "smoke_receipt_hash": hashlib.sha256(receipt.read_bytes()).hexdigest(),
                   "completed_replay_unchanged": True, "phase2_completed_reload": True,
                   "research_threads": ["test-thread"], "live_lark_writes": False, "execution_files": execution_files}
     (tmp_path / "release_acceptance.json").write_text(json.dumps(acceptance))
     require(tmp_path)
+    native.chmod(0o644)
+    with pytest.raises(CONTROL["ControlError"], match="refusing cutover"):
+        require(tmp_path)
+    native.chmod(0o755)
+    native.write_text("changed native")
+    with pytest.raises(CONTROL["ControlError"], match="refusing cutover"):
+        require(tmp_path)
+    native.write_text("native fixture")
     installed.write_text("# changed since execution\n")
     with pytest.raises(CONTROL["ControlError"], match="refusing cutover"):
         require(tmp_path)

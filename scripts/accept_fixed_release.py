@@ -36,6 +36,8 @@ async def main():
     if snapshot != REPO_ROOT:
         raise RuntimeError("launch acceptance with WorkingDirectory set to its snapshot; refusing a mixed configuration root")
     os.chdir(snapshot)
+    native = snapshot / "node_modules/@larksuite/cli/bin/lark-cli"
+    native_version = subprocess.check_output([str(native), "--version"], text=True, timeout=15).strip()
     production = load_runtime_config(snapshot / "config/runtime.toml")
     if production.codex.phase2_engine != "jev_reading_v3":
         raise RuntimeError("wrong Phase 2 engine")
@@ -98,6 +100,7 @@ async def main():
     if before != {str(p): file_sha256(p) for p in research.rglob("*") if p.is_file()}:
         raise RuntimeError("completed research changed on replay")
     result = {"status": "passed", "snapshot": str(snapshot), "smoke_root": str(root),
+              "lark_native_hash": file_sha256(native), "lark_native_version": native_version,
               "execution_files": execution_files,
               "config_hash": file_sha256(snapshot / "config/runtime.toml"),
               "smoke_receipt_hash": file_sha256(receipt_path),
