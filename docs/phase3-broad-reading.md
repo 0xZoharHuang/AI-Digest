@@ -74,8 +74,8 @@ improved, but factual precision is not yet stable enough to justify scale rollou
 
 The R1-R6 review records and outputs remain under the local runtime's
 `validation/reading67-20260920-r*` directories. Do not describe them as passed
-scale tests. The 100/134/1000 real tiers and installed new-contract E2E remain
-unexecuted. Offline 2000-package lifecycle and publication tests have passed.
+scale tests. The 134/1000 real tiers remain unexecuted. Offline 2000-package
+lifecycle and publication tests have passed. Subsequent results are recorded below.
 
 Production remains app-97314ecb20c1-20260920T084156Z. No reading-mode activation
 or new-mode Wiki/DM was performed. A question is pending whether the user permits
@@ -83,3 +83,25 @@ a same-model gpt-5.6-sol **high** comparison; all research pilots so far used th
 approved **medium** profile. Do not silently change production reasoning or reuse
 one profile's scale acceptance for another. Future scale receipts bind code,
 model, reasoning, reader profile, exact outputs and a fixed semantic review sample.
+
+## September 21 checkpoint
+
+R7 67-package review permitted proceeding to 100, not production acceptance.
+The 100-package R7 run completed in 1787.95 seconds with one thread and one
+same-thread artifact repair: 41 skip, 33 insufficient, 14 brief, 12 report-linked
+packages supporting three reports. It failed semantic review: a cached StreamLib
+page's delivery guarantees were presented as current, conflicting with the raw
+README. Keep this failed evidence; do not promote to 134/1000 yet.
+
+The app-74a6a10aa783-20260920T154445Z installed/background engineering exercise
+passed in 744.67 seconds: real Jev, one real 5.6 research thread, Brief, isolated
+queue recovery and local-only Wiki/DM generation. UID 501, parent PID 1, Node
+v25.2.0; completed replay unchanged, Phase 2 completed results reload correctly.
+Its engineering_preflight.json is explicitly NOT a release acceptance receipt.
+No live Lark writes occurred. Read-only server authentication verification passed.
+Full automated suite: 386 passed; Ruff and mypy (59 source files) passed.
+
+The next correction makes raw/versioned retrieval explicit for mutable API and
+safety guarantees, source IDs literal manifest references, and experiments separately
+attributed. This changes instructions and invalidates prior release evidence for
+the new candidate. Production still uses the old verified snapshot.
