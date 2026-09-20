@@ -55,3 +55,31 @@ Use `scripts/evaluate_phase3_reading.py` for isolated pilots. Its output says
 The three known report cases are held constant and the rest selected by a fixed
 seed. Preserve failed pilots and original threads; do not replace a task to erase
 its failure. Do not activate the candidate merely because the old tests pass.
+
+## Development checkpoint, September 20
+
+The implemented contract adds an explicit researcher mission, literal source
+identity anchors and per-page working decisions (`pending` is never completion).
+Comparisons and current API claims must use version-aware primary evidence rather
+than search-index text alone. Published reports and short updates are separate
+from the raw-package disposition ledger; Brief gets a dedicated navigation contract.
+
+Six real 67-package pilots completed in isolated directories. R6 processed all
+67 in 1177.44 seconds: 24 skip, 20 brief, 17 insufficient and 6 report-linked
+packages supporting 3 independent reports, with no execution failures. Nevertheless,
+semantic acceptance was NOT granted: the control-plane report asserts that a
+traditional README cannot be versioned, distributed with an image, or statically
+reviewed, an unsupported comparison. Earlier identity and missing-context problems
+improved, but factual precision is not yet stable enough to justify scale rollout.
+
+The R1-R6 review records and outputs remain under the local runtime's
+`validation/reading67-20260920-r*` directories. Do not describe them as passed
+scale tests. The 100/134/1000 real tiers and installed new-contract E2E remain
+unexecuted. Offline 2000-package lifecycle and publication tests have passed.
+
+Production remains app-97314ecb20c1-20260920T084156Z. No reading-mode activation
+or new-mode Wiki/DM was performed. A question is pending whether the user permits
+a same-model gpt-5.6-sol **high** comparison; all research pilots so far used the
+approved **medium** profile. Do not silently change production reasoning or reuse
+one profile's scale acceptance for another. Future scale receipts bind code,
+model, reasoning, reader profile, exact outputs and a fixed semantic review sample.
