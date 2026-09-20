@@ -601,7 +601,21 @@ class LarkPublisher:
                 report_urls[bundle_id] = node.url or ""
                 atomic_write_json(manifest_path, manifest.model_dump(mode="json"))
 
+            updates = run_dir / "03_research/short_updates.md"
+            updates_url = None
+            if updates.is_file():
+                node = self._ensure_cached_node("其他发现", day_node.node_token, manifest.nodes.get("updates"))
+                content = _read_regular_text(updates)
+                content_hash = hashlib.sha256(content.encode()).hexdigest()
+                if node.content_hash != content_hash or node.status != "written":
+                    self.cli.write_markdown(node, content, publish_root)
+                node.content_hash, node.status = content_hash, "written"
+                manifest.nodes["updates"] = node
+                updates_url = node.url
+                atomic_write_json(manifest_path, manifest.model_dump(mode="json"))
             brief = (run_dir / "04_brief" / "daily_brief.md").read_text(encoding="utf-8")
+            if updates_url:
+                brief += f"\n\n[查看全部简讯：其他发现]({updates_url})\n"
             brief = _rewrite_report_links(brief, report_urls)
             for package_id, subreport_urls in brief_subreport_urls.items():
                 brief = _rewrite_subreport_links(brief, package_id, subreport_urls)
@@ -904,6 +918,12 @@ def validate_publish_inputs(run_dir: Path, status: str) -> dict[str, Any]:
             admission = None
     else:
         admission = None
+    if admission is not None and admission.selection_contract == "autonomous-reading-v1":
+        from .phase3_reading import publication_population
+        try:
+            expected_units = publication_population(run_dir / "03_research", expected_units, admission)
+        except (ValueError, OSError) as error:
+            raise LarkError(str(error)) from error
     for package_id_value, report_path_value in successes.items():
         package_id = str(package_id_value)
         report_path = str(report_path_value)
@@ -1195,6 +1215,9 @@ def _publish_artifact_hash(run_dir: Path, status: str) -> str:
         Path("04_brief/watch.jsonl"),
         Path("04_brief/daily_brief.md"),
     ]
+    for name in ("reading_results.json", "short_updates.md"):
+        if (run_dir / "03_research" / name).exists():
+            relative_paths.append(Path("03_research") / name)
     formal_contract = (
         (run_dir / "02_routing" / "phase2_manifest.json").is_file()
         and any(

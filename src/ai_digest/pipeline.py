@@ -1275,12 +1275,19 @@ def _import_research(job: Path, run: Path) -> None:
         expected_units = {
             key: value for key, value in expected_units.items() if key in active_bundle_ids
         }
+    if admission is not None and admission.selection_contract == "autonomous-reading-v1":
+        from .phase3_reading import publication_population
+        expected_units = publication_population(source, expected_units, admission)
+        active_bundle_ids = set(expected_units)
     successes_raw = json.loads(_safe_read(source, Path("successes.json"), 2_000_000))
     if not isinstance(successes_raw, dict):
         raise ValueError("successes.json must be an object")
     successes: dict[str, str] = {}
     target = run / "03_research"
     target.mkdir(parents=True, exist_ok=True)
+    if admission is not None and admission.selection_contract == "autonomous-reading-v1":
+        atomic_write_json(target / "reading_results.json", json.loads(_safe_read(source, Path("reading_results.json"), 20_000_000)))
+        atomic_write_text(target / "short_updates.md", _safe_read(source, Path("short_updates.md"), 10_000_000))
     for bundle_id, relative in successes_raw.items():
         Bundle(bundle_id=str(bundle_id), label="validated", item_ids=[])
         if bundle_id not in active_bundle_ids:
@@ -1412,13 +1419,18 @@ def _import_brief(job: Path, run: Path) -> None:
         ("research_quality.json", 5_000_000),
         ("quality.json", 5_000_000),
         ("codex.json", 2_000_000),
+        ("reading_results.json", 20_000_000),
+        ("reading_summary.json", 2_000_000),
+        ("short_updates.md", 10_000_000),
     ):
         content = _safe_optional_read(source, Path(name), limit)
         if content is not None:
             if name.endswith(".json"):
                 atomic_write_json(target / name, json.loads(content))
-            else:
+            elif name.endswith(".jsonl"):
                 parse_jsonl_text(content)
+                atomic_write_text(target / name, content)
+            else:
                 atomic_write_text(target / name, content)
     formal_brief = (
         (run / "02_routing" / "phase2_manifest.json").is_file()

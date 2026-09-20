@@ -26,6 +26,9 @@ def run_counts(run_dir: Path) -> dict[str, int]:
     candidate_units = {uid for p in packages for uid in p.get("unit_ids", [])}
     scheduled_units = {uid for p in packages if p.get("package_id") in selected for uid in p.get("unit_ids", [])}
     reviewed: set[str] = set()
+    reading = read(run_dir / "03_research/reading_results.json", {})
+    for row in reading.get("packages", {}).values():
+        reviewed.update(row.get("unit_ids", []))
     batches = admission.get("execution_batches", []) if admission.get("schema_version") == 3 else admission.get("tail_batches", [])
     for manifest in (run_dir / "03_research").glob("*/research_manifest.json"):
         value = read(manifest, {})
@@ -41,6 +44,12 @@ def run_counts(run_dir: Path) -> dict[str, int]:
             "research_jobs": len(selected) - sum(map(len, batches)) + len(batches),
             "dynamic_tasks": int(admission.get("schema_version") == 3),
             "tail_batches": len(admission.get("tail_batches", [])),
+            "reading_mode": int(admission.get("selection_contract") == "autonomous-reading-v1"),
+            "read_packages": len(reading.get("packages", {})),
+            "brief_packages": sum(row["status"] == "brief" for row in reading.get("packages", {}).values()),
+            "skipped_packages": sum(row["status"] == "skip" for row in reading.get("packages", {}).values()),
+            "insufficient_packages": sum(row["status"] == "insufficient" for row in reading.get("packages", {}).values()),
+            "report_packages": sum(row["status"] == "report" for row in reading.get("packages", {}).values()),
             "exploration_packages": len(admission.get("exploration_object_ids", []))}
 
 
@@ -50,6 +59,13 @@ def count_sentence(run_dir: Path) -> str:
             if c["tail_batches"] else f"含 {c['exploration_packages']} 个长尾探索包")
     if c["dynamic_tasks"]:
         tail = f"安排为 {c['research_jobs']} 个独立研究任务，含 {c['exploration_packages']} 个探索包"
+    if c["reading_mode"]:
+        return (f"原始观察 {c['observations']:,} 条，保留信息 {c['candidate_information']:,} 条，形成 {c['packages']:,} 包。"
+                f"本日分配 {c['scheduled_packages']:,} 包给 {c['research_jobs']} 个独立任务；"
+                f"具备完整原文阅读记录的已处理包 {c['read_packages']:,} 个，覆盖 {c['reviewed_information']:,} 条输入。"
+                f"其中 {c['report_packages']} 包支持深度报告，{c['brief_packages']} 包形成简讯，"
+                f"{c['skipped_packages']} 包未发现实质增量，{c['insufficient_packages']} 包资料不足。"
+                f"另有 {c['unscheduled_packages']:,} 包未调度；未调度或资料不足不代表无价值。")
     return (f"原始观察 {c['observations']:,} 条，标准化信息 {c['information']:,} 条；"
             f"其中 {c['candidate_information']:,} 条归入 {c['packages']:,} 个候选信息包。"
             f"本日调度 {c['scheduled_packages']} 个包（{tail}），"

@@ -22,13 +22,13 @@ EXPLORATION_VERSION = "stratified-small-packages-v1"
 
 
 def explore(rows: list[dict[str, Any]], excluded: set[str], count: int,
-            seed: str) -> tuple[list[str], dict[str, int]]:
+            seed: str, *, max_units: int | None = 3) -> tuple[list[str], dict[str, int]]:
     """Stable source-balanced sampling without replacement; never edits packages."""
     strata: dict[str, list[str]] = {}
     def order(value: str) -> str:
         return hashlib.sha256((seed + "\0" + value).encode()).hexdigest()
     for row in rows:
-        if row["object_id"] in excluded or not 1 <= row.get("unit_count", 0) <= 3 or not row.get("readable", False):
+        if row["object_id"] in excluded or row.get("unit_count", 0) < 1 or (max_units is not None and row.get("unit_count", 0) > max_units) or not row.get("readable", False):
             continue
         source = row.get("primary_source") or (sorted(row.get("sources", [])) or ["unknown"])[0]
         strata.setdefault(source, []).append(row["object_id"])

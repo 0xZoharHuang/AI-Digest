@@ -336,7 +336,7 @@ class Phase3Admission(BaseModel):
     tail_batches: list[list[str]] = Field(default_factory=list)
     tail_batch_size: int = Field(default=1, ge=1, le=40)
     execution_batches: list[list[str]] = Field(default_factory=list)
-    task_max_packages: int = Field(default=10, ge=1, le=40)
+    task_max_packages: int = Field(default=10, ge=1, le=134)
 
     @property
     def batches(self) -> list[list[str]]:

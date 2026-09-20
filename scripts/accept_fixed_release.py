@@ -29,6 +29,7 @@ async def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--snapshot", type=Path, required=True)
     parser.add_argument("--smoke-root", type=Path, required=True)
+    parser.add_argument("--reading-scale-root", type=Path)
     args = parser.parse_args()
     snapshot, root = args.snapshot.resolve(), args.smoke_root.resolve()
     if not Path(ai_digest.__file__).resolve().is_relative_to(snapshot / ".venv"):
@@ -39,6 +40,12 @@ async def main():
     native = snapshot / "node_modules/@larksuite/cli/bin/lark-cli"
     native_version = subprocess.check_output([str(native), "--version"], text=True, timeout=15).strip()
     production = load_runtime_config(snapshot / "config/runtime.toml")
+    scale = None
+    if production.codex.phase3_reading_target:
+        from ai_digest.reading_release import validate_scale
+        if args.reading_scale_root is None:
+            raise RuntimeError("broad reading requires actual 15-task scale and semantic acceptance")
+        scale = validate_scale(args.reading_scale_root, production.codex.phase3_reading_target)
     if production.codex.phase2_engine != "jev_reading_v3":
         raise RuntimeError("wrong Phase 2 engine")
     if (production.daily_hour != 7 or production.codex.phase3_daily_agent_limit != 15
@@ -82,12 +89,12 @@ async def main():
     research = archived / "03_research"
     threads = set()
     for path in research.rglob("session.json"):
-        if not {"admission-selector", "dynamic-selector"}.intersection(path.parts):
+        if not {"admission-selector", "dynamic-selector", "reading-selector"}.intersection(path.parts):
             thread = json.loads(path.read_text()).get("thread_id")
             if thread:
                 threads.add(thread)
     for path in research.rglob("codex.json"):
-        if not {"admission-selector", "dynamic-selector"}.intersection(path.parts):
+        if not {"admission-selector", "dynamic-selector", "reading-selector"}.intersection(path.parts):
             thread = json.loads(path.read_text()).get("thread_id")
             if thread:
                 threads.add(thread)
@@ -100,6 +107,7 @@ async def main():
     if before != {str(p): file_sha256(p) for p in research.rglob("*") if p.is_file()}:
         raise RuntimeError("completed research changed on replay")
     result = {"status": "passed", "snapshot": str(snapshot), "smoke_root": str(root),
+              "reading_scale": scale,
               "lark_native_hash": file_sha256(native), "lark_native_version": native_version,
               "execution_files": execution_files,
               "config_hash": file_sha256(snapshot / "config/runtime.toml"),

@@ -57,6 +57,8 @@ class CodexConfig(BaseModel):
     phase3_tail_batch_max_bytes: int = Field(default=256_000, ge=1)
     phase3_tail_parallel_pool: bool = False
     phase3_dynamic_tasks: bool = False
+    # Zero preserves frozen/legacy jobs until the reading release is accepted.
+    phase3_reading_target: int = Field(default=0, ge=0, le=2000)
     phase3_task_max_packages: int = Field(default=10, ge=1, le=40)
     top_level_concurrency: int = 3
     subagent_threads: int = 4

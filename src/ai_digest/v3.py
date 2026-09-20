@@ -888,6 +888,10 @@ class V3Phases:
         )
         admission_seconds = time.monotonic() - phase3_started
         atomic_write_json(root / "phase3_admission.json", admission.model_dump(mode="json"))
+        from .reading_task import VERSION as READING_VERSION
+        if admission.selection_contract == READING_VERSION:
+            from .phase3_reading import research as research_reading
+            return await research_reading(run_dir, available_packages, admission, self.runtime, self.runner)
         package_by_id = {value.package_id: value for value in available_packages}
         packages = [package_by_id[pid] for pid in admission.selected_object_ids]
         if not packages:
@@ -1130,6 +1134,11 @@ class V3Phases:
                 "unknowns": [r.get("claim", "") for r in load_jsonl(evidence_path) if r.get("status") == "unknown"]
                             if evidence_path.is_file() and not evidence_path.is_symlink() else []})
         atomic_write_json(root / "not_published_details.json", unpublished_details)
+        reading_mode = admission.selection_contract == "autonomous-reading-v1"
+        if reading_mode:
+            shutil.copy2(run_dir / "03_research/short_updates.md", root / "short_updates.md")
+            from .run_counts import run_counts
+            atomic_write_json(root / "reading_summary.json", run_counts(run_dir))
         shutil.copy2(run_dir / "01_phase1" / "source_health.json", root / "source_health.json")
         watch_rows = load_attention_watch_rows(run_dir / "02_routing")
         atomic_write_jsonl(root / "watch.jsonl", watch_rows)
@@ -1137,6 +1146,12 @@ class V3Phases:
             "\n读取not_published_details.json，必要时简短区分资料不足与核查后的编辑取舍；"
             "未知不等于无价值，未成稿不等于执行失败。没有足够依据就保留不确定，不编造分类。"
             "不要把短核查说明写成完整深度报告，也不要重新计算程序负责的统计。\n")
+        if reading_mode:
+            with (root / "AGENTS.md").open("a") as handle:
+                handle.write("\n当前是广泛阅读合同：报告ID独立于原始包，不把报告数说成读过的包数。"
+                    "short_updates.md 是研究员已完成的简讯，只精选有实质增量的短讯；不重写成深度报告。"
+                    "reading_summary.json 是程序汇总的阅读状态，不需要再读千条内部记录。"
+                    "不要按探索批次分类报告，不强制写风险和不能证明；用具体信息帮助读者选择阅读。\n")
         output = root / "daily_brief.md"
         result = await self.runner.run(
             workspace=root,
@@ -2252,9 +2267,13 @@ async def select_phase3_admission(
         if set(saved.available_object_ids) != {p.package_id for p in packages}:
             raise ValueError("cannot replace frozen research task population")
         jobs = len(saved.selected_object_ids) - sum(map(len, saved.batches)) + len(saved.batches)
-        if jobs > 15 or saved.concurrency > 6 or any(len(batch) > 20 for batch in saved.batches):
+        ceiling = 134 if saved.selection_contract == "autonomous-reading-v1" else 20
+        if jobs > 15 or saved.concurrency > 6 or any(len(batch) > ceiling for batch in saved.batches):
             raise ValueError("frozen research plan exceeds approved task limits")
         return saved
+    if runtime.codex.phase3_reading_target:
+        from .phase3_reading import admission as reading_admission
+        return await reading_admission(run_dir, packages, runtime, runner)
     runtime = runtime.model_copy(deep=True)
     runtime.codex.phase3_daily_agent_limit = min(15, runtime.codex.phase3_daily_agent_limit)
     runtime.codex.phase3_task_max_packages = min(20, runtime.codex.phase3_task_max_packages)
@@ -2791,6 +2810,13 @@ def append_run_status(path: Path, run_dir: Path, successes: dict[str, str]) -> N
         f"- 研究失败：{len(failures)}\n"
         f"- 异常来源：{', '.join(issues) if issues else '无'}\n"
     )
+    counts = run_counts(run_dir)
+    if counts["reading_mode"]:
+        addition = addition.replace(
+            f"- 核查后未形成报告的研究主题：{len(not_published)}\n",
+            f"- 简讯：{counts['brief_packages']} 包\n"
+            f"- 阅读后无实质增量：{counts['skipped_packages']} 包\n"
+            f"- 资料不足：{counts['insufficient_packages']} 包（不等于无价值）\n")
     phase2_manifest = _read_json(run_dir / "02_routing" / "phase2_manifest.json", {})
     deferred_names = phase2_manifest.get("deferred_alias_name_count", 0)
     if deferred_names:

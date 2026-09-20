@@ -343,6 +343,9 @@ def verify_automation_smoke(source_runtime: RuntimeConfig, smoke_root: Path) -> 
         for key, value in expected_research_units.items()
         if key in set(admission.selected_object_ids)
     }
+    if admission.selection_contract == "autonomous-reading-v1":
+        from .phase3_reading import publication_population
+        expected_research_units = publication_population(run_dir / "03_research", expected_research_units, admission)
 
     failures = json.loads(
         (run_dir / "03_research" / "failures.json").read_text(encoding="utf-8")
@@ -498,6 +501,7 @@ phase3_tail_batch_size = {runtime.codex.phase3_tail_batch_size}
 phase3_tail_batch_max_bytes = {runtime.codex.phase3_tail_batch_max_bytes}
 phase3_tail_parallel_pool = {str(runtime.codex.phase3_tail_parallel_pool).lower()}
 phase3_dynamic_tasks = {str(runtime.codex.phase3_dynamic_tasks).lower()}
+phase3_reading_target = {runtime.codex.phase3_reading_target}
 phase3_task_max_packages = {runtime.codex.phase3_task_max_packages}
 phase2_comparison_max_groups = {runtime.codex.phase2_comparison_max_groups}
 phase2_subject_keys = {str(runtime.codex.phase2_subject_keys).lower()}

@@ -58,6 +58,14 @@ def require_fixed_acceptance(target: Path) -> None:
                  and len(value["research_threads"]) == 1
                  and value["live_lark_writes"] is False
                  and receipt["stage"] == "passed" and receipt["live_lark_writes"] is False)
+        reading_target = tomllib.loads(config.read_text()).get("codex", {}).get("phase3_reading_target", 0)
+        if reading_target:
+            scale = value.get("reading_scale") or {}
+            root = Path(scale["root"])
+            valid = (valid and scale["target"] == reading_target
+                     and scale["reading_results_hash"] == hashlib.sha256(Path(scale["reading_results"]).read_bytes()).hexdigest()
+                     and scale["review_hash"] == hashlib.sha256((root / "semantic_review.json").read_bytes()).hexdigest()
+                     and scale["result_hash"] == hashlib.sha256((root / "pilot_result.json").read_bytes()).hexdigest())
     except (OSError, ValueError, KeyError, TypeError):
         valid = False
     if not valid:
