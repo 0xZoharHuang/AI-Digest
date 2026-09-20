@@ -80,7 +80,7 @@ def selection_hint(originals: list[dict[str, Any]]) -> dict[str, Any]:
         observation = observations[i]
         payload = observation.get("payload", {})
         text = next((str(payload[k]) for k in ("text", "abstract", "description", "readme_preview") if payload.get(k)), "")
-        captured = [str(ref.get("text") or "") for ref in payload.get("references", []) if isinstance(ref, dict) and ref.get("text")]
+        captured = [str(ref.get("text") or "") for ref in (payload.get("references") or []) if isinstance(ref, dict) and ref.get("text")]
         samples.append({"source": observation.get("source"), "title": str(payload.get("title") or payload.get("full_name") or "")[:200],
             "text_excerpt": text[:600], "quoted_excerpt": str(payload.get("quoted_text") or "\n".join(captured))[:600],
             "change": observation.get("change"), "occurred_at": observation.get("occurred_at")})

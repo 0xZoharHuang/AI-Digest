@@ -69,6 +69,8 @@ def test_admission_hint_is_original_content_with_captured_quote_not_storage_hash
     value = json.dumps(selection_hint(docs), ensure_ascii=False)
     assert "发布新的 VLA 架构" in value and "值得读" in value
     assert "storage-only" not in value and "content_hash" not in value
+    docs[0]["observations"][0]["payload"]["references"] = None
+    assert selection_hint(docs)["samples_not_full_evidence"][0]["text_excerpt"] == "值得读"
 
 
 def test_draft_note_not_completion_and_identity_anchor_is_original(tmp_path, capsys):
