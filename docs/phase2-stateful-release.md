@@ -124,3 +124,28 @@ Remaining limitations: bounded neighbour recall; incomplete source/media context
 anchored rather than all-pairs validation for large folders; model/version and order
 sensitivity outside the small regression corpus; unexposed underlying Jev version
 behind the Gateway alias; and provider availability. No global optimum is claimed.
+
+## September 20 production closure candidate
+
+- Replace thread-local subprocess ownership with four client-owned reusable slots
+  (bounded by configured workers). Reap terminated children and close both parent
+  pipes, including EOF/restart and already-exited paths. Real subprocess tests run
+  under a 64-descriptor soft limit across 100 executor generations and 25 restarts.
+- Restore all candidates from the existing bounded retrieval index. The emergency
+  top-one truncation is not the accepted recall policy. Contract
+  `stateful-choice-v1.4-full-candidates` explicitly identifies this change; never
+  mix it into unfinished older checkpoints.
+- Fresh frozen-50 comparison: 129 successful requests, 494728 input tokens,
+  18200 output tokens, market USD 0.020778576, actual USD 0, no failed attempts.
+  Eight real boundary cases passed all six checks (11 requests, market USD
+  0.001970052). These small samples do not prove full-day density or cost.
+- Manual publication and background recovery share one exclusive recovery lock.
+  Unknown research source IDs remain errors, but validation now names the exact
+  invalid IDs and the valid source IDs to support precise original-thread repair.
+- Installed acceptance binds both receipts to hashes of the executed package.
+  Replaying old smoke output cannot certify changed code; deployment still
+  requires a fresh installed execution and an idle production queue.
+- Today's repaired original research thread preserved 883 other files. The
+  owner run now contains 46 reports and 25 not-published outcomes, no research
+  failures. Collection remains honestly partial; publication/deployment require
+  their separate receipts and are not implied by this development checkpoint.

@@ -4,6 +4,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import queue
 import random
 import selectors
 import subprocess
@@ -32,22 +33,49 @@ class JevUnavailable(RuntimeError):
 
 
 class JevClient:
-    def __init__(self, root: Path, *, key_service: str = "ai-digest-jev-production", node: str = "node"):
+    def __init__(self, root: Path, *, key_service: str = "ai-digest-jev-production", node: str = "node", workers: int = 1):
+        if not 1 <= workers <= 6:
+            raise ValueError("Jev process capacity must be between one and six")
         self.root, self.key_service, self.node = root, key_service, node
         self.worker = Path(__file__).with_name("jev_worker.mjs")
         self.identity = digest([MODEL, self.worker.read_text(), "canonical-json-v1"])
         self.lock = threading.Lock()
-        # One durable worker per client. Phase 2 may evaluate batches in Python
-        # threads, but the JSONL worker is deliberately bounded to one process;
-        # this prevents a large day from exhausting macOS file descriptors.
+        # Slots belong to this client, never ephemeral executor threads.
+        # Each slot exclusively owns one JSONL request/response stream.
         self.invoke_lock = threading.Lock()
-        self.worker_process: subprocess.Popen[bytes] | None = None
+        self._workers: list[subprocess.Popen[bytes] | None] = [None] * workers
+        self._available: queue.Queue[int] = queue.Queue()
+        for slot in range(workers):
+            self._available.put(slot)
         self.receipts: dict[str, Any] = {}
         self.attempted: dict[str, Any] = {}
         self.hits = 0
         self.attempts = 0
         self.key: str | None = None
         self.worker_checked = False
+        self.closed = False
+
+    @property
+    def worker_process(self) -> subprocess.Popen[bytes] | None:
+        return self._workers[0]
+
+    @staticmethod
+    def _dispose(worker: subprocess.Popen[bytes]) -> None:
+        """Reap the child and close both parent pipe handles, including on EOF."""
+        try:
+            if worker.poll() is None:
+                worker.terminate()
+                try:
+                    worker.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    worker.kill()
+                    worker.wait(timeout=5)
+            else:
+                worker.wait(timeout=5)
+        finally:
+            for pipe in (worker.stdin, worker.stdout):
+                if pipe is not None:
+                    pipe.close()
 
     def include_receipt(self, identity: str) -> None:
         path = self.root / identity[:2] / f"{identity}.json"
@@ -76,13 +104,19 @@ class JevClient:
             return self.key
 
     def invoke(self, request: dict[str, Any]) -> dict[str, Any]:
-        with self.invoke_lock:
-            worker = self.worker_process
+        slot = self._available.get()
+        try:
+            if self.closed:
+                raise RuntimeError("Jev client is closed")
+            worker = self._workers[slot]
             if worker is None or worker.poll() is not None:
+                if worker is not None:
+                    self._workers[slot] = None
+                    self._dispose(worker)
                 env = {**os.environ, "AI_GATEWAY_API_KEY": self.credentials()}
                 worker = subprocess.Popen([self.node, str(self.worker)], stdin=subprocess.PIPE,
                                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
-                self.worker_process = worker
+                self._workers[slot] = worker
             assert worker.stdin and worker.stdout
             try:
                 worker.stdin.write(json.dumps(request, ensure_ascii=True, sort_keys=True).encode() + b"\n")
@@ -96,11 +130,11 @@ class JevClient:
                     raise JevUnavailable("Gateway worker exited without a receipt; billing status unknown")
                 return cast(dict[str, Any], json.loads(raw))
             except BaseException:
-                if worker.poll() is None:
-                    worker.kill()
-                worker.wait(timeout=5)
-                self.worker_process = None
+                self._workers[slot] = None
+                self._dispose(worker)
                 raise
+        finally:
+            self._available.put(slot)
 
     def __call__(self, request: dict[str, Any]) -> dict[str, Any]:
         if not fits(request):
@@ -183,12 +217,16 @@ class JevClient:
 
     def close(self) -> None:
         with self.invoke_lock:
-            worker = self.worker_process
-            self.worker_process = None
-            if worker is not None and worker.poll() is None:
-                worker.terminate()
-                try:
-                    worker.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    worker.kill()
-                    worker.wait(timeout=5)
+            if self.closed:
+                return
+            self.closed = True
+            slots = [self._available.get() for _ in self._workers]
+            try:
+                for slot in slots:
+                    worker = self._workers[slot]
+                    self._workers[slot] = None
+                    if worker is not None:
+                        self._dispose(worker)
+            finally:
+                for slot in slots:
+                    self._available.put(slot)

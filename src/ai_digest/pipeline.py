@@ -597,6 +597,17 @@ def _reconcile_manifest(runtime: RuntimeConfig, run_dir: Path) -> RunManifest:
 
 
 def publish_existing_run(runtime: RuntimeConfig, run_dir: Path) -> PublishManifest:
+    lock = _acquire_process_lock(runtime.runtime_root / "recovery.lock")
+    if lock is None:
+        raise RuntimeError("another recovery/publication is active; retry after it completes")
+    try:
+        return _publish_existing_run_unlocked(runtime, run_dir)
+    finally:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        os.close(lock)
+
+
+def _publish_existing_run_unlocked(runtime: RuntimeConfig, run_dir: Path) -> PublishManifest:
     manifest = _reconcile_manifest(runtime, run_dir)
     try:
         publish_manifest = LarkPublisher(runtime.lark).publish(

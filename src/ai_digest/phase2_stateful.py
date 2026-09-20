@@ -19,7 +19,7 @@ from .phase2_inputs import SIGNAL, fragments, signal_question
 from .phase2_labels import digest
 from .utils import atomic_write_json
 
-VERSION = "stateful-choice-v1.3"
+VERSION = "stateful-choice-v1.4-full-candidates"
 PARTITION_INSTRUCTIONS = {
     "question": "Which proposed partition best organizes these supplied packages for joint research?",
     "goal": "Combine materials about the same concrete product, object or technical direction. Different applications, versions, opposing results and different projects within a concrete direction can belong together; VLA policies and VLA dataset tooling qualify.",
@@ -59,13 +59,13 @@ def partition_request(block: list[str], groups: dict[str, Any], views: dict[str,
             "questions": {"partition": {"type": "choice", "instructions": PARTITION_INSTRUCTIONS, "criteria": criteria}}}, aliases
 
 
-def candidate_pairs(groups: dict[str, Any], neighbours: dict[str, dict[str, float]], checked: set[str], *, max_neighbours_per_original: int = 1) -> list[tuple[float, str, str]]:
+def candidate_pairs(groups: dict[str, Any], neighbours: dict[str, dict[str, float]], checked: set[str]) -> list[tuple[float, str, str]]:
     owner = {uid: gid for gid, group in groups.items() for uid in group["members"]}
     edges: dict[tuple[str, str], float] = {}
     for uid, adjacent in neighbours.items():
         if uid not in owner:
             continue
-        ranked = sorted(adjacent.items(), key=lambda pair: (-pair[1], pair[0]))[:max_neighbours_per_original]
+        ranked = sorted(adjacent.items(), key=lambda pair: (-pair[1], pair[0]))
         for other, score in ranked:
             if other not in owner or owner[uid] == owner[other]:
                 continue
@@ -239,7 +239,8 @@ class StatefulPhase2:
 
     def run(self, views: dict[str, Any], index: dict[str, Any]) -> dict[str, Any]:
         identity = {"version": VERSION, "views_hash": digest(views), "index_hash": digest(index),
-                    "policy_hash": digest([PARTITION_INSTRUCTIONS, signal_question("m0")])}
+                    "policy_hash": digest([PARTITION_INSTRUCTIONS, signal_question("m0")]),
+                    "candidate_policy": "all-index-neighbours-no-top1-truncation"}
         path = self.work / "state.json"
         if path.exists():
             envelope = json.loads(path.read_text())

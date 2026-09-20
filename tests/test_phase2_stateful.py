@@ -67,19 +67,19 @@ def test_all_local_partitions_available_and_batches_disjoint():
     assert all(2 <= len(block) <= 4 for block in blocks)
 
 
-def test_candidate_edges_are_bounded_per_original():
+def test_every_index_candidate_survives_including_second_choice():
     rows = views(50)
     groups = {group_id([uid]): {"members": [uid], "anchors": [uid]} for uid in rows}
-    edges = candidate_pairs(groups, index(rows)["neighbours"], set(), max_neighbours_per_original=1)
-    assert len(edges) <= len(rows)
+    edges = candidate_pairs(groups, index(rows)["neighbours"], set())
+    assert len(edges) == len(rows) * (len(rows) - 1) // 2
 
 
 def test_mixed_neighbourhoods_partition_then_state_updates_and_resume(tmp_path):
     rows = views()
     model = Fake()
     first = StatefulPhase2(model, tmp_path).run(rows, index(rows))
-    assert len(first["groups"]) == 4
-    assert sorted(map(len, first["groups"])) == [2, 2, 4, 4]
+    assert len(first["groups"]) == 3
+    assert sorted(map(len, first["groups"])) == [4, 4, 4]
     assert first["grouping_rounds"] > 1
     calls = len(model.cache)
     second = StatefulPhase2(model, tmp_path).run(dict(reversed(list(rows.items()))), index(rows))
@@ -111,7 +111,7 @@ def test_failure_never_commits_a_partial_grouping_wave(tmp_path):
     checkpoint = json.loads((tmp_path / "state.json").read_text())["state"]
     assert checkpoint["round"] == 0 and len(checkpoint["groups"]) == len(rows)
     assert not (tmp_path / "result.json").exists()
-    assert len(StatefulPhase2(model, tmp_path).run(rows, index(rows))["groups"]) == 4
+    assert len(StatefulPhase2(model, tmp_path).run(rows, index(rows))["groups"]) == 3
 
 
 def test_large_material_is_paged_not_permanently_split(tmp_path):

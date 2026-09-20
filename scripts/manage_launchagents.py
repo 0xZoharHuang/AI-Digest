@@ -41,7 +41,12 @@ def require_fixed_acceptance(target: Path) -> None:
         value = json.loads(path.read_text())
         smoke = Path(value["smoke_root"]) / "automation_smoke_receipt.json"
         receipt = json.loads(smoke.read_text())
+        installed = {str(p.relative_to(target)): hashlib.sha256(p.read_bytes()).hexdigest()
+                     for p in target.glob(".venv/lib/python*/site-packages/ai_digest/**/*")
+                     if p.is_file() and not p.is_symlink() and p.suffix in {".py", ".mjs"}}
         valid = (not path.is_symlink() and value["status"] == "passed"
+                 and bool(installed) and value.get("execution_files") == installed
+                 and receipt.get("execution_files") == installed
                  and value["snapshot"] == str(target)
                  and value["config_hash"] == hashlib.sha256(config.read_bytes()).hexdigest()
                  and value["smoke_receipt_hash"] == hashlib.sha256(smoke.read_bytes()).hexdigest()

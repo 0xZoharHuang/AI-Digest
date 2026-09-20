@@ -82,7 +82,7 @@ def test_provider_failures_are_durable_and_never_semantic(tmp_path, monkeypatch,
 def test_wire_is_canonical_json_and_unicode_stays_one_line(tmp_path, monkeypatch):
     import io
     from types import SimpleNamespace
-    worker = SimpleNamespace(stdin=io.BytesIO(), stdout=io.BytesIO(b'{"answers":{}}\n'), poll=lambda: 0)
+    worker = SimpleNamespace(stdin=io.BytesIO(), stdout=io.BytesIO(b'{"answers":{}}\n'), poll=lambda: 0, wait=lambda **kw: 0)
     class Ready:
         def __enter__(self):
             return self
@@ -127,6 +127,7 @@ def test_concurrent_invocations_share_one_worker_process(tmp_path, monkeypatch):
             self.stdout = self
         def readline(self):
             return b'{"answers":{}}\n'
+        def close(self): pass
         def poll(self): return None
         def kill(self): pass
         def terminate(self): pass

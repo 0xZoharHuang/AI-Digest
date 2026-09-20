@@ -140,7 +140,8 @@ def execute(runtime: RuntimeConfig, run_dir: Path, items: dict[str, SourceItem])
         else:
             draft = build_index(views, runtime.runtime_root / "jev" / "index")
             atomic_write_json(draft_path, {"views_hash": digest(views), "draft_hash": digest(draft), "draft": draft})
-        client = JevClient(runtime.runtime_root / "jev" / "calls", key_service=runtime.jev.key_service)
+        client = JevClient(runtime.runtime_root / "jev" / "calls", key_service=runtime.jev.key_service,
+                           workers=runtime.jev.workers)
         try:
             outcome = StatefulPhase2(client, work, workers=runtime.jev.workers).run(views, draft)
             return seal(root, items, outcome, client.usage())

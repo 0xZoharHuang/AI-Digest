@@ -49,9 +49,18 @@ async def main():
     source.codex.phase3_tail_parallel_pool = False
     source.codex.subagent_threads = 0
     receipt_path = root / SMOKE_RECEIPT
+    package_root = Path(ai_digest.__file__).resolve().parent
+    execution_files = {str(path.relative_to(snapshot)): file_sha256(path)
+                       for path in sorted(package_root.rglob("*"))
+                       if path.is_file() and path.suffix in {".py", ".mjs"}}
     if not receipt_path.exists():
         await prepare_automation_smoke(source, smoke_root=root)
+        receipt = json.loads(receipt_path.read_text())
+        receipt["execution_files"] = execution_files
+        atomic_write_json(receipt_path, receipt)
     receipt = json.loads(receipt_path.read_text())
+    if receipt.get("execution_files") != execution_files:
+        raise RuntimeError("acceptance evidence was executed with different or unrecorded code; use a fresh isolated smoke")
     owner = isolated_runtime(source, root)
     worker = isolated_runtime(source, root, worker=True)
     archived = worker.shared_runtime_root / "archived" / receipt["run_id"]
@@ -89,6 +98,7 @@ async def main():
     if before != {str(p): file_sha256(p) for p in research.rglob("*") if p.is_file()}:
         raise RuntimeError("completed research changed on replay")
     result = {"status": "passed", "snapshot": str(snapshot), "smoke_root": str(root),
+              "execution_files": execution_files,
               "config_hash": file_sha256(snapshot / "config/runtime.toml"),
               "smoke_receipt_hash": file_sha256(receipt_path),
               "installed_module": ai_digest.__file__, "uid": os.getuid(), "parent_pid": os.getppid(),

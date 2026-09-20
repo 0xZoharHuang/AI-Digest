@@ -171,8 +171,11 @@ def _validate_new_ledgers(
     ]
     if not evidence:
         raise ValueError(f"research evidence ledger is empty: {package_id}")
-    if any(not set(value.related_unit_ids) <= reviewed_set for value in evidence):
-        raise ValueError(f"research evidence contains unknown units: {package_id}")
+    unknown = sorted({uid for value in evidence for uid in value.related_unit_ids} - reviewed_set)
+    if unknown:
+        raise ValueError(f"research evidence contains unknown units: {package_id}; unknown={unknown}; "
+                         f"allowed={sorted(reviewed_set)}. Verify source mapping and copy exact IDs from manifest.json; "
+                         "do not remove evidence or substitute unrelated IDs to pass validation.")
     return intake_path, evidence_path, reviewed_set
 
 
