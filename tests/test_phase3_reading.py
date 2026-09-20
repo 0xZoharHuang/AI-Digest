@@ -16,6 +16,7 @@ from ai_digest.phase3_reading import (
     reading_views,
     research,
     run_task,
+    selection_hint,
 )
 from ai_digest.reading_task import PAGE_CHARS, deliver
 from ai_digest.utils import atomic_write_json, atomic_write_jsonl, atomic_write_text
@@ -60,6 +61,14 @@ def test_views_preserve_semantic_metadata():
     assert view["observations"][0]["payload"]["metrics"] == {"stars": 7}
     assert view["observations"][0]["payload"]["unknown_field"] == "保留"
     assert "content_hash" not in view["observations"][0]
+
+
+def test_admission_hint_is_original_content_with_captured_quote_not_storage_hash():
+    docs = documents(1)
+    docs[0]["observations"][0]["payload"].update(text="值得读", references=[{"type": "quoted", "text": "发布新的 VLA 架构"}])
+    value = json.dumps(selection_hint(docs), ensure_ascii=False)
+    assert "发布新的 VLA 架构" in value and "值得读" in value
+    assert "storage-only" not in value and "content_hash" not in value
 
 
 def test_draft_note_not_completion_and_identity_anchor_is_original(tmp_path, capsys):

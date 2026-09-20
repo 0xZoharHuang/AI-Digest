@@ -69,6 +69,24 @@ def balanced_batches(ids: list[str], sizes: dict[str, int], jobs: int) -> list[l
     return batches
 
 
+def selection_hint(originals: list[dict[str, Any]]) -> dict[str, Any]:
+    """Literal source previews for admission, not storage JSON or a research verdict."""
+    observations = [o for row in originals for o in row.get("observations", [])]
+    positions = list(dict.fromkeys([0, 1, len(observations) - 1]))
+    samples = []
+    for i in positions:
+        if not 0 <= i < len(observations):
+            continue
+        observation = observations[i]
+        payload = observation.get("payload", {})
+        text = next((str(payload[k]) for k in ("text", "abstract", "description", "readme_preview") if payload.get(k)), "")
+        captured = [str(ref.get("text") or "") for ref in payload.get("references", []) if isinstance(ref, dict) and ref.get("text")]
+        samples.append({"source": observation.get("source"), "title": str(payload.get("title") or payload.get("full_name") or "")[:200],
+            "text_excerpt": text[:600], "quoted_excerpt": str(payload.get("quoted_text") or "\n".join(captured))[:600],
+            "change": observation.get("change"), "occurred_at": observation.get("occurred_at")})
+    return {"samples_not_full_evidence": samples}
+
+
 async def admission(run: Path, packages: list[ResearchPackage], runtime: RuntimeConfig, runner: CodexRunner) -> Phase3Admission:
     docs = {r["unit_id"]: r for r in cast(list[dict[str, Any]], load_jsonl(run / "02_routing/units.jsonl"))}
     target = min(runtime.codex.phase3_reading_target, len(packages), min(15, runtime.codex.phase3_daily_agent_limit) * 134)
@@ -81,7 +99,7 @@ async def admission(run: Path, packages: list[ResearchPackage], runtime: Runtime
                      "unit_count": len(p.unit_ids), "sources": list(sources),
                      "primary_source": min(sources, key=lambda s: (-sources[s], s)),
                      "readable": True, "original_bytes": len(raw.encode()),
-                     "evidence_hint": {"excerpt": raw[:1500]}})
+                     "evidence_hint": selection_hint(originals)})
     seed = digest([VERSION, sha(run / "02_routing/units.jsonl"), target])
     priority: list[str] = []
     calls = []
