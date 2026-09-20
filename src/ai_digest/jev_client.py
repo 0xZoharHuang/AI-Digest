@@ -36,9 +36,12 @@ class JevClient:
         self.root, self.key_service, self.node = root, key_service, node
         self.worker = Path(__file__).with_name("jev_worker.mjs")
         self.identity = digest([MODEL, self.worker.read_text(), "canonical-json-v1"])
-        self.local = threading.local()
         self.lock = threading.Lock()
-        self.processes: list[subprocess.Popen[bytes]] = []
+        # One durable worker per client. Phase 2 may evaluate batches in Python
+        # threads, but the JSONL worker is deliberately bounded to one process;
+        # this prevents a large day from exhausting macOS file descriptors.
+        self.invoke_lock = threading.Lock()
+        self.worker_process: subprocess.Popen[bytes] | None = None
         self.receipts: dict[str, Any] = {}
         self.attempted: dict[str, Any] = {}
         self.hits = 0
@@ -73,32 +76,31 @@ class JevClient:
             return self.key
 
     def invoke(self, request: dict[str, Any]) -> dict[str, Any]:
-        worker = getattr(self.local, "worker", None)
-        if worker is None or worker.poll() is not None:
-            env = {**os.environ, "AI_GATEWAY_API_KEY": self.credentials()}
-            worker = subprocess.Popen([self.node, str(self.worker)], stdin=subprocess.PIPE,
-                                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
-            self.local.worker = worker
-            with self.lock:
-                self.processes.append(worker)
-        assert worker.stdin and worker.stdout
-        try:
-            worker.stdin.write(json.dumps(request, ensure_ascii=True, sort_keys=True).encode() + b"\n")
-            worker.stdin.flush()
-            with selectors.DefaultSelector() as selector:
-                selector.register(worker.stdout, selectors.EVENT_READ)
-                if not selector.select(55):
-                    raise JevUnavailable("Gateway response timed out; billing status unknown")
-            raw = worker.stdout.readline()
-            if not raw:
-                raise JevUnavailable("Gateway worker exited without a receipt; billing status unknown")
-            return cast(dict[str, Any], json.loads(raw))
-        except BaseException:
-            if worker.poll() is None:
-                worker.kill()
-            worker.wait(timeout=5)
-            self.local.worker = None
-            raise
+        with self.invoke_lock:
+            worker = self.worker_process
+            if worker is None or worker.poll() is not None:
+                env = {**os.environ, "AI_GATEWAY_API_KEY": self.credentials()}
+                worker = subprocess.Popen([self.node, str(self.worker)], stdin=subprocess.PIPE,
+                                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
+                self.worker_process = worker
+            assert worker.stdin and worker.stdout
+            try:
+                worker.stdin.write(json.dumps(request, ensure_ascii=True, sort_keys=True).encode() + b"\n")
+                worker.stdin.flush()
+                with selectors.DefaultSelector() as selector:
+                    selector.register(worker.stdout, selectors.EVENT_READ)
+                    if not selector.select(55):
+                        raise JevUnavailable("Gateway response timed out; billing status unknown")
+                raw = worker.stdout.readline()
+                if not raw:
+                    raise JevUnavailable("Gateway worker exited without a receipt; billing status unknown")
+                return cast(dict[str, Any], json.loads(raw))
+            except BaseException:
+                if worker.poll() is None:
+                    worker.kill()
+                worker.wait(timeout=5)
+                self.worker_process = None
+                raise
 
     def __call__(self, request: dict[str, Any]) -> dict[str, Any]:
         if not fits(request):
@@ -180,13 +182,13 @@ class JevClient:
                 "note": "Logical cost includes cache replay; provider omissions and ambiguous failed billing are not zero."}
 
     def close(self) -> None:
-        with self.lock:
-            for worker in self.processes:
-                if worker.poll() is None:
-                    worker.terminate()
-                    try:
-                        worker.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        worker.kill()
-                        worker.wait(timeout=5)
-            self.processes.clear()
+        with self.invoke_lock:
+            worker = self.worker_process
+            self.worker_process = None
+            if worker is not None and worker.poll() is None:
+                worker.terminate()
+                try:
+                    worker.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    worker.kill()
+                    worker.wait(timeout=5)
