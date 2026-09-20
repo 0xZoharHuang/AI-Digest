@@ -327,6 +327,11 @@ async def run_task(work: Path, packages: list[ResearchPackage], views: dict[str,
     checkpoint = work / "session.json"
     if calls and not checkpoint.exists():
         raise ValueError("cannot start replacement for a reading task with missing checkpoint")
+    known = {call["thread_id"] for call in calls if call.get("thread_id")}
+    if checkpoint.exists():
+        known.add(read_json(checkpoint)["thread_id"])
+    if len(known) > 1:
+        raise ValueError("reading task has conflicting original thread identities")
     for _ in range(2):
         if not progress["pending"]:
             break
@@ -352,6 +357,8 @@ async def run_task(work: Path, packages: list[ResearchPackage], views: dict[str,
             raise ValueError("reading task changed original thread")
         if not checkpoint.exists():
             raise RetryableCodexError("reading startup without checkpoint", result)
+        if result.thread_id and read_json(checkpoint)["thread_id"] != result.thread_id:
+            raise ValueError("reading checkpoint differs from actual task identity")
         progress = collect(work)
         if not result.success:
             raise RetryableCodexError("reading task", result)
@@ -376,7 +383,7 @@ async def research(run: Path, packages: list[ResearchPackage], selected: Phase3A
             try:
                 value = await run_task(work, members, local, runtime, runner)
                 error_class = None
-            except Exception as error:
+            except RetryableCodexError as error:
                 # Never import from a workspace that failed immutable-input checks.
                 value = collect(work)
                 error_class = getattr(error, "error_class", None)

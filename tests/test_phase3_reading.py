@@ -162,6 +162,24 @@ async def test_rank_underfill_does_not_drop_long_packages(monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_complete_outputs_cannot_hide_thread_identity_violation(tmp_path, capsys):
+    runtime = RuntimeConfig()
+    runtime.codex.phase3_reading_target = 1
+    atomic_write_jsonl(tmp_path / "02_routing/units.jsonl", documents(1))
+    selected = await admission(tmp_path, packages(1), runtime, None)
+    class WrongIdentity:
+        async def run(self, **kw):
+            atomic_write_json(kw["thread_checkpoint_path"], {"thread_id": "different"})
+            read_all(kw["workspace"])
+            decide(kw["workspace"], "p0")
+            return CodexResult(exit_code=0, thread_id="actual")
+    with pytest.raises(ValueError, match="identity"):
+        await research(tmp_path, packages(1), selected, runtime, WrongIdentity())
+    assert not (tmp_path / "03_research/PHASE3_COMPLETE").exists()
+    capsys.readouterr()
+
+
+@pytest.mark.asyncio
 async def test_research_projection_import_and_publish(monkeypatch, tmp_path, capsys):
     from ai_digest.pipeline import _import_research
     from ai_digest.publisher import validate_publish_inputs
