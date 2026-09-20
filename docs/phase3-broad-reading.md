@@ -210,3 +210,26 @@ launchd tests passed. Earlier full-suite result for the same runtime is 389 pass
 No production timeout was relaxed. User/bot authentication was verified in a real
 background process (UID 501, parent PID 1); existing Wiki home/history nodes were
 read successfully, with no live publication or navigation change.
+
+## Production cutover completed — September 21, 01:42 CST
+
+All three production LaunchAgents now load
+`app-831cbfb6dd2b-20260920T164438Z`; each started and exited with code zero.
+Active/retry/completed/publish-pending queues were empty at the final check.
+Rollback is `app-97314ecb20c1-20260920T084156Z`. The installer retained three
+snapshots and removed six non-active installation copies, not historical reports.
+
+Verified active settings: Phase 2 `jev_reading_v3`; research `gpt-5.6-sol` medium;
+Brief `gpt-5.6-terra`; reading target 1000; at most 15 research threads and six
+concurrent workers; daily hour 7, Asia/Shanghai. Wiki and recipient are unchanged.
+The installed code is the same byte-verified code used for the pilot and background
+E2E. Release-verification tooling was updated separately without altering runtime
+code after those runs. The acceptance receipt explicitly identifies real-pilot plus
+mock-scale evidence and does not claim real 1000-package scale was pre-run.
+
+The latest shared account quota check showed 25% weekly remaining and zero reset
+credits. This is an external availability limit shared with other tasks, not a
+guarantee that a future full run has enough quota. No extra model experiments,
+top-ups, resets, DNS changes, or real validation notifications were performed.
+The next natural daily run confirms actual production duration and external writes;
+the pre-deployment tests are not presented as that natural-run result.
