@@ -42,6 +42,10 @@ def require_fixed_acceptance(target: Path) -> None:
         smoke = Path(value["smoke_root"]) / "automation_smoke_receipt.json"
         receipt = json.loads(smoke.read_text())
         native = target / "node_modules/@larksuite/cli/bin/lark-cli"
+        reader = target / "config/interests.md"
+        if not reader.is_file():
+            reader = target / "config/interests.example.md"
+        reader_hash = hashlib.sha256(reader.read_text().encode()).hexdigest()
         installed = {str(p.relative_to(target)): hashlib.sha256(p.read_bytes()).hexdigest()
                      for p in target.glob(".venv/lib/python*/site-packages/ai_digest/**/*")
                      if p.is_file() and not p.is_symlink() and p.suffix in {".py", ".mjs"}}
@@ -52,6 +56,9 @@ def require_fixed_acceptance(target: Path) -> None:
                  and receipt.get("execution_files") == installed
                  and value["snapshot"] == str(target)
                  and value["config_hash"] == hashlib.sha256(config.read_bytes()).hexdigest()
+                 and receipt.get("execution_config_hash") == value["config_hash"]
+                 and value.get("reader_hash") == reader_hash
+                 and receipt.get("execution_reader_hash") == reader_hash
                  and value["smoke_receipt_hash"] == hashlib.sha256(smoke.read_bytes()).hexdigest()
                  and value["completed_replay_unchanged"] is True
                  and value["phase2_completed_reload"] is True
@@ -69,7 +76,7 @@ def require_fixed_acceptance(target: Path) -> None:
             valid = (valid and scale["target"] == reading_target
                      and scale["research_model"] == profile.get("research_model", "gpt-5.6-sol")
                      and scale["research_reasoning"] == profile.get("research_reasoning", "medium")
-                     and scale["reader_hash"] == hashlib.sha256(reader.read_bytes()).hexdigest()
+                     and scale["reader_hash"] == reader_hash
                      and scale["pilot_input_hash"] == hashlib.sha256((root / "pilot_input.json").read_bytes()).hexdigest()
                      and scale["reading_results_hash"] == hashlib.sha256(Path(scale["reading_results"]).read_bytes()).hexdigest()
                      and scale["review_hash"] == hashlib.sha256((root / "semantic_review.json").read_bytes()).hexdigest()

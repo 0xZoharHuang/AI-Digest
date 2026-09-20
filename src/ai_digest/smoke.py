@@ -409,7 +409,9 @@ def verify_automation_smoke(source_runtime: RuntimeConfig, smoke_root: Path) -> 
     if not any((archived / "blobs").glob("*")):
         raise RuntimeError("referenced Phase 1 blob was not copied into the agent job")
 
-    completed_at = datetime.now(UTC)
+    verified_at = datetime.now(UTC)
+    completed_at = (datetime.fromisoformat(str(receipt["completed_at"]))
+                    if receipt.get("stage") == "passed" and receipt.get("completed_at") else verified_at)
     wiki_dry_run = receipt.get("wiki_dry_run")
     if not isinstance(wiki_dry_run, dict):
         wiki_dry_run = _verify_wiki_tree(run_dir, str(row[0]).upper())
@@ -417,6 +419,7 @@ def verify_automation_smoke(source_runtime: RuntimeConfig, smoke_root: Path) -> 
     receipt.update(
         {
             "stage": "passed",
+            "verified_at": verified_at.isoformat(),
             "completed_at": completed_at.isoformat(),
             "duration_seconds": (
                 completed_at - datetime.fromisoformat(str(receipt["started_at"]))

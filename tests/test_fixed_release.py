@@ -12,6 +12,9 @@ def test_cutover_requires_matching_installed_acceptance(tmp_path):
     config = tmp_path / "config/runtime.toml"
     config.parent.mkdir()
     config.write_text('[codex]\nphase2_engine = "jev_reading_v3"\n')
+    reader = config.parent / "interests.md"
+    reader.write_text("reader profile")
+    reader_hash = hashlib.sha256(reader.read_bytes()).hexdigest()
     require = CONTROL["require_fixed_acceptance"]
     with pytest.raises(CONTROL["ControlError"], match="refusing cutover"):
         require(tmp_path)
@@ -25,15 +28,21 @@ def test_cutover_requires_matching_installed_acceptance(tmp_path):
     native.write_text("native fixture")
     native.chmod(0o755)
     execution_files = {str(installed.relative_to(tmp_path)): hashlib.sha256(installed.read_bytes()).hexdigest()}
-    receipt.write_text(json.dumps({"stage": "passed", "live_lark_writes": False, "execution_files": execution_files}))
+    receipt.write_text(json.dumps({"stage": "passed", "live_lark_writes": False, "execution_files": execution_files,
+        "execution_config_hash": hashlib.sha256(config.read_bytes()).hexdigest(), "execution_reader_hash": reader_hash}))
     acceptance = {"status": "passed", "snapshot": str(tmp_path), "smoke_root": str(receipt.parent),
                   "lark_native_hash": hashlib.sha256(native.read_bytes()).hexdigest(),
                   "config_hash": hashlib.sha256(config.read_bytes()).hexdigest(),
+                  "reader_hash": reader_hash,
                   "smoke_receipt_hash": hashlib.sha256(receipt.read_bytes()).hexdigest(),
                   "completed_replay_unchanged": True, "phase2_completed_reload": True,
                   "research_threads": ["test-thread"], "live_lark_writes": False, "execution_files": execution_files}
     (tmp_path / "release_acceptance.json").write_text(json.dumps(acceptance))
     require(tmp_path)
+    reader.write_text("changed reader")
+    with pytest.raises(CONTROL["ControlError"], match="refusing cutover"):
+        require(tmp_path)
+    reader.write_text("reader profile")
     native.chmod(0o644)
     with pytest.raises(CONTROL["ControlError"], match="refusing cutover"):
         require(tmp_path)
@@ -49,3 +58,12 @@ def test_cutover_requires_matching_installed_acceptance(tmp_path):
     config.write_text(config.read_text() + "# Changed after acceptance\n")
     with pytest.raises(CONTROL["ControlError"], match="refusing cutover"):
         require(tmp_path)
+
+
+def test_engineering_exercise_cannot_issue_release_acceptance(tmp_path):
+    script = runpy.run_path(str(Path(__file__).parents[1] / "scripts/accept_fixed_release.py"))
+    path, status = script["acceptance_output"](tmp_path, True)
+    assert path.name == "engineering_preflight.json"
+    assert status != "passed"
+    path, status = script["acceptance_output"](tmp_path, False)
+    assert path.name == "release_acceptance.json" and status == "passed"
