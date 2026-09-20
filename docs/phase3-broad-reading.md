@@ -157,3 +157,29 @@ exercise passed in 716.83 seconds, without real Lark writes and with immutable
 completed replay. All 389 automated tests and type checking passed. Production
 has not switched. A single same-model high-reasoning comparison is awaiting
 explicit approval; no change to medium production reasoning has been made.
+
+## Reader-purpose acceptance clarification, September 21
+
+The user clarified that this is a research/reading product, not a zero-error factual
+audit. Localized imprecision and debatable judgments are acceptable when the core
+goal is met; do not keep expanding prompts, architecture or model experiments to
+eliminate every editorial imperfection. Keep gpt-5.6-sol medium; the proposed high
+comparison is not being run.
+
+Reclassification of R9: its two identified brief-level qualification/default-mode
+issues remain real limitations, but do not invalidate the report's main research
+value or constitute a pipeline blocker under this clarified standard. The prior
+strict review remains preserved, not rewritten as though the issues were repaired.
+R9 provides adequate purpose-level evidence to proceed to the real 1000-package
+operational check, not a claim of universally correct research.
+
+Release blockers remain incomplete or hidden processing, lost/duplicate inputs,
+wrong model/configuration, broken stage contracts or recovery, fabricated research
+or major source/topic confusion that undermines the main findings, and unsafe or
+incorrect publishing. Ordinary interpretation/precision issues are recorded as
+limitations rather than automatically blocking deployment. Evidence review remains
+real: inspect reports, gaps and the frozen sample; no blanket automatic approval.
+
+The 1000-package / 15-thread run uses the already installed 831cbfb snapshot,
+existing Phase 2 inputs, production priority/exploration selection and at most six
+concurrent research threads. It does not recollect sources or send real messages.
