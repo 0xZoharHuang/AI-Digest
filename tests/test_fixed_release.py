@@ -8,6 +8,17 @@ import pytest
 CONTROL = runpy.run_path(str(Path(__file__).parents[1] / "scripts/manage_launchagents.py"))
 
 
+def test_cutover_rejects_changed_reviewed_text(tmp_path):
+    report = tmp_path / "report.md"
+    report.write_text("reviewed text")
+    hashes = {"report.md": hashlib.sha256(report.read_bytes()).hexdigest()}
+    matches = CONTROL["reviewed_files_match"]
+    assert matches(tmp_path, hashes)
+    report.write_text("new unreviewed claim")
+    assert not matches(tmp_path, hashes)
+    assert not matches(tmp_path, {})
+
+
 def test_cutover_requires_matching_installed_acceptance(tmp_path):
     config = tmp_path / "config/runtime.toml"
     config.parent.mkdir()

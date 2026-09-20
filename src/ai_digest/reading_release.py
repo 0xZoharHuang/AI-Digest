@@ -17,6 +17,23 @@ def implementation_hash(package: Path | None = None) -> str:
     return hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
 
 
+def reviewed_artifacts(run: Path) -> dict[str, str]:
+    """Bind semantic approval to the actual text/evidence, not only dispositions."""
+    root = run / "03_research"
+    output = read_json(root / "reading_results.json")
+    files = [root / "short_updates.md"]
+    for rid in output["reports"]:
+        folder = root / rid
+        if folder.parent != root or folder.is_symlink():
+            raise ValueError("unsafe reviewed report")
+        if not (folder / "main_report.md").is_file() or not (folder / "evidence.jsonl").is_file():
+            raise ValueError("missing reviewed report or evidence")
+        files.extend(p for p in folder.rglob("*") if p.is_file() or p.is_symlink())
+    if any(p.is_symlink() or not p.is_file() or not p.resolve().is_relative_to(run.resolve()) for p in files):
+        raise ValueError("missing or unsafe reviewed artifact")
+    return {str(p.relative_to(run)): sha(p) for p in sorted(files)}
+
+
 def validate_scale(root: Path, target: int, *, research_model: str = "gpt-5.6-sol", research_reasoning: str = "medium") -> dict[str, Any]:
     frozen = read_json(root / "pilot_input.json")
     result = read_json(root / "pilot_result.json")
@@ -25,6 +42,7 @@ def validate_scale(root: Path, target: int, *, research_model: str = "gpt-5.6-so
     if not run.is_relative_to(root.resolve()):
         raise ValueError("scale evidence escapes its isolated root")
     output = read_json(run / "03_research/reading_results.json")
+    artifacts = reviewed_artifacts(run)
     rows = output["packages"]
     reports = set(output["reports"])
     gaps = {pid for pid, row in rows.items() if row["status"] == "insufficient"}
@@ -41,6 +59,7 @@ def validate_scale(root: Path, target: int, *, research_model: str = "gpt-5.6-so
         or review.get("depth_no_regression") is not True
         or review.get("input_hash") != sha(root / "pilot_input.json")
         or review.get("results_hash") != sha(run / "03_research/reading_results.json")
+        or review.get("artifact_hashes") != artifacts
         or set(review.get("reviewed_reports", [])) != reports
         or set(review.get("reviewed_gaps", [])) != gaps
         or set(review.get("sampled_packages", [])) != set(sample)):
@@ -53,6 +72,7 @@ def validate_scale(root: Path, target: int, *, research_model: str = "gpt-5.6-so
         if identity["model"] != research_model or identity["reasoning"] != research_reasoning:
             raise ValueError("scale task actually used a different research profile")
     return {"root": str(root.resolve()), "target": target, "implementation_hash": implementation_hash(),
+            "artifact_root": str(run), "artifact_hashes": artifacts,
             "pilot_input_hash": sha(root / "pilot_input.json"),
             "research_model": research_model, "research_reasoning": research_reasoning,
             "reader_hash": frozen["reader_hash"],

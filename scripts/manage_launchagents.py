@@ -32,6 +32,15 @@ class ControlError(RuntimeError):
     pass
 
 
+def reviewed_files_match(root: Path, hashes: dict[str, str]) -> bool:
+    if not hashes:
+        return False
+    return all(not (root / name).is_symlink() and (root / name).is_file()
+               and (root / name).resolve().is_relative_to(root.resolve())
+               and hashlib.sha256((root / name).read_bytes()).hexdigest() == expected
+               for name, expected in hashes.items())
+
+
 def require_fixed_acceptance(target: Path) -> None:
     config = target / "config/runtime.toml"
     if not config.is_file() or tomllib.loads(config.read_text()).get("codex", {}).get("phase2_engine") != "jev_reading_v3":
@@ -74,6 +83,8 @@ def require_fixed_acceptance(target: Path) -> None:
             if not reader.is_file():
                 reader = target / "config/interests.example.md"
             valid = (valid and scale["target"] == reading_target
+                     and Path(scale["artifact_root"]).resolve().is_relative_to(root.resolve())
+                     and reviewed_files_match(Path(scale["artifact_root"]), scale["artifact_hashes"])
                      and scale["research_model"] == profile.get("research_model", "gpt-5.6-sol")
                      and scale["research_reasoning"] == profile.get("research_reasoning", "medium")
                      and scale["reader_hash"] == reader_hash
