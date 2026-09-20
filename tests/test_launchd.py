@@ -587,6 +587,16 @@ exit 0
 """
     )
     npm.chmod(0o700)
+    node = fake_bin / "node"
+    node.write_text(
+        "#!/bin/sh\n"
+        "[ \"$1\" != \"-e\" ] || exit 1\n"
+        "[ \"$1\" = \"node_modules/@larksuite/cli/scripts/install.js\" ] || exit 2\n"
+        "mkdir -p node_modules/@larksuite/cli/bin\n"
+        "printf '#!/bin/sh\\nexit 0\\n' > node_modules/@larksuite/cli/bin/lark-cli\n"
+        "chmod 755 node_modules/@larksuite/cli/bin/lark-cli\n"
+    )
+    node.chmod(0o700)
     auth = Path(environment["HOME"]) / ".codex" / "auth.json"
     auth.parent.mkdir(parents=True, exist_ok=True)
     auth.write_text("{}\n")
