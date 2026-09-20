@@ -1132,7 +1132,8 @@ class V3Phases:
             atomic_write_json(root / "not_published.json", [])
         package_labels = {p.package_id: p.label_zh for p in load_packages(run_dir / "02_routing")}
         unpublished_details = []
-        for pid in _read_json(root / "not_published.json", []):
+        reading_mode = admission.selection_contract == "autonomous-reading-v1"
+        for pid in ([] if reading_mode else _read_json(root / "not_published.json", [])):
             folder = safe_child(run_dir / "03_research", pid)
             decision = folder / "decision.md"
             evidence_path = folder / "evidence.jsonl"
@@ -1141,11 +1142,10 @@ class V3Phases:
                 "unknowns": [r.get("claim", "") for r in load_jsonl(evidence_path) if r.get("status") == "unknown"]
                             if evidence_path.is_file() and not evidence_path.is_symlink() else []})
         atomic_write_json(root / "not_published_details.json", unpublished_details)
-        reading_mode = admission.selection_contract == "autonomous-reading-v1"
         if reading_mode:
             shutil.copy2(run_dir / "03_research/short_updates.md", root / "short_updates.md")
             from .run_counts import run_counts
-            atomic_write_json(root / "reading_summary.json", run_counts(run_dir))
+            atomic_write_json(root / "reading_summary.json", {**run_counts(run_dir), "independent_reports": len(successes)})
         shutil.copy2(run_dir / "01_phase1" / "source_health.json", root / "source_health.json")
         watch_rows = load_attention_watch_rows(run_dir / "02_routing")
         atomic_write_jsonl(root / "watch.jsonl", watch_rows)
@@ -1154,11 +1154,7 @@ class V3Phases:
             "未知不等于无价值，未成稿不等于执行失败。没有足够依据就保留不确定，不编造分类。"
             "不要把短核查说明写成完整深度报告，也不要重新计算程序负责的统计。\n")
         if reading_mode:
-            with (root / "AGENTS.md").open("a") as handle:
-                handle.write("\n当前是广泛阅读合同：报告ID独立于原始包，不把报告数说成读过的包数。"
-                    "short_updates.md 是研究员已完成的简讯，只精选有实质增量的短讯；不重写成深度报告。"
-                    "reading_summary.json 是程序汇总的阅读状态，不需要再读千条内部记录。"
-                    "不要按探索批次分类报告，不强制写风险和不能证明；用具体信息帮助读者选择阅读。\n")
+            atomic_write_text(root / "AGENTS.md", phase4_reading_agents_md())
         output = root / "daily_brief.md"
         result = await self.runner.run(
             workspace=root,
@@ -2768,6 +2764,25 @@ source_health 描述采集器运行状态，不等于当天研究 corpus 是否�
 信息或问题触发、研究把认识推进到了哪里、读进去能理解什么，并提供 report:// 链接。每个入口自然
 表达“今天看到的原始入口”和“核查研究后的推进”，但不强制固定字段或篇幅；不要替读者排序或重写
 研究结论。
+"""
+
+
+def phase4_reading_agents_md() -> str:
+    return """# Phase 4 — 为读者导航，而非再次研究
+
+你的读者跨技术、产品与创业，需要快速找到今天值得理解的问题。读取 reports/ 中已完成的研究报告、
+short_updates.md 的已完成简讯，以及 reading_summary.json 和 source_health.json 的程序统计。
+不重新联网研究，不创造新事实或统一趋势，不把处理台账变成日报，不需要读上千条内部记录。
+
+从“## 研究报告”开始。每份独立报告至少保留一次 report://<report-id> 链接，相关 subreport 可自然下钻。
+入口应说清具体研究问题、获得了什么认识、值得读的依据，不套“尚不能证明”的统一风险模板。
+报告 ID 独立于原始包：多包可共用报告，报告数不等于阅读包数。不要按任务编号或探索批次划分章节。
+
+可以精选有实质增量的简讯作为短条目；全部简讯由发布程序链接到“其他发现”，无需全部复述。
+简讯不是深度报告，资料不足不等于无价值，执行失败不等于编辑判断。保留来源主张、推断和限制的范围。
+数字、版本、指标含义不能在压缩时改变；只沿用研究产物中已核实的信息，不补缺失细节。
+统计和异常状态由程序附加，不自行重算，不把 report_packages 当成 independent_reports。
+不要在正文暴露原始包 ID、unit ID、内部执行路径或工具记账。只返回自然专业的中文阅读入口。
 """
 
 
