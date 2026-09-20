@@ -3,6 +3,10 @@
 The reader's goal is understanding: what an object is, how it works, what it adds,
 and why it matters. Evidence checking supports that goal; it is not the report's
 default subject. A package is a reading responsibility, not a mandatory article.
+Inputs are signals, not prescribed research objects or boundaries. The researcher
+may investigate an underlying question beyond the seed project, using other
+papers, implementations, official material and community evidence. Two or three
+dozen minutes of real work is normal, not a minimum runtime or a reason to stop.
 
 `phase3_reading_target` defaults to zero while this release is unaccepted. Once
 accepted, new jobs use 1000, with separately tested tiers of 1500 and 2000. There
