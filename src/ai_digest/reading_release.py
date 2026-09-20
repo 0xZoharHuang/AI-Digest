@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .config import load_interests
 from .reading_task import read_json, sha
 
 
@@ -16,7 +17,7 @@ def implementation_hash(package: Path | None = None) -> str:
     return hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
 
 
-def validate_scale(root: Path, target: int) -> dict[str, Any]:
+def validate_scale(root: Path, target: int, *, research_model: str = "gpt-5.6-sol", research_reasoning: str = "medium") -> dict[str, Any]:
     frozen = read_json(root / "pilot_input.json")
     result = read_json(root / "pilot_result.json")
     review = read_json(root / "semantic_review.json")
@@ -30,6 +31,9 @@ def validate_scale(root: Path, target: int) -> dict[str, Any]:
     others = {pid for pid, row in rows.items() if row["status"] in {"skip", "brief"}}
     sample = sorted(others, key=lambda pid: hashlib.sha256(("reading-review-v1:" + pid).encode()).hexdigest())[:200]
     if (frozen.get("implementation_hash") != implementation_hash()
+        or frozen.get("research_model") != research_model
+        or frozen.get("research_reasoning") != research_reasoning
+        or frozen.get("reader_hash") != hashlib.sha256(load_interests().encode()).hexdigest()
         or frozen["threads"] != 15 or frozen["count"] < target
         or len(rows) != frozen["count"] or set(rows) != set(frozen["selected"])
         or result["failures"] or result["live_publish"] is not False
@@ -44,7 +48,14 @@ def validate_scale(root: Path, target: int) -> dict[str, Any]:
     sessions = list((run / "03_research/reading-tasks").glob("*/session.json"))
     if len(sessions) != 15 or len({read_json(p)["thread_id"] for p in sessions}) != 15:
         raise ValueError("scale run did not use exactly 15 independent research threads")
+    for path in sessions:
+        identity = read_json(path.parent / "identity.json")
+        if identity["model"] != research_model or identity["reasoning"] != research_reasoning:
+            raise ValueError("scale task actually used a different research profile")
     return {"root": str(root.resolve()), "target": target, "implementation_hash": implementation_hash(),
+            "pilot_input_hash": sha(root / "pilot_input.json"),
+            "research_model": research_model, "research_reasoning": research_reasoning,
+            "reader_hash": frozen["reader_hash"],
             "reading_results": str(run / "03_research/reading_results.json"),
             "reading_results_hash": sha(run / "03_research/reading_results.json"),
             "review_hash": sha(root / "semantic_review.json"), "result_hash": sha(root / "pilot_result.json")}

@@ -62,7 +62,15 @@ def require_fixed_acceptance(target: Path) -> None:
         if reading_target:
             scale = value.get("reading_scale") or {}
             root = Path(scale["root"])
+            profile = tomllib.loads(config.read_text())["codex"]
+            reader = target / "config/interests.md"
+            if not reader.is_file():
+                reader = target / "config/interests.example.md"
             valid = (valid and scale["target"] == reading_target
+                     and scale["research_model"] == profile.get("research_model", "gpt-5.6-sol")
+                     and scale["research_reasoning"] == profile.get("research_reasoning", "medium")
+                     and scale["reader_hash"] == hashlib.sha256(reader.read_bytes()).hexdigest()
+                     and scale["pilot_input_hash"] == hashlib.sha256((root / "pilot_input.json").read_bytes()).hexdigest()
                      and scale["reading_results_hash"] == hashlib.sha256(Path(scale["reading_results"]).read_bytes()).hexdigest()
                      and scale["review_hash"] == hashlib.sha256((root / "semantic_review.json").read_bytes()).hexdigest()
                      and scale["result_hash"] == hashlib.sha256((root / "pilot_result.json").read_bytes()).hexdigest())

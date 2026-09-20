@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import shutil
 import time
 from pathlib import Path
 
 from ai_digest.codex_runner import CodexRunner
-from ai_digest.config import load_runtime_config, resolve_binary
+from ai_digest.config import load_interests, load_runtime_config, resolve_binary
 from ai_digest.models import Phase3Admission, ResearchPackage
 from ai_digest.phase2_labels import digest
 from ai_digest.phase3_reading import admission as production_admission
@@ -26,12 +27,15 @@ async def main():
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--count", type=int, choices=[67, 100, 134, 1000, 1500, 2000], required=True)
     parser.add_argument("--threads", type=int, choices=range(1, 16), default=1)
+    parser.add_argument("--reasoning", choices=["medium", "high"])
     args = parser.parse_args()
     started = time.monotonic()
     source, root = args.source.resolve(), args.root.resolve()
     if root == source or root.is_relative_to(source) or source.is_relative_to(root):
         raise ValueError("pilot must use a separate evidence directory")
     runtime = load_runtime_config()
+    if args.reasoning:
+        runtime.codex.research_reasoning = args.reasoning
     runtime.codex.phase3_reading_target = args.count
     runtime.codex.phase3_daily_agent_limit = args.threads
     if args.count > args.threads * 134:
@@ -53,6 +57,10 @@ async def main():
     # Old exploratory pilots remain resumable, but can never pass the new scale gate.
     if not frozen.exists() or "implementation_hash" in json.loads(frozen.read_text()):
         fingerprint["implementation_hash"] = implementation_hash()
+    if not frozen.exists() or "research_model" in json.loads(frozen.read_text()):
+        fingerprint.update(research_model=runtime.codex.research_model,
+            research_reasoning=runtime.codex.research_reasoning,
+            reader_hash=hashlib.sha256(load_interests().encode()).hexdigest())
     if frozen.exists():
         if json.loads(frozen.read_text()) != fingerprint:
             raise ValueError("cannot alter frozen pilot inputs")

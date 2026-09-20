@@ -45,7 +45,8 @@ async def main():
         from ai_digest.reading_release import validate_scale
         if args.reading_scale_root is None:
             raise RuntimeError("broad reading requires actual 15-task scale and semantic acceptance")
-        scale = validate_scale(args.reading_scale_root, production.codex.phase3_reading_target)
+        scale = validate_scale(args.reading_scale_root, production.codex.phase3_reading_target,
+            research_model=production.codex.research_model, research_reasoning=production.codex.research_reasoning)
     if production.codex.phase2_engine != "jev_reading_v3":
         raise RuntimeError("wrong Phase 2 engine")
     if (production.daily_hour != 7 or production.codex.phase3_daily_agent_limit != 15
