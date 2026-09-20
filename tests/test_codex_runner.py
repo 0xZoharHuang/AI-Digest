@@ -94,3 +94,24 @@ async def test_large_prompt_uses_stdin_without_argument_limit(tmp_path):
     result = await CodexRunner(str(script)).run(workspace=tmp_path / "w",
         prompt="原文" * 100000, model="test", reasoning="low", sandbox="read-only", prompt_stdin=True)
     assert result.success
+
+
+@pytest.mark.asyncio
+async def test_native_live_web_does_not_require_command_network_or_user_config(tmp_path):
+    script = tmp_path / "web-codex"
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        "args = sys.argv[1:]\n"
+        "assert '--ignore-user-config' in args\n"
+        "assert 'web_search=\"live\"' in args\n"
+        "assert 'default_permissions=\"ai_digest_workspace\"' in args\n"
+        "assert not any('network_proxy' in arg or 'network={enabled=true' in arg for arg in args)\n"
+        "assert not any('danger-full-access' in arg for arg in args)\n"
+        "print(json.dumps({'type':'turn.completed','usage':{}}), flush=True)\n"
+    )
+    script.chmod(0o755)
+    result = await CodexRunner(str(script)).run(workspace=tmp_path / "w",
+        prompt="read public original", model="gpt-5.6-sol", reasoning="medium",
+        sandbox="workspace-write", web_search=True, agents=False)
+    assert result.success

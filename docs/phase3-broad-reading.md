@@ -124,3 +124,21 @@ guard rejects them even with the upstream proxy. Do not disable that guard or TL
 verification. Narrow DNS-rule adjustment approval is pending. No production or
 running-task permission change has been applied. This capability gap is observed;
 it has not been proven to be the sole cause of semantic errors.
+
+## Correction: reuse native Codex web access, not DNS changes
+
+A production-runner capability probe at validation/native-web-capability-20260921
+used the unchanged gpt-5.6-sol medium CLI and sandbox, with web_search=live. Its
+native web tool successfully opened the raw StreamLib README and arXiv HTML
+method section, returning today's content and correctly distinguishing the current
+delivery profiles and writable MCP graph surface. No network/DNS/profile change,
+custom fetch service, or extra runtime component was needed.
+
+The earlier terminal-network failure does NOT establish that Codex research lacks
+Internet access. The historical V2 runner and current runner both enable native
+live web search, independently from shell networking. The proposed DNS change is
+withdrawn; do not apply it. The actual demonstrated failure is source selection and
+version grounding in long research, not loss of Codex's hosted web capability.
+Instructions now explicitly route critical GitHub claims through native raw-file
+reads and papers through native HTML/PDF reads. This probe is capability evidence,
+not broad semantic acceptance; realistic regression/scale gates still apply.
